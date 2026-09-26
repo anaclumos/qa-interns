@@ -1,0 +1,14 @@
+{
+  "name": "qa-interns",
+  "description": "QA Interns for Claude Code.",
+  "owner": {
+    "name": "anaclumos"
+  },
+  "plugins": [
+    {
+      "name": "qa-interns",
+      "source": "./",
+      "description": "Run many AI QA interns in parallel against isolated copies of a web application and report what breaks."
+    }
+  ]
+}

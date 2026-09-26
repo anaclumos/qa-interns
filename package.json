@@ -1,0 +1,26 @@
+{
+  "name": "qa-interns",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run many AI QA interns in parallel against isolated copies of a web application and report what breaks.",
+  "type": "module",
+  "bin": {
+    "qa-interns": "./src/cli.ts"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.5.0",
+    "@devcontainers/cli": "0.89.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "7.0.2"
+  }
+}
