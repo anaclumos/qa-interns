@@ -22,6 +22,7 @@ beforeAll(async () => {
   for (const store of [claudeStore, join(dir, "stores", "claude-2"), codexStore, cursorStore, emptyStore, pool]) await mkdir(store, { recursive: true });
   await Bun.write(join(claudeStore, ".credentials.json"), "{}");
   await Bun.write(join(codexStore, "auth.json"), "{}");
+  await Bun.write(join(cursorStore, "auth.json"), "{}");
   await Bun.write(
     join(dir, "seat.sh"),
     [

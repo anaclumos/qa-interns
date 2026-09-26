@@ -273,7 +273,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     [
       "two buildable services whose names differ only by case",
       "  web:\n    build: .\n  Web:\n    build: .\n",
-      "services Web and web differ only by case, so their prebuilt image tags collide",
+      "services Web and web differ only by case, so their names and prebuilt image tags collide",
     ],
     [
       "a privileged service behind a profile",

@@ -185,7 +185,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     if (starts.has(name)) return;
     starts.add(name);
     for (const [dependency, condition] of Object.entries(project.services[name]?.depends_on ?? {})) {
-      if (condition.required !== false) start(dependency);
+      if (condition.required !== false || (project.services[dependency]?.profiles ?? []).length === 0) start(dependency);
     }
   };
   started.forEach(start);
@@ -222,12 +222,10 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       if (owner === undefined) aliasOwners.set(alias, name);
       else violations.push(`services ${owner} and ${name} both declare network alias ${alias}`);
     }
+    const other = tags.get(name.toLowerCase());
+    if (other === undefined) tags.set(name.toLowerCase(), name);
+    else violations.push(`services ${other} and ${name} differ only by case, so their names and prebuilt image tags collide`);
     const active = starts.has(name);
-    if (active && entry.build !== undefined) {
-      const other = tags.get(name.toLowerCase());
-      if (other === undefined) tags.set(name.toLowerCase(), name);
-      else violations.push(`services ${other} and ${name} differ only by case, so their prebuilt image tags collide`);
-    }
     const limits = entry.deploy?.resources?.limits;
     const memory = entry.mem_limit ?? limits?.memory;
     services[name] = {

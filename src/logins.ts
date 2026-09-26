@@ -3,6 +3,7 @@ import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { track } from "./target.ts";
 import type { Login, Provider } from "./types.ts";
 
 export const defaultLoginsPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "qa-interns", "logins.json");
@@ -65,6 +66,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
     if ((entry.store === undefined) === (entry.seat === undefined)) problems.push(`${where}: set exactly one of "store" or "seat"`);
     if (entry.store !== undefined) {
       const store = realpathSync(entry.store);
+      if (store === "/") problems.push(`${where}: store ${entry.store} is the root of the file system`);
       for (const [other, first] of storeIndex) {
         if (other === store) problems.push(`${where}: duplicate store ${entry.store}, already used by logins[${first}]; one store serves one process at a time`);
         else if (store.startsWith(`${other}/`) || other.startsWith(`${store}/`)) {
@@ -75,6 +77,9 @@ export async function loadLogins(file: string): Promise<Login[]> {
     }
     if (entry.provider === "claude" && entry.store !== undefined && statSync(join(entry.store, ".credentials.json"), { throwIfNoEntry: false })?.isFile() !== true) {
       problems.push(`${where}: claude store ${entry.store} has no .credentials.json`);
+    }
+    if (entry.provider === "cursor" && entry.store !== undefined && statSync(join(entry.store, "auth.json"), { throwIfNoEntry: false })?.isFile() !== true) {
+      problems.push(`${where}: cursor store ${entry.store} has no auth.json`);
     }
     if (entry.provider === "codex" && entry.store !== undefined) {
       if (statSync(join(entry.store, "auth.json"), { throwIfNoEntry: false })?.isFile() !== true) {
@@ -103,12 +108,12 @@ async function seat(login: Login, intern: string): Promise<Seat | null> {
   if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
   const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
   try {
-    const child = Bun.spawn(login.seat, {
+    const child = track(Bun.spawn(login.seat, {
       env: { ...process.env, QA_INTERNS_LEASE_PID: String(keeper.pid), QA_INTERNS_INTERN: intern },
       stdout: "pipe",
       stderr: "inherit",
       timeout: 60_000,
-    });
+    }));
     const [stdout, exitCode] = await Promise.all([child.stdout.text(), child.exited]);
     const store = stdout
       .split("\n")
