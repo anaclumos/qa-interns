@@ -186,6 +186,22 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({ web: true, worker: true, mailer: false });
   });
 
+  test("treat a dependency behind a profile as active when a started service depends on it", async () => {
+    const compose = `services:
+  web:
+    image: nginx:1.29-alpine
+    depends_on: ["cache"]
+  cache:
+    image: redis:8.2-alpine
+    profiles: ["cache"]
+  mailer:
+    image: axllent/mailpit:v1.27
+    profiles: ["mail"]
+`;
+    const target = await load(await fixture(compose, devcontainer({})));
+    expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({ web: true, cache: true, mailer: false });
+  });
+
   const unsafe: [string, string, string][] = [
     ["container_name", "  web:\n    image: nginx:1.29-alpine\n    container_name: shop-web\n", "service web sets container_name shop-web"],
     ["network_mode host", "  web:\n    image: nginx:1.29-alpine\n    network_mode: host\n", "service web sets network_mode host"],

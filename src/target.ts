@@ -96,6 +96,7 @@ const composeSchema = z.object({
       pids_limit: z.number().optional(),
       deploy: z.object({ resources: z.object({ limits: limitsSchema.optional() }).optional() }).optional(),
       profiles: z.array(z.string()).optional(),
+      depends_on: z.record(z.string(), z.unknown()).optional(),
       privileged: z.boolean().optional(),
       pid: z.string().optional(),
       ipc: z.string().optional(),
@@ -172,7 +173,19 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
 
-  const named = [service, ...(runServices ?? [])];
+  const started =
+    runServices === undefined
+      ? Object.entries(project.services)
+          .filter(([name, entry]) => (entry.profiles ?? []).length === 0 || name === service)
+          .map(([name]) => name)
+      : [service, ...runServices];
+  const starts = new Set<string>();
+  const start = (name: string) => {
+    if (starts.has(name)) return;
+    starts.add(name);
+    for (const dependency of Object.keys(project.services[name]?.depends_on ?? {})) start(dependency);
+  };
+  started.forEach(start);
   const violations: string[] = [];
   const services: Record<string, ComposeService> = {};
   const tags = new Map<string, string>();
@@ -206,7 +219,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       if (owner === undefined) aliasOwners.set(alias, name);
       else violations.push(`services ${owner} and ${name} both declare network alias ${alias}`);
     }
-    const active = (entry.profiles ?? []).length === 0 || named.includes(name);
+    const active = starts.has(name);
     if (active && entry.build !== undefined) {
       const other = tags.get(name.toLowerCase());
       if (other === undefined) tags.set(name.toLowerCase(), name);

@@ -145,10 +145,10 @@ describe("renderReport", () => {
     const text = renderReport(state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }]).markdown;
     for (const char of ["\u{202e}", "\u001b", "\u0007", "\u009b", "\u{2066}", "\u0000"]) expect(text.includes(char)).toBe(false);
     expect(text).toContain("### Totals disagree\n");
-    expect(text).toContain("> Row [31mred[0m\n");
-    expect(text).toContain("- `interns/i1/out/evidence/a.png`\n");
+    expect(text).toContain("> Row \\[31mred\\[0m\n");
+    expect(text).toContain("- interns/i1/out/evidence/a.png\n");
     expect(text).toContain("Confirmation: c1 (codex) failed: adapter said no\n");
-    expect(text).toContain("- `interns/i2/out/findings/xy.json`: bad input\n");
+    expect(text).toContain("- interns/i2/out/findings/xy.json: bad input\n");
     expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"]);
   });
 
@@ -158,8 +158,15 @@ describe("renderReport", () => {
     const text = renderReport(state, [forged], []).markdown;
     expect(text.split("\n").filter((line) => line.trimStart().startsWith("## Interns"))).toEqual(["## Interns"]);
     expect(text).not.toContain("<script>");
-    expect(text).toContain("  - Account: x  ## Interns\n");
-    expect(text).toContain("> Row &lt;script&gt;alert(1)&lt;/script&gt;\n> ## Interns\n");
+    expect(text).toContain("  - Account: x  \\#\\# Interns\n");
+    expect(text).toContain("> Row &lt;script&gt;alert(1)&lt;/script&gt;\n> \\#\\# Interns\n");
+  });
+
+  test("agent text cannot add links or images", () => {
+    const linked = finding("i1/linked", "See ![x](http://attacker.test/p.png)", "Click [here](http://attacker.test)");
+    const text = renderReport(state, [{ id: "g1", findings: [linked], confirmation: null }], []).markdown;
+    expect(text).toContain("### See \\!\\[x\\](http://attacker.test/p.png)\n");
+    expect(text).toContain("> Click \\[here\\](http://attacker.test)\n");
   });
 
   test("a run with nothing to report still has a line in every section", () => {

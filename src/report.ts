@@ -7,8 +7,12 @@ export function reproductions(group: Group): string[] {
   return [...interns];
 }
 
+const markdown = new Set(["\\", "`", "*", "_", "[", "]", "!", "#", "|", "~"]);
+
 function escape(text: string) {
-  return text.replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  let out = "";
+  for (const char of text) out += char === "<" ? "&lt;" : char === ">" ? "&gt;" : markdown.has(char) ? `\\${char}` : char;
+  return out;
 }
 
 function inline(text: string) {
@@ -24,11 +28,11 @@ function item(marker: string, text: string) {
 }
 
 function cell(value: string | number | null) {
-  return inline(String(value ?? "")).split("|").join("\\|");
+  return inline(String(value ?? ""));
 }
 
 function paths(list: string[]) {
-  return list.length > 0 ? list.map((entry) => `- \`${inline(entry)}\``) : ["No evidence files."];
+  return list.length > 0 ? list.map((entry) => `- ${inline(entry)}`) : ["No evidence files."];
 }
 
 function confirmation(group: Group) {
@@ -123,7 +127,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
   for (const row of seenOnce) lines.push(...section(row.group, row.interns));
   lines.push("## Rejected finding files", "");
   if (rejected.length === 0) lines.push("No finding file was rejected.");
-  for (const entry of rejected) lines.push(`- \`${inline(entry.file)}\`: ${inline(entry.reason)}`);
+  for (const entry of rejected) lines.push(`- ${inline(entry.file)}: ${inline(entry.reason)}`);
   lines.push("", "## Interns", "");
   if (state.interns.length === 0) lines.push("No intern ran.");
   else {
