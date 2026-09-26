@@ -1,0 +1,65 @@
+{
+  "target": "eval/ledger",
+  "defects": [
+    {
+      "id": "access-api-invoice",
+      "kind": "access",
+      "summary": "Any signed-in user can read another team's invoice, with its customer, line items, and totals, through GET /api/invoices/:id, while the HTML detail page for the same id answers 404.",
+      "trigger": "Sign in as owner@acme.test and request GET /api/invoices/24 (the globexInvoiceId the seed prints). The response is 200 with the Globex invoice, while GET /invoices/24 answers 404."
+    },
+    {
+      "id": "viewer-can-delete",
+      "kind": "access",
+      "summary": "A viewer, who sees no delete button in the UI, can delete a team invoice with DELETE /api/invoices/:id and gets 204.",
+      "trigger": "Sign in as viewer@acme.test and send DELETE /api/invoices/1 with the session cookie. The invoice disappears for the whole team, while PUT /api/invoices/1 from the same viewer answers 403."
+    },
+    {
+      "id": "count-includes-deleted",
+      "kind": "inconsistency",
+      "summary": "After an invoice is deleted, the count line on the invoices list still includes it, so the list reports more invoices than it shows across all pages.",
+      "trigger": "Sign in as owner@acme.test, delete any invoice with the Delete button on its detail page, and open /invoices. The count line still says 23 invoices, while the pages and GET /api/invoices hold 22."
+    },
+    {
+      "id": "pagination-overlap",
+      "kind": "wrong-data",
+      "summary": "Each page of the invoices list after the first starts with the last invoice of the previous page, so one invoice appears on two consecutive pages.",
+      "trigger": "Sign in as owner@acme.test and open /invoices and then /invoices?page=2. INV-0014 is the last row of page 1 and the first row of page 2, and INV-0005 ends page 2 and starts page 3."
+    },
+    {
+      "id": "negative-quantity",
+      "kind": "wrong-data",
+      "summary": "The new invoice form and POST /api/invoices accept a negative line quantity and save an invoice with a negative subtotal, tax, and total.",
+      "trigger": "Sign in as owner@acme.test, open /invoices/new, and create a USD invoice with one line of quantity -3 and unit price 25 at a 0% tax rate. The invoice saves and its detail page shows a total of -$75.00."
+    },
+    {
+      "id": "due-date-timezone",
+      "kind": "inconsistency",
+      "summary": "In a browser west of UTC, the invoice detail page shows a due date one day earlier than the list page and the CSV export show for the same invoice.",
+      "trigger": "In a browser set to a time zone west of UTC, for example America/Los_Angeles, sign in as owner@acme.test and open /invoices/1. The detail page shows 6/14/2026 as the due date, while the list and the CSV export show 2026-06-15."
+    },
+    {
+      "id": "export-total-without-tax",
+      "kind": "inconsistency",
+      "summary": "The Total column of the CSV export leaves out tax, so it is lower than the total the list and detail pages show for every invoice with a non-zero tax rate.",
+      "trigger": "Sign in as owner@acme.test and download /invoices/export.csv. The row for INV-0002 has a total of 5246.00, while the list and the detail page show €5,770.60."
+    },
+    {
+      "id": "double-submit",
+      "kind": "wrong-data",
+      "summary": "Clicking Create invoice twice in quick succession on the new invoice form creates two identical invoices with consecutive numbers.",
+      "trigger": "Sign in as owner@acme.test, fill in /invoices/new, and double-click Create invoice, or click it twice within one second. Two invoices with the same customer, dates, and lines appear in the list."
+    },
+    {
+      "id": "wrong-type-500",
+      "kind": "error",
+      "summary": "POST /api/invoices with a non-numeric string as a line quantity or unitPrice answers HTTP 500 with a raw error message and stack trace in a plain text body instead of a 400 JSON error.",
+      "trigger": "Sign in as owner@acme.test and POST an otherwise valid invoice to /api/invoices with a line quantity of \"abc\". The response is 500 with SyntaxError: Failed to parse String to BigInt and stack frames, while the same body sent to PUT /api/invoices/1 answers 400."
+    },
+    {
+      "id": "emoji-truncation",
+      "kind": "visual",
+      "summary": "The invoices list cuts long customer names in the middle of an emoji, so Blue Harbor Bakery 🥐 Co shows as Blue Harbor Bakery followed by a replacement character and an ellipsis.",
+      "trigger": "Sign in as owner@acme.test and open /invoices?q=Blue. The customer column shows a broken character where the emoji belongs, while the detail page shows the full name."
+    }
+  ]
+}
