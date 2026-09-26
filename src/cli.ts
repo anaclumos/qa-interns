@@ -22,7 +22,8 @@ Commands:
   report [<run>]
       Print report.md.
   down [<run>]
-      Tear down every environment the run still has.
+      Stop the run's orchestrator with SIGTERM when it is still running, then
+      tear down every environment the run still has.
   help
       Print this help.
 
@@ -44,6 +45,16 @@ function minutes(value: string, option: string): number {
   const number = Number(value);
   if (value.trim() === "" || !Number.isFinite(number) || number <= 0) throw new Error(`--${option} must be a number of minutes above 0, got ${value}`);
   return number;
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && (error.code === "ESRCH" || error.code === "EPERM")) return false;
+    throw error;
+  }
 }
 
 function runArg(command: string, args: string[]): string | undefined {
@@ -100,6 +111,13 @@ async function main(args: string[]): Promise<number> {
     }
     case "down": {
       const state = await readState(await resolveRunDir(runArg(command, rest)));
+      if (state.phase !== "done" && state.phase !== "failed" && alive(state.pid)) {
+        process.kill(state.pid, "SIGTERM");
+        print(`Sent SIGTERM to run ${state.runId} (process ${state.pid}).`);
+        const deadline = Date.now() + 120_000;
+        while (alive(state.pid) && Date.now() < deadline) await Bun.sleep(500);
+        print(alive(state.pid) ? `Process ${state.pid} is still running after 120 seconds.` : `Process ${state.pid} exited.`);
+      }
       await stopRun(state.runId);
       print(`Run ${state.runId} has no environments left.`);
       return 0;

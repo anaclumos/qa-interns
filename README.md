@@ -41,7 +41,7 @@ qa-interns doctor
 | `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
 | `qa-interns report [<run>]` | Prints `report.md`. |
-| `qa-interns down [<run>]` | Tears down every environment the run still has. |
+| `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when it is still running, then tears down every environment the run still has. |
 
 `<run>` is a run id or a run directory. Without it, the command uses the most recent run.
 

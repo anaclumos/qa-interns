@@ -52,7 +52,7 @@ function section(group: Group, interns: string[]) {
     "",
     "Steps:",
     "",
-    ...first.steps.map((step, index) => `${index + 1}. ${step}`),
+    ...first.steps.map((step, index) => `${index + 1}. ${step.split("\n").join("\n   ")}`),
     "",
     "Observed:",
     "",

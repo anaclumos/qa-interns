@@ -17,7 +17,18 @@ const findingsSchema = z.object({
     z.object({
       id: z.string().min(1),
       confirmed: z.boolean(),
-      findings: z.array(z.object({ title: z.string(), kind: z.string(), steps: z.array(z.string()), observed: z.string() })).min(1),
+      findings: z
+        .array(
+          z.object({
+            title: z.string(),
+            kind: z.string(),
+            conditions: z.object({ account: z.string(), data: z.string(), viewport: z.string(), browser: z.string(), network: z.string() }),
+            steps: z.array(z.string()),
+            observed: z.string(),
+            contradicts: z.string().nullable(),
+          }),
+        )
+        .min(1),
     }),
   ),
 });
@@ -61,11 +72,7 @@ function parseScore(raw: string, defectIds: string[], groupIds: string[]): Score
 
 function scorePrompt(defects: z.infer<typeof defectsSchema>["defects"], groups: z.infer<typeof findingsSchema>["groups"]): string {
   const defectLines = defects.map((defect) => JSON.stringify(defect));
-  const groupLines = groups.map((group) => {
-    const [finding] = group.findings;
-    if (finding === undefined) throw new Error(`Group ${group.id} has no findings`);
-    return JSON.stringify({ id: group.id, title: finding.title, kind: finding.kind, steps: finding.steps, observed: finding.observed, confirmed: group.confirmed });
-  });
+  const groupLines = groups.map((group) => JSON.stringify({ id: group.id, confirmed: group.confirmed, findings: group.findings }));
   return `You match the findings of a QA run against the defects planted in the application it tested. Do not browse, open any URL, or send any request. Work only from the lists below.
 
 Planted defects, one JSON object per line:

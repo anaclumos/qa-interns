@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportTree, loadTarget, resolveTarget } from "../src/target.ts";
 
+const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+
 const ledger = join(import.meta.dir, "..", "eval", "ledger");
 const roots: string[] = [];
 
@@ -114,7 +116,7 @@ describe("resolveTarget and exportTree", () => {
   });
 });
 
-describe("loadTarget", () => {
+describe.skipIf(!dockerAvailable)("loadTarget", () => {
   test("load the Ledger target", async () => {
     const root = await repo(await ledgerFiles(""));
     const target = await load(root);
@@ -132,8 +134,8 @@ describe("loadTarget", () => {
     expect(target.service).toBe("web");
     expect(target.config.workspaceFolder).toBe("/app");
     expect(target.services).toEqual({
-      web: { build: true, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
-      db: { build: false, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
+      web: { build: true, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
+      db: { build: false, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
     });
   });
 
@@ -161,10 +163,10 @@ describe("loadTarget", () => {
 `;
     const target = await load(await fixture(compose, devcontainer({ dockerComposeFile: ["compose.yml"] })));
     expect(target.services).toEqual({
-      web: { build: false, memLimit: 536870912, networkMode: null, hasCpus: true, hasPidsLimit: true, deployLimits: false, profiles: [] },
-      sidecar: { build: false, memLimit: null, networkMode: "service:web", hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
-      worker: { build: true, memLimit: 268435456, networkMode: null, hasCpus: true, hasPidsLimit: true, deployLimits: true, profiles: [] },
-      mailer: { build: false, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: ["mail"] },
+      web: { build: false, memLimit: 536870912, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: false, profiles: [] },
+      sidecar: { build: false, memLimit: null, networkMode: "service:web", aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
+      worker: { build: true, memLimit: 268435456, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: true, profiles: [] },
+      mailer: { build: false, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: ["mail"] },
     });
   });
 

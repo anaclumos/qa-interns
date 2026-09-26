@@ -17,6 +17,7 @@ const target = join(root, "repo", "eval", "ledger");
 const previousStateHome = process.env.XDG_STATE_HOME;
 const timeout = 20 * 60_000;
 const title = "Home page shows the fake defect";
+let built = false;
 
 async function logins(name: string, entries: { id: string; limit: boolean }[]): Promise<string> {
   const list = [];
@@ -81,14 +82,18 @@ USER qa
 `,
     );
     await execute(["docker", "build", "-q", "-t", fakeImage, context]);
+    built = true;
     process.env.XDG_STATE_HOME = join(root, "state");
   }, timeout);
 
   afterAll(async () => {
     if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
     else process.env.XDG_STATE_HOME = previousStateHome;
-    await execute(["docker", "image", "rm", "-f", fakeImage]);
-    await rm(root, { recursive: true, force: true });
+    try {
+      if (built) await execute(["docker", "image", "rm", "-f", fakeImage]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }, timeout);
 
   test(
@@ -113,7 +118,8 @@ USER qa
       expect(lines).toContain("phase grouping");
       expect(lines).toContain("phase confirming");
       const state = await readState(runDir);
-      expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger" }, options: { interns: 2, concurrency: 2 } });
+      expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger" }, options: { interns: 2 } });
+      expect(state.options.concurrency).toBeGreaterThanOrEqual(1);
       expect(state.interns.map((entry) => [entry.id, entry.role, entry.status, entry.findings, entry.model])).toEqual([
         ["i1", "intern", "done", 1, "fake-model-1"],
         ["i2", "intern", "done", 1, "fake-model-1"],

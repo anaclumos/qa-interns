@@ -14,7 +14,7 @@ import {
   type Environment,
   type EnvironmentSpec,
 } from "./environment.ts";
-import { parseGroups, readAgentFile, readConfirmation, readFindings } from "./findings.ts";
+import { parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
 import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
@@ -261,7 +261,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
 
 async function agentTask<T>(ctx: Context, id: string, target: Target | null, avoid: Provider[], work: Work<T>): Promise<Outcome<T>> {
   const notes: string[] = [];
-  const detail = () => (notes.length === 0 ? null : notes.join("; "));
+  const detail = () => (notes.length === 0 ? null : stripControl(notes.join("; ")));
   const note = async (text: string) => {
     notes.push(text);
     await ctx.update(id, { detail: detail() });
@@ -338,8 +338,8 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
   return outcome.value;
 }
 
-async function explore(ctx: Context, intern: InternState, target: Target, minutes: number): Promise<{ findings: Finding[]; rejected: Rejected[] }> {
-  await agentTask(ctx, intern.id, target, [], async (session, env, provider, note) => {
+async function explore(ctx: Context, intern: InternState, target: Target, minutes: number): Promise<{ outcome: Outcome<void>; findings: Finding[]; rejected: Rejected[] }> {
+  const outcome = await agentTask(ctx, intern.id, target, [], async (session, env, provider, note) => {
     const environment = { commit: target.commit, environment: env.project, provider, model: session.model };
     const start = Date.now();
     const deadline = start + minutes * minute;
@@ -352,11 +352,11 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
       return continuePrompt(minutesLeft(deadline), rejected);
     });
   });
-  if (intern.provider === null || intern.project === null) return { findings: [], rejected: [] };
+  if (intern.provider === null || intern.project === null) return { outcome, findings: [], rejected: [] };
   const environment = { commit: target.commit, environment: intern.project, provider: intern.provider, model: intern.model };
   const result = await readFindings(ctx.runDir, intern.id, environment);
   await ctx.update(intern.id, { findings: result.findings.length, rejected: result.rejected.length });
-  return result;
+  return { outcome, ...result };
 }
 
 function lead(group: Group): Finding {
@@ -487,6 +487,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   await mkdir(runDir, { recursive: true });
   const state: RunState = {
     runId,
+    pid: process.pid,
     target: { repo: ref.repo, path: ref.path, commit: ref.commit },
     options: { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 },
     phase: "preparing",
@@ -504,7 +505,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   opts.print(runDir);
   opts.print(`phase ${state.phase}`);
 
-  const ctx = context(runId, runDir, await opts.runnerImage(), scheduler, async (id, patch) => {
+  const ctx = context(runId, runDir, "", scheduler, async (id, patch) => {
     const intern = state.interns.find((entry) => entry.id === id);
     if (intern === undefined) throw new Error(`Run ${runId} has no intern ${id}`);
     const changed = (patch.status !== undefined && patch.status !== intern.status) || (patch.login !== undefined && patch.login !== intern.login);
@@ -532,7 +533,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     }
     const problems = [error, teardown === null ? null : `teardown failed: ${teardown}`].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
-    state.error = problems.length === 0 ? null : problems.join("; ");
+    state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
     const report = renderReport(state, groups ?? singles, rejected);
@@ -543,6 +544,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   });
 
   const phases = async () => {
+    ctx.runnerImage = await opts.runnerImage();
     const source = join(runDir, "source");
     await exportTree(ref, source);
     const target = await loadTarget(ref, source);
@@ -570,6 +572,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const results = await settle(state.interns.map((intern) => running(() => explore(ctx, intern, target, opts.minutes))));
     findings = results.flatMap((result) => result.findings);
     rejected = results.flatMap((result) => result.rejected);
+    if (results.every((result) => result.outcome.status !== "done")) {
+      throw new Error(`No testing intern completed: ${state.interns.map((intern) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
+    }
 
     await phase("grouping");
     let members = findings.map((finding) => [finding.id]);

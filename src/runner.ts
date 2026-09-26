@@ -11,10 +11,11 @@ export async function runnerImage(): Promise<string> {
 }
 
 export async function ensureRunnerImage(): Promise<string> {
+  const { uid, gid } = userInfo();
+  if (uid === 0) throw new Error("QA Interns runs as a regular user, so the runner does not run as root. Run it as a user other than root (uid 0).");
   const image = await runnerImage();
   const inspect = Bun.spawn(["docker", "image", "inspect", image], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   if ((await inspect.exited) === 0) return image;
-  const { uid, gid } = userInfo();
   const cmd = ["docker", "build", "--build-arg", `QA_UID=${uid}`, "--build-arg", `QA_GID=${gid}`, "-t", image, runnerDir];
   const build = Bun.spawn(cmd, { stdin: "ignore", stdout: 2, stderr: "pipe" });
   let tail = "";

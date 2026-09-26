@@ -194,6 +194,25 @@ describe("readFindings", () => {
     });
   });
 
+  const unreadable: [string, string, string][] = [
+    ["the findings folder", "f3", "out/findings"],
+    ["the out folder", "f4", "out"],
+  ];
+
+  test.each(unreadable)("rejects a findings folder it cannot read when %s has mode 000", async (_, intern, locked) => {
+    await finding(intern, "pagination-overlap", pagination);
+    const dir = path.join(runDir, "interns", intern, locked);
+    await chmod(dir, 0o000);
+    try {
+      expect(await readFindings(runDir, intern, environment)).toEqual({
+        findings: [],
+        rejected: [{ intern, file: `interns/${intern}/out/findings`, reason: "the findings folder is not readable (EACCES)" }],
+      });
+    } finally {
+      await chmod(dir, 0o755);
+    }
+  });
+
   test("rejects a findings folder that is a symlink to a folder outside the out dir", async () => {
     await Bun.write(path.join(outside, "findings", "planted.json"), JSON.stringify({ ...pagination, evidence: [] }));
     await mkdir(path.join(runDir, "interns", "f2", "out"), { recursive: true });

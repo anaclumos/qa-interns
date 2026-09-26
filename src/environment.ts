@@ -101,7 +101,10 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
   const lines = ["services:"];
   for (const [name, service] of Object.entries(spec.target?.services ?? {})) {
     lines.push(`  ${y(name)}:`, "    ports: !reset []");
-    if (!service.networkMode?.startsWith("service:")) lines.push(`    networks: !override ${y(["qa_internal"])}`);
+    if (!service.networkMode?.startsWith("service:")) {
+      const networks = service.aliases.length > 0 ? { qa_internal: { aliases: service.aliases } } : ["qa_internal"];
+      lines.push(`    networks: !override ${y(networks)}`);
+    }
     const memory = service.memLimit === null ? "1g" : null;
     const cpus = service.hasCpus ? null : 2;
     const pids = service.hasPidsLimit ? null : 1024;

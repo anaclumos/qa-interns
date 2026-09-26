@@ -19,6 +19,15 @@ function errorCode(error: unknown): string | null {
   return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
+export function stripControl(text: string): string {
+  return [...text]
+    .filter((char) => {
+      const code = char.charCodeAt(0);
+      return char === "\n" || char === "\t" || (code >= 0x20 && code < 0x7f) || code > 0x9f;
+    })
+    .join("");
+}
+
 export async function readAgentFile(file: string): Promise<string> {
   const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch((error: unknown) => {
     const reason = openFailures.get(errorCode(error) ?? "");
@@ -148,16 +157,21 @@ export async function readFindings(
   const dir = path.join(runDir, folder);
   const findings: Finding[] = [];
   const rejected: Rejected[] = [];
-  const info = await lstat(dir).catch((error: unknown) => {
-    if (errorCode(error) === "ENOENT") return null;
-    throw error;
-  });
-  if (info === null) return { findings, rejected };
-  if (!info.isDirectory()) {
-    rejected.push({ intern, file: folder, reason: `the findings folder is ${info.isSymbolicLink() ? "a symbolic link" : "not a directory"}` });
+  let names: string[];
+  try {
+    const info = await lstat(dir);
+    if (!info.isDirectory()) {
+      rejected.push({ intern, file: folder, reason: `the findings folder is ${info.isSymbolicLink() ? "a symbolic link" : "not a directory"}` });
+      return { findings, rejected };
+    }
+    names = (await readdir(dir)).filter((name) => name.endsWith(".json")).sort();
+  } catch (error) {
+    const code = errorCode(error);
+    if (code === "ENOENT") return { findings, rejected };
+    if (code === null) throw error;
+    rejected.push({ intern, file: folder, reason: `the findings folder is not readable (${code})` });
     return { findings, rejected };
   }
-  const names = (await readdir(dir)).filter((name) => name.endsWith(".json")).sort();
   for (const name of names) {
     const file = path.join(folder, name);
     try {
@@ -165,15 +179,21 @@ export async function readFindings(
       const contradicts = data.contradicts ?? null;
       if (data.kind === "inconsistency" && contradicts === null) throw new Invalid("contradicts is required when kind is inconsistency");
       findings.push({
-        id: `${intern}/${name.slice(0, -".json".length)}`,
+        id: stripControl(`${intern}/${name.slice(0, -".json".length)}`),
         intern,
-        title: data.title,
+        title: stripControl(data.title),
         kind: data.kind,
-        conditions: data.conditions,
-        steps: data.steps,
-        observed: data.observed,
-        contradicts,
-        evidence: await evidence(runDir, intern, data.evidence),
+        conditions: {
+          account: stripControl(data.conditions.account),
+          data: stripControl(data.conditions.data),
+          viewport: stripControl(data.conditions.viewport),
+          browser: stripControl(data.conditions.browser),
+          network: stripControl(data.conditions.network),
+        },
+        steps: data.steps.map(stripControl),
+        observed: stripControl(data.observed),
+        contradicts: contradicts === null ? null : stripControl(contradicts),
+        evidence: (await evidence(runDir, intern, data.evidence)).map(stripControl),
         environment,
       });
     } catch (err) {
@@ -200,5 +220,5 @@ export function parseGroups(raw: string, ids: string[]): string[][] {
 
 export async function readConfirmation(runDir: string, intern: string): Promise<Confirmation> {
   const data = parse(confirmationSchema, await readAgentFile(path.join(runDir, "interns", intern, "out", "confirmation.json")));
-  return { reproduced: data.reproduced, observed: data.observed, evidence: await evidence(runDir, intern, data.evidence) };
+  return { reproduced: data.reproduced, observed: stripControl(data.observed), evidence: (await evidence(runDir, intern, data.evidence)).map(stripControl) };
 }

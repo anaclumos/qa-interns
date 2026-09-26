@@ -125,7 +125,7 @@ export function parseInvoice(body: any): InvoiceInput | string {
     lines.push({ description, quantity, unitPrice });
   }
   const subtotal = lines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
-  if (!(Math.abs(subtotal) <= 1e12)) return "The invoice subtotal is too large";
+  if (!(Math.abs(subtotal) <= 9e11)) return "The invoice subtotal is too large";
   const tax = Math.round((subtotal * taxRateBp) / 10000);
   return { customer, issueDate: body.issueDate, dueDate: body.dueDate, currency: body.currency, taxRateBp, lines, subtotal, tax, total: subtotal + tax };
 }

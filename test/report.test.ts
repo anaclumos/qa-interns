@@ -23,6 +23,7 @@ function intern(id: string, role: InternState["role"], provider: Provider | null
 
 const state: RunState = {
   runId: "7c1e9a04",
+  pid: 48213,
   target: { repo: "/home/owner/src/qa-interns", path: "eval/ledger", commit: "3f9c2e1d8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d" },
   options: { interns: 3, minutes: 30, confirmMinutes: 10, concurrency: 3 },
   phase: "done",

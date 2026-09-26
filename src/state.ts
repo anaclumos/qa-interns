@@ -8,6 +8,7 @@ import type { RunState } from "./types.ts";
 
 const stateSchema = z.object({
   runId: z.string().min(1),
+  pid: z.int().positive(),
   target: z.object({ repo: z.string(), path: z.string(), commit: z.string() }),
   options: z.object({ interns: z.number(), minutes: z.number(), confirmMinutes: z.number(), concurrency: z.number() }),
   phase: z.enum(["preparing", "building", "testing", "grouping", "confirming", "reporting", "done", "failed"]),

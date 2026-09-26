@@ -20,4 +20,7 @@ jobs:
           bun-version: 1.4.2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - run: |
+          bunx @anthropic-ai/claude-code@2.1.283 plugin validate .
+          bunx @anthropic-ai/claude-code@2.1.283 plugin validate skills
       - run: bun test --timeout 1200000

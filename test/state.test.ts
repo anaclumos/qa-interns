@@ -42,6 +42,7 @@ function intern(overrides: Partial<InternState>): InternState {
 function runState(runId: string, startedAt: string): RunState {
   return {
     runId,
+    pid: 48213,
     target: { repo: "/home/qa/src/ledger", path: "apps/web", commit: "8d2f1c07b9e4a3f6d5c2b1a0e9f8d7c6b5a4f3e2" },
     options: { interns: 3, minutes: 30, confirmMinutes: 10, concurrency: 3 },
     phase: "testing",

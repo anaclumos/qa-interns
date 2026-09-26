@@ -6,6 +6,8 @@ import { z } from "zod";
 import { buildImages, environmentMemory, freeSlot, renderOverride, runnerEnv, slotSubnets, writeChromePolicy, type EnvironmentSpec } from "../src/environment.ts";
 import { loadTarget, type Target } from "../src/target.ts";
 
+const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+
 const ledgerSource = join(import.meta.dir, "..", "eval", "ledger");
 const ref = { repo: "/home/dev/ledger", path: "", commit: "4f1c2a9e0b7d3c5a8e6f1d2b9c0a7e3f5d8b1c4a" };
 const roots: string[] = [];
@@ -56,7 +58,7 @@ async function normalize(runDir: string, composeFiles: string[], override: strin
   return JSON.parse(proc.stdout.toString());
 }
 
-describe("slots", () => {
+describe.skipIf(!dockerAvailable)("slots", () => {
   test("map a slot to its internal and egress subnets", () => {
     expect(slotSubnets(0)).toEqual({ internal: "10.213.0.0/24", egress: "10.213.1.0/24" });
     expect(slotSubnets(3)).toEqual({ internal: "10.213.6.0/24", egress: "10.213.7.0/24" });
@@ -101,7 +103,7 @@ describe("slots", () => {
   });
 });
 
-describe("renderOverride", () => {
+describe.skipIf(!dockerAvailable)("renderOverride", () => {
   test("isolate the Ledger target and add the runner and proxy", async () => {
     const target = await loadTarget(ref, ledgerSource);
     const runDir = await scratch();
@@ -114,7 +116,7 @@ describe("renderOverride", () => {
     expect(web?.build).toBeUndefined();
     expect(web?.ports).toBeUndefined();
     expect(Object.keys(web?.networks ?? {})).toEqual(["qa_internal"]);
-    expect(db).toMatchObject({ image: "postgres:17-alpine", mem_limit: "1073741824", cpus: 2, pids_limit: 1024 });
+    expect(db).toMatchObject({ image: "postgres:17.11-alpine", mem_limit: "1073741824", cpus: 2, pids_limit: 1024 });
     expect(Object.keys(db?.networks ?? {})).toEqual(["qa_internal"]);
 
     expect(config.services["qa-proxy"]).toMatchObject({
@@ -222,6 +224,43 @@ describe("renderOverride", () => {
     expect(metrics?.networks).toBeUndefined();
   });
 
+  test("carry a service's network aliases onto the internal network when a URL host is an alias", async () => {
+    const source = await scratch();
+    await Bun.write(
+      join(source, ".devcontainer", "devcontainer.json"),
+      JSON.stringify({
+        dockerComposeFile: "compose.yml",
+        service: "api",
+        customizations: { "qa-interns": { urls: { app: "http://shop:8080" }, ready: "http://shop:8080/ready", seed: "node seed.mjs" } },
+      }),
+    );
+    await Bun.write(
+      join(source, ".devcontainer", "compose.yml"),
+      `services:
+  api:
+    build: ..
+    networks:
+      front:
+        aliases: ["shop"]
+      back:
+        aliases: ["api-internal", "shop"]
+  db:
+    image: postgres:17-alpine
+    networks: ["back"]
+networks:
+  front: {}
+  back: {}
+`,
+    );
+    const target = await loadTarget(ref, source);
+    expect(target.services.api?.aliases).toEqual(["api-internal", "shop"]);
+    expect(target.services.db?.aliases).toEqual([]);
+    const runDir = await scratch();
+    const config = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target), 1000, 1000));
+    expect(config.services.api?.networks).toEqual({ qa_internal: { aliases: ["api-internal", "shop"] } });
+    expect(config.services.db?.networks).toEqual({ qa_internal: null });
+  });
+
   test("render a runner-only environment for the judge", async () => {
     const runDir = await scratch();
     const config = await normalize(runDir, [], renderOverride(spec(runDir, null), 1000, 1000));
@@ -235,13 +274,13 @@ describe("renderOverride", () => {
   });
 });
 
-describe("environment helpers", () => {
+describe.skipIf(!dockerAvailable)("environment helpers", () => {
   test("add target service limits, the default for unset limits, the runner, and the proxy", async () => {
     const gib = 1024 ** 3;
     const mib = 1024 ** 2;
     const target = await loadTarget(ref, ledgerSource);
     expect(environmentMemory(target)).toBe(4 * gib + 128 * mib);
-    const limited: Target = { ...target, services: { ...target.services, db: { build: false, memLimit: 512 * mib, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] } } };
+    const limited: Target = { ...target, services: { ...target.services, db: { build: false, memLimit: 512 * mib, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] } } };
     expect(environmentMemory(limited)).toBe(3 * gib + 640 * mib);
     expect(environmentMemory(null)).toBe(2 * gib + 128 * mib);
   });
@@ -252,7 +291,7 @@ describe("environment helpers", () => {
     const target = await loadTarget(ref, ledgerSource);
     const profiled: Target = {
       ...target,
-      services: { web: { build: true, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: ["debug"] } },
+      services: { web: { build: true, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: ["debug"] } },
     };
     expect(environmentMemory(profiled)).toBe(2 * gib + 128 * mib);
     expect(await buildImages("3f9a1c2e", profiled, ledgerSource)).toEqual({});

@@ -8,6 +8,7 @@ export type ComposeService = {
   build: boolean;
   memLimit: number | null;
   networkMode: string | null;
+  aliases: string[];
   hasCpus: boolean;
   hasPidsLimit: boolean;
   deployLimits: boolean;
@@ -74,6 +75,7 @@ const composeSchema = z.object({
       build: z.unknown().optional(),
       container_name: z.string().optional(),
       network_mode: z.string().optional(),
+      networks: z.record(z.string(), z.object({ aliases: z.array(z.string()).optional() }).nullable()).optional(),
       mem_limit: z.string().optional(),
       cpus: z.number().optional(),
       pids_limit: z.number().optional(),
@@ -88,7 +90,7 @@ const composeSchema = z.object({
   networks: z.record(z.string(), z.object({ name: z.string(), external: z.boolean().optional() })).optional(),
 });
 
-const checkProject = "qa-interns-check";
+const reservedServices = ["qa-proxy", "qa-runner"];
 const dockerSockets = ["/var/run/docker.sock", "/run/docker.sock"];
 
 export async function resolveTarget(dir: string, rev: string): Promise<TargetRef> {
@@ -134,12 +136,14 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const { dockerComposeFile, service } = parsed.data;
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
   const files = composeFiles.flatMap((entry) => ["-f", resolve(sourceDir, ".devcontainer", entry)]);
+  const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
   const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"]);
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
 
   const violations: string[] = [];
   for (const [name, entry] of Object.entries(project.services)) {
+    if (reservedServices.includes(name)) violations.push(`service ${name} uses a name QA Interns reserves`);
     if (entry.container_name !== undefined) violations.push(`service ${name} sets container_name ${entry.container_name}`);
     if (entry.network_mode !== undefined && !entry.network_mode.startsWith("service:")) {
       violations.push(`service ${name} sets network_mode ${entry.network_mode}`);
@@ -171,6 +175,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       build: entry.build !== undefined,
       memLimit: memory === undefined ? null : bytes(memory, `The memory limit of service ${name}`),
       networkMode: entry.network_mode ?? null,
+      aliases: [...new Set(Object.values(entry.networks ?? {}).flatMap((network) => network?.aliases ?? []))],
       hasCpus: entry.cpus !== undefined || limits?.cpus !== undefined,
       hasPidsLimit: entry.pids_limit !== undefined || limits?.pids !== undefined,
       deployLimits: limits !== undefined,
