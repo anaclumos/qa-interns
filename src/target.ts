@@ -32,14 +32,19 @@ export function killCommands(): void {
   for (const proc of running) proc.kill();
 }
 
+export function track<T extends Subprocess>(proc: T): T {
+  running.add(proc);
+  proc.exited.then(() => running.delete(proc));
+  return proc;
+}
+
 export async function capture(cmd: string[], options: CommandOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   const argv = options.timeout === undefined ? cmd : ["timeout", "--kill-after=10s", `${options.timeout / 1000}s`, ...cmd];
-  const proc = Bun.spawn(argv, { env: options.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  running.add(proc);
-  const output = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  const [stdout, stderr, code] = await output.finally(() => running.delete(proc));
+  const started = performance.now();
+  const proc = track(Bun.spawn(argv, { env: options.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" }));
+  const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (options.log !== undefined) await appendFile(options.log, stderr);
-  if (options.timeout !== undefined && (code === 124 || code === 137)) {
+  if (options.timeout !== undefined && (code === 124 || code === 137) && performance.now() - started >= options.timeout) {
     throw new Error(`${cmd.join(" ")} timed out after ${options.timeout / 1000} seconds: ${stderr.trim().slice(-2000)}`);
   }
   return { code, stdout, stderr };
@@ -119,8 +124,8 @@ export async function exportTree(ref: TargetRef, dest: string): Promise<void> {
   await mkdir(dest, { recursive: true });
   const archiveCmd = ["git", "-C", ref.repo, "archive", "--format=tar", `${ref.commit}:${ref.path}`];
   const extractCmd = ["tar", "-x", "-C", dest];
-  const archive = Bun.spawn(archiveCmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  const extract = Bun.spawn(extractCmd, { stdin: archive.stdout, stdout: "ignore", stderr: "pipe" });
+  const archive = track(Bun.spawn(archiveCmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe" }));
+  const extract = track(Bun.spawn(extractCmd, { stdin: archive.stdout, stdout: "ignore", stderr: "pipe" }));
   const [archiveCode, archiveErr, extractCode, extractErr] = await Promise.all([
     archive.exited,
     new Response(archive.stderr).text(),

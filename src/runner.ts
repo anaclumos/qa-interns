@@ -1,5 +1,6 @@
 import { userInfo } from "node:os";
 import { join } from "node:path";
+import { track } from "./target.ts";
 
 const runnerDir = join(import.meta.dir, "..", "runner");
 
@@ -17,7 +18,7 @@ export async function ensureRunnerImage(): Promise<string> {
   const inspect = Bun.spawn(["docker", "image", "inspect", image], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   if ((await inspect.exited) === 0) return image;
   const cmd = ["docker", "build", "--build-arg", `QA_UID=${uid}`, "--build-arg", `QA_GID=${gid}`, "-t", image, runnerDir];
-  const build = Bun.spawn(cmd, { stdin: "ignore", stdout: 2, stderr: "pipe" });
+  const build = track(Bun.spawn(cmd, { stdin: "ignore", stdout: 2, stderr: "pipe" }));
   let tail = "";
   const decoder = new TextDecoder();
   for await (const chunk of build.stderr) {

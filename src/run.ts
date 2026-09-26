@@ -530,11 +530,12 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
   const finish = once(async (error: string | null): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
-    try {
-      await stopRun(runId);
-      await removeCopies(runDir, runId, ctx.runnerImage);
-    } catch (reason) {
-      teardowns.push(message(reason));
+    for (const step of [() => stopRun(runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
+      try {
+        await step();
+      } catch (reason) {
+        teardowns.push(message(reason));
+      }
     }
     const problems = [error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
