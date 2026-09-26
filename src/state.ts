@@ -1,0 +1,124 @@
+import { randomBytes } from "node:crypto";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { readdir } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+import { z } from "zod";
+import type { RunState } from "./types.ts";
+
+const stateSchema = z.object({
+  runId: z.string().min(1),
+  target: z.object({ repo: z.string(), path: z.string(), commit: z.string() }),
+  options: z.object({ interns: z.number(), minutes: z.number(), confirmMinutes: z.number(), concurrency: z.number() }),
+  phase: z.enum(["preparing", "building", "testing", "grouping", "confirming", "reporting", "done", "failed"]),
+  error: z.string().nullable(),
+  startedAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+  endedAt: z.iso.datetime().nullable(),
+  interns: z.array(
+    z.object({
+      id: z.string().min(1),
+      role: z.enum(["intern", "judge", "confirm"]),
+      charter: z.string(),
+      group: z.string().nullable(),
+      provider: z.enum(["claude", "codex", "cursor"]).nullable(),
+      login: z.string().nullable(),
+      model: z.string().nullable(),
+      project: z.string().nullable(),
+      status: z.enum(["queued", "starting", "testing", "done", "failed", "limited"]),
+      detail: z.string().nullable(),
+      findings: z.int().nonnegative(),
+      rejected: z.int().nonnegative(),
+      startedAt: z.iso.datetime().nullable(),
+      endedAt: z.iso.datetime().nullable(),
+    }),
+  ),
+});
+
+export function runsDir(): string {
+  return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "qa-interns", "runs");
+}
+
+export function newRunId(): string {
+  return randomBytes(4).toString("hex");
+}
+
+export function runDirFor(runId: string): string {
+  return join(runsDir(), runId);
+}
+
+export async function resolveRunDir(arg: string | undefined): Promise<string> {
+  if (arg === undefined) return latestRunDir();
+  const dir = arg.includes("/") ? resolve(arg) : runDirFor(arg);
+  if (!existsSync(join(dir, "state.json"))) {
+    throw new Error(arg.includes("/") ? `No run state at ${join(dir, "state.json")}` : `No run ${arg} in ${runsDir()}`);
+  }
+  return dir;
+}
+
+async function latestRunDir(): Promise<string> {
+  const root = runsDir();
+  if (!existsSync(root)) throw new Error(`No runs in ${root}`);
+  const runs = await Promise.all(
+    (await readdir(root)).map(async (name) => {
+      const dir = join(root, name);
+      return { dir, startedAt: Date.parse((await readState(dir)).startedAt) };
+    }),
+  );
+  runs.sort((a, b) => b.startedAt - a.startedAt);
+  const latest = runs[0];
+  if (latest === undefined) throw new Error(`No runs in ${root}`);
+  return latest.dir;
+}
+
+export async function readState(runDir: string): Promise<RunState> {
+  const file = join(runDir, "state.json");
+  const handle = Bun.file(file);
+  if (!(await handle.exists())) throw new Error(`No run state at ${file}`);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await handle.text());
+  } catch (error) {
+    throw new Error(`${file} is not valid JSON: ${String(error)}`);
+  }
+  const parsed = stateSchema.safeParse(raw);
+  if (!parsed.success) {
+    const problems = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
+    throw new Error(`${file} does not hold a valid run state: ${problems.join("; ")}`);
+  }
+  return parsed.data;
+}
+
+export async function writeState(runDir: string, state: RunState): Promise<void> {
+  const file = join(runDir, "state.json");
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`);
+  renameSync(temp, file);
+}
+
+export function formatStatus(state: RunState): string {
+  const summary = [
+    ["Run", state.runId],
+    ["Target", join(state.target.repo, state.target.path)],
+    ["Commit", state.target.commit],
+    ["Phase", state.phase],
+    ...(state.error === null ? [] : [["Error", state.error]]),
+  ];
+  const interns = [
+    ["Intern", "Role", "Provider", "Status", "Findings", "Detail"],
+    ...state.interns.map((intern) => [
+      intern.id,
+      intern.role,
+      intern.provider ?? "-",
+      intern.status,
+      String(intern.findings),
+      (intern.detail ?? "").replaceAll("\r", " ").replaceAll("\n", " "),
+    ]),
+  ];
+  return [...align(summary), "", ...align(interns)].join("\n");
+}
+
+function align(rows: string[][]): string[] {
+  const widths = rows.reduce<number[]>((max, row) => row.map((cell, column) => Math.max(max[column] ?? 0, cell.length)), []);
+  return rows.map((row) => row.map((cell, column) => cell.padEnd(widths[column] ?? 0)).join("  ").trimEnd());
+}

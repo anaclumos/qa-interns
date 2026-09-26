@@ -1,0 +1,277 @@
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { exportTree, loadTarget, resolveTarget } from "../src/target.ts";
+
+const ledger = join(import.meta.dir, "..", "eval", "ledger");
+const roots: string[] = [];
+
+afterAll(async () => {
+  for (const root of roots) await rm(root, { recursive: true, force: true });
+});
+
+async function scratch(prefix: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  roots.push(root);
+  return root;
+}
+
+function git(dir: string, ...args: string[]): string {
+  const proc = Bun.spawnSync(["git", "-C", dir, "-c", "user.name=QA", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", ...args], { stderr: "pipe" });
+  if (proc.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${proc.stderr.toString()}`);
+  return proc.stdout.toString().trim();
+}
+
+async function commitFiles(root: string, files: Record<string, string>, message: string): Promise<string> {
+  for (const [path, content] of Object.entries(files)) await Bun.write(join(root, path), content);
+  git(root, "add", "-A");
+  git(root, "commit", "-q", "-m", message);
+  return git(root, "rev-parse", "HEAD");
+}
+
+async function repo(files: Record<string, string>): Promise<string> {
+  const root = await scratch("qa-interns-target-");
+  git(root, "init", "-q");
+  await commitFiles(root, files, "fixture");
+  return root;
+}
+
+async function ledgerFiles(prefix: string): Promise<Record<string, string>> {
+  const files: Record<string, string> = {};
+  for (const path of [".devcontainer/devcontainer.json", ".devcontainer/compose.yml", "Dockerfile", "package.json", "src/server.ts", "src/seed.ts"]) {
+    files[`${prefix}${path}`] = await Bun.file(join(ledger, path)).text();
+  }
+  return files;
+}
+
+const settings = {
+  urls: { app: "http://web:3000" },
+  ready: "http://web:3000/health",
+  seed: "bun run src/seed.ts",
+};
+
+function devcontainer(extra: Record<string, unknown> = {}, qa: Record<string, unknown> = settings): string {
+  return JSON.stringify({ name: "Fixture", dockerComposeFile: "compose.yml", service: "web", customizations: { "qa-interns": qa }, ...extra }, null, 2);
+}
+
+function fixture(compose: string, config = devcontainer()): Promise<string> {
+  return repo({ ".devcontainer/devcontainer.json": config, ".devcontainer/compose.yml": compose });
+}
+
+async function load(root: string) {
+  const ref = await resolveTarget(root, "HEAD");
+  const source = await scratch("qa-interns-source-");
+  await exportTree(ref, source);
+  return loadTarget(ref, source);
+}
+
+describe("resolveTarget and exportTree", () => {
+  test("resolve a subdirectory to the repository, its path, and the commit, and export only that tree", async () => {
+    const root = await repo({ ...(await ledgerFiles("apps/ledger/")), "README.md": "monorepo\n", "apps/other/index.ts": "export {};\n" });
+    const head = git(root, "rev-parse", "HEAD");
+    const ref = await resolveTarget(join(root, "apps", "ledger"), "HEAD");
+    expect(ref).toEqual({ repo: await realpath(root), path: "apps/ledger", commit: head });
+
+    const dest = await scratch("qa-interns-export-");
+    await exportTree(ref, dest);
+    expect((await readdir(dest)).sort()).toEqual([".devcontainer", "Dockerfile", "package.json", "src"]);
+    expect(await Bun.file(join(dest, ".devcontainer", "compose.yml")).text()).toBe(await Bun.file(join(ledger, ".devcontainer", "compose.yml")).text());
+  });
+
+  test("export the tree at the resolved commit, not the working tree", async () => {
+    const root = await repo({ "app/.devcontainer/devcontainer.json": devcontainer(), "app/VERSION": "one\n" });
+    const first = git(root, "rev-parse", "HEAD");
+    await commitFiles(root, { "app/VERSION": "two\n" }, "second");
+    await Bun.write(join(root, "app", "VERSION"), "uncommitted\n");
+    await Bun.write(join(root, "app", "untracked.txt"), "untracked\n");
+
+    const older = await resolveTarget(join(root, "app"), "HEAD~1");
+    expect(older.commit).toBe(first);
+    const olderDest = await scratch("qa-interns-export-");
+    await exportTree(older, olderDest);
+    expect(await Bun.file(join(olderDest, "VERSION")).text()).toBe("one\n");
+
+    const head = await resolveTarget(join(root, "app"), "HEAD");
+    const headDest = await scratch("qa-interns-export-");
+    await exportTree(head, headDest);
+    expect(await Bun.file(join(headDest, "VERSION")).text()).toBe("two\n");
+    expect(await Bun.file(join(headDest, "untracked.txt")).exists()).toBe(false);
+  });
+
+  test("resolve the repository root to an empty path and export the whole tree", async () => {
+    const root = await repo({ "app.ts": "export {};\n", ".devcontainer/devcontainer.json": devcontainer() });
+    const ref = await resolveTarget(root, "HEAD");
+    expect(ref.path).toBe("");
+    const dest = await scratch("qa-interns-export-");
+    await exportTree(ref, dest);
+    expect((await readdir(dest)).sort()).toEqual([".devcontainer", "app.ts"]);
+  });
+
+  test("reject a revision that does not exist", async () => {
+    const root = await repo({ "app.ts": "export {};\n" });
+    await expect(resolveTarget(root, "no-such-branch")).rejects.toThrow("no-such-branch^{commit}");
+  });
+});
+
+describe("loadTarget", () => {
+  test("load the Ledger target", async () => {
+    const root = await repo(await ledgerFiles(""));
+    const target = await load(root);
+    expect(target.settings).toEqual({
+      urls: { app: "http://web:3000" },
+      ready: "http://web:3000/health",
+      seed: "bun run src/seed.ts",
+      focus: [
+        "How invoices calculate, store, and show money across currencies, lists, and exports.",
+        "What owners, editors, and viewers can see and change, in the pages and in the API.",
+      ],
+      offLimits: ["Do not change the password of a seeded account."],
+    });
+    expect(target.composeFiles).toEqual(["compose.yml"]);
+    expect(target.service).toBe("web");
+    expect(target.config.workspaceFolder).toBe("/app");
+    expect(target.services).toEqual({
+      web: { build: true, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false },
+      db: { build: false, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false },
+    });
+  });
+
+  test("read limits from the service or its deploy section, the network mode, and services behind a profile", async () => {
+    const compose = `services:
+  web:
+    image: nginx:1.29-alpine
+    mem_limit: 512m
+    cpus: 1.5
+    pids_limit: 200
+  sidecar:
+    image: busybox:1.37
+    network_mode: "service:web"
+  worker:
+    build: ./worker
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+          pids: 64
+  mailer:
+    image: axllent/mailpit:v1.27
+    profiles: ["mail"]
+`;
+    const target = await load(await fixture(compose, devcontainer({ dockerComposeFile: ["compose.yml"] })));
+    expect(target.services).toEqual({
+      web: { build: false, memLimit: 536870912, networkMode: null, hasCpus: true, hasPidsLimit: true, deployLimits: false },
+      sidecar: { build: false, memLimit: null, networkMode: "service:web", hasCpus: false, hasPidsLimit: false, deployLimits: false },
+      worker: { build: true, memLimit: 268435456, networkMode: null, hasCpus: true, hasPidsLimit: true, deployLimits: true },
+      mailer: { build: false, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false },
+    });
+  });
+
+  const unsafe: [string, string, string][] = [
+    ["container_name", "  web:\n    image: nginx:1.29-alpine\n    container_name: shop-web\n", "service web sets container_name shop-web"],
+    ["network_mode host", "  web:\n    image: nginx:1.29-alpine\n    network_mode: host\n", "service web sets network_mode host"],
+    ["network_mode bridge", "  web:\n    image: nginx:1.29-alpine\n    network_mode: bridge\n", "service web sets network_mode bridge"],
+    [
+      "external volume",
+      "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"uploads:/data\"]\nvolumes:\n  uploads:\n    external: true\n    name: shop-uploads\n",
+      "volume uploads is external (shop-uploads)",
+    ],
+    ["named volume", "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"uploads:/data\"]\nvolumes:\n  uploads:\n    name: shop-uploads\n", "volume uploads sets name shop-uploads"],
+    ["external network", "  web:\n    image: nginx:1.29-alpine\n    networks: [\"shared\"]\nnetworks:\n  shared:\n    external: true\n", "network shared is external (shared)"],
+    ["named network", "  web:\n    image: nginx:1.29-alpine\n    networks: [\"backend\"]\nnetworks:\n  backend:\n    name: shop-backend\n", "network backend sets name shop-backend"],
+  ];
+
+  test.each(unsafe)("reject %s", async (_, services, message) => {
+    const root = await fixture(`services:\n${services}`);
+    await expect(load(root)).rejects.toThrow(message);
+  });
+
+  test("report every unsafe pattern in one error", async () => {
+    const compose = `services:
+  web:
+    image: nginx:1.29-alpine
+    container_name: shop-web
+    volumes: ["uploads:/data", "cache:/cache"]
+    networks: ["shared", "backend"]
+  db:
+    image: postgres:17-alpine
+    network_mode: host
+volumes:
+  uploads:
+    external: true
+    name: shop-uploads
+  cache:
+    name: shop-cache
+networks:
+  shared:
+    external: true
+  backend:
+    name: shop-backend
+`;
+    const error = await load(await fixture(compose)).catch((reason: unknown) => reason);
+    if (!(error instanceof Error)) throw new Error("loadTarget accepted unsafe Compose files");
+    const lines = error.message.split("\n").filter((line) => line.startsWith("- "));
+    expect(lines.sort()).toEqual(
+      [
+        "- network backend sets name shop-backend",
+        "- network shared is external (shared)",
+        "- service db sets network_mode host",
+        "- service web sets container_name shop-web",
+        "- volume cache sets name shop-cache",
+        "- volume uploads is external (shop-uploads)",
+      ].sort(),
+    );
+  });
+
+  test("accept fixed host ports, which the override removes", async () => {
+    const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n    ports: [\"8080:80\"]\n"));
+    expect(Object.keys(target.services)).toEqual(["web"]);
+  });
+
+  test("reject a single-container dev container", async () => {
+    const config = JSON.stringify({ name: "Image", image: "mcr.microsoft.com/devcontainers/typescript-node:22", customizations: { "qa-interns": settings } });
+    const root = await repo({ ".devcontainer/devcontainer.json": config });
+    await expect(load(root)).rejects.toThrow("Single-container dev containers are not supported yet");
+  });
+
+  test("reject a service that is not in the Compose files", async () => {
+    const root = await fixture("services:\n  api:\n    image: nginx:1.29-alpine\n");
+    await expect(load(root)).rejects.toThrow("names service web, which is not in its Compose files");
+  });
+
+  test("parse JSONC with comments and trailing commas", async () => {
+    const config = `{
+  // Compose dev container
+  "dockerComposeFile": "compose.yml",
+  "service": "web",
+  "customizations": {
+    "qa-interns": {
+      "urls": { "app": "http://web:8080", "admin": "https://admin.shop.test", },
+      "ready": "curl -fsS http://localhost:8080/health",
+      "seed": "node seed.mjs",
+    },
+  },
+}`;
+    const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n", config));
+    expect(target.settings).toEqual({
+      urls: { app: "http://web:8080", admin: "https://admin.shop.test" },
+      ready: "curl -fsS http://localhost:8080/health",
+      seed: "node seed.mjs",
+      focus: [],
+      offLimits: [],
+    });
+  });
+
+  const invalid: [string, Record<string, unknown>, string][] = [
+    ["a URL that is not http or https", { ...settings, urls: { app: "ftp://web:21" } }, "must be an http: or https: URL"],
+    ["no URLs", { ...settings, urls: {} }, "must name at least one URL"],
+    ["a missing seed", { urls: settings.urls, ready: settings.ready }, "seed"],
+    ["a misspelled key", { ...settings, offlimits: ["Do not delete teams."] }, "offlimits"],
+  ];
+
+  test.each(invalid)("reject settings with %s", async (_, qa, message) => {
+    const root = await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n", devcontainer({}, qa));
+    await expect(load(root)).rejects.toThrow(message);
+  });
+});
