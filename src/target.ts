@@ -14,6 +14,7 @@ export type ComposeService = {
   hasCpus: boolean;
   hasPidsLimit: boolean;
   deployLimits: boolean;
+  replicas: number;
   active: boolean;
 };
 export type Target = TargetRef & {
@@ -94,7 +95,7 @@ const composeSchema = z.object({
       mem_limit: z.string().optional(),
       cpus: z.number().optional(),
       pids_limit: z.number().optional(),
-      deploy: z.object({ resources: z.object({ limits: limitsSchema.optional() }).optional() }).optional(),
+      deploy: z.object({ replicas: z.number().optional(), resources: z.object({ limits: limitsSchema.optional() }).optional() }).optional(),
       profiles: z.array(z.string()).optional(),
       depends_on: z.record(z.string(), z.object({ required: z.boolean().optional() })).optional(),
       privileged: z.boolean().optional(),
@@ -237,6 +238,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       hasCpus: entry.cpus !== undefined || limits?.cpus !== undefined,
       hasPidsLimit: (entry.pids_limit ?? 0) > 0 || (limits?.pids ?? 0) > 0,
       deployLimits: limits !== undefined,
+      replicas: entry.deploy?.replicas ?? 1,
       active,
     };
   }

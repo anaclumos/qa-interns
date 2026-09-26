@@ -134,8 +134,8 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     expect(target.service).toBe("web");
     expect(target.config.workspaceFolder).toBe("/app");
     expect(target.services).toEqual({
-      web: { build: true, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true },
-      db: { build: false, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true },
+      web: { build: true, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 },
+      db: { build: false, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 },
     });
   });
 
@@ -163,10 +163,10 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
 `;
     const target = await load(await fixture(compose, devcontainer({ dockerComposeFile: ["compose.yml"] })));
     expect(target.services).toEqual({
-      web: { build: false, memLimit: 536870912, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: false, active: true },
-      sidecar: { build: false, memLimit: null, networkMode: "service:web", aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true },
-      worker: { build: true, memLimit: 268435456, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: true, active: true },
-      mailer: { build: false, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false },
+      web: { build: false, memLimit: 536870912, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: false, active: true, replicas: 1 },
+      sidecar: { build: false, memLimit: null, networkMode: "service:web", aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 },
+      worker: { build: true, memLimit: 268435456, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: true, active: true, replicas: 1 },
+      mailer: { build: false, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false, replicas: 1 },
     });
   });
 

@@ -183,6 +183,19 @@ describe("loadLogins", () => {
     expect(message).toContain(`logins[1] "claude-2": duplicate store ${link}, already used by logins[0]`);
   });
 
+  test("rejects a store inside another login's store", async () => {
+    const inner = join(cursorStore, "codex-inner");
+    await mkdir(inner, { recursive: true });
+    await Bun.write(join(inner, "auth.json"), "{}");
+    const message = await failure("nested-store.json", {
+      logins: [
+        { id: "cursor-1", provider: "cursor", store: cursorStore },
+        { id: "codex-inner", provider: "codex", store: inner },
+      ],
+    });
+    expect(message).toContain(`logins[1] "codex-inner": store ${inner} contains or is inside the store of logins[0]`);
+  });
+
   test("rejects duplicate ids and reports every problem at once", async () => {
     const message = await failure("many.json", {
       logins: [

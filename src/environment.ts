@@ -141,6 +141,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
   lines.push(
     `  "qa-proxy":`,
     `    image: ${y(spec.runner.image)}`,
+    `    pull_policy: ${y("never")}`,
     `    command: ${y(["node", "/opt/qa-interns/proxy.mjs"])}`,
     `    environment: ${y({ QA_PROXY_ALLOW: spec.egress.join(",") })}`,
     `    networks: ${y(["qa_agent", "qa_egress"])}`,
@@ -150,6 +151,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     "    pids_limit: 128",
     `  "qa-runner":`,
     `    image: ${y(spec.runner.image)}`,
+    `    pull_policy: ${y("never")}`,
     `    tmpfs: ${y([
       "/tmp:rw,nosuid,nodev,size=1g",
       `/home/qa:rw,nosuid,nodev,size=256m,uid=${uid},gid=${gid},mode=0700`,
@@ -172,7 +174,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
 
 export function environmentMemory(target: Target | null): number {
   const services = Object.values(target?.services ?? {}).filter((service) => service.active);
-  return services.reduce((sum, service) => sum + (service.memLimit ?? gib), 2 * gib + 128 * mib);
+  return services.reduce((sum, service) => sum + (service.memLimit ?? gib) * service.replicas, 2 * gib + 128 * mib);
 }
 
 function urlHosts(urls: Record<string, string>): string[] {

@@ -285,8 +285,10 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     const mib = 1024 ** 2;
     const target = await loadTarget(ref, ledgerSource);
     expect(environmentMemory(target)).toBe(4 * gib + 128 * mib);
-    const limited: Target = { ...target, services: { ...target.services, db: { build: false, memLimit: 512 * mib, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true } } };
+    const limited: Target = { ...target, services: { ...target.services, db: { build: false, memLimit: 512 * mib, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 } } };
     expect(environmentMemory(limited)).toBe(3 * gib + 640 * mib);
+    const replicated: Target = { ...limited, services: { ...limited.services, db: { ...limited.services.db!, replicas: 3 } } };
+    expect(environmentMemory(replicated)).toBe(4 * gib + 640 * mib);
     expect(environmentMemory(null)).toBe(2 * gib + 128 * mib);
   });
 
@@ -296,7 +298,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     const target = await loadTarget(ref, ledgerSource);
     const profiled: Target = {
       ...target,
-      services: { web: { build: true, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false } },
+      services: { web: { build: true, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false, replicas: 1 } },
     };
     expect(environmentMemory(profiled)).toBe(2 * gib + 128 * mib);
     expect(await buildImages("3f9a1c2e", profiled, ledgerSource)).toEqual({});

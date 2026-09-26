@@ -5,6 +5,8 @@ import { Readable, Writable } from "node:stream";
 import { version } from "../package.json";
 import type { ProviderSpec } from "./providers.ts";
 
+const startupMs = 5 * 60_000;
+
 export class AgentError extends Error {
   code: number;
   data: unknown;
@@ -93,18 +95,28 @@ export async function openSession(opts: { container: string; provider: ProviderS
     return new Error(`${argv.join(" ")} exited with ${child.exitCode ?? child.signalCode}: ${stderr}`, { cause: error });
   };
 
-  try {
+  const setup = async () => {
     await connection.agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       clientInfo: { name: "qa-interns", version },
     });
-    const session = await connection.agent
+    const started = await connection.agent
       .buildSession({ cwd: "/qa/out", mcpServers: [], _meta: opts.provider.sessionMeta ?? undefined })
       .start();
     if (opts.provider.modeId !== null) {
-      await connection.agent.request(methods.agent.session.setMode, { sessionId: session.sessionId, modeId: opts.provider.modeId });
+      await connection.agent.request(methods.agent.session.setMode, { sessionId: started.sessionId, modeId: opts.provider.modeId });
     }
+    return started;
+  };
+
+  const timedOut = new Error(`${argv.join(" ")} did not start a session within ${startupMs / 1000} seconds`);
+  try {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(timedOut), startupMs);
+    });
+    const session = await Promise.race([setup(), expired]).finally(() => clearTimeout(timer));
 
     return {
       model: modelOf(session.newSessionResponse),
@@ -132,7 +144,7 @@ export async function openSession(opts: { container: string; provider: ProviderS
       close,
     };
   } catch (error) {
-    const reason = await failure(error);
+    const reason = error === timedOut ? timedOut : await failure(error);
     await close();
     throw reason;
   }

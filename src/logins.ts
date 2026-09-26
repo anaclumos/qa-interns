@@ -65,9 +65,13 @@ export async function loadLogins(file: string): Promise<Login[]> {
     if ((entry.store === undefined) === (entry.seat === undefined)) problems.push(`${where}: set exactly one of "store" or "seat"`);
     if (entry.store !== undefined) {
       const store = realpathSync(entry.store);
-      const first = storeIndex.get(store);
-      if (first === undefined) storeIndex.set(store, index);
-      else problems.push(`${where}: duplicate store ${entry.store}, already used by logins[${first}]; one store serves one process at a time`);
+      for (const [other, first] of storeIndex) {
+        if (other === store) problems.push(`${where}: duplicate store ${entry.store}, already used by logins[${first}]; one store serves one process at a time`);
+        else if (store.startsWith(`${other}/`) || other.startsWith(`${store}/`)) {
+          problems.push(`${where}: store ${entry.store} contains or is inside the store of logins[${first}]; a runner mounting one could read or change the other`);
+        }
+      }
+      if (!storeIndex.has(store)) storeIndex.set(store, index);
     }
     if (entry.provider === "claude" && entry.store !== undefined && statSync(join(entry.store, ".credentials.json"), { throwIfNoEntry: false })?.isFile() !== true) {
       problems.push(`${where}: claude store ${entry.store} has no .credentials.json`);
