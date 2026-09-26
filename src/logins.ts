@@ -1,7 +1,7 @@
 import type { Subprocess } from "bun";
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import type { Login, Provider } from "./types.ts";
 
@@ -64,8 +64,9 @@ export async function loadLogins(file: string): Promise<Login[]> {
     const entry = parsed.data;
     if ((entry.store === undefined) === (entry.seat === undefined)) problems.push(`${where}: set exactly one of "store" or "seat"`);
     if (entry.store !== undefined) {
-      const first = storeIndex.get(resolve(entry.store));
-      if (first === undefined) storeIndex.set(resolve(entry.store), index);
+      const store = realpathSync(entry.store);
+      const first = storeIndex.get(store);
+      if (first === undefined) storeIndex.set(store, index);
       else problems.push(`${where}: duplicate store ${entry.store}, already used by logins[${first}]; one store serves one process at a time`);
     }
     if (entry.provider === "claude" && entry.store !== undefined && statSync(join(entry.store, ".credentials.json"), { throwIfNoEntry: false })?.isFile() !== true) {
@@ -110,7 +111,7 @@ async function seat(login: Login, intern: string): Promise<Seat | null> {
       .map((line) => line.trim())
       .filter((line) => line !== "")
       .at(-1);
-    if (exitCode === 0 && store !== undefined && isAbsolute(store) && isDirectory(store)) return { store, keeper };
+    if (exitCode === 0 && store !== undefined && isAbsolute(store) && isDirectory(store)) return { store: realpathSync(store), keeper };
   } catch (error) {
     keeper.kill();
     throw error;

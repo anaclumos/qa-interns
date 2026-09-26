@@ -1,3 +1,4 @@
+import { stripControl } from "./findings.ts";
 import type { Group, InternState, Rejected, RunState } from "./types.ts";
 
 export function reproductions(group: Group): string[] {
@@ -123,7 +124,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
   }
 
   return {
-    markdown: `${lines.join("\n")}\n`,
+    markdown: stripControl(`${lines.join("\n")}\n`),
     json: {
       run: summary,
       groups: [...confirmed, ...seenOnce].map((row) => ({

@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportTree, loadTarget, resolveTarget } from "../src/target.ts";
@@ -134,8 +134,8 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     expect(target.service).toBe("web");
     expect(target.config.workspaceFolder).toBe("/app");
     expect(target.services).toEqual({
-      web: { build: true, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
-      db: { build: false, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
+      web: { build: true, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true },
+      db: { build: false, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true },
     });
   });
 
@@ -163,11 +163,27 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
 `;
     const target = await load(await fixture(compose, devcontainer({ dockerComposeFile: ["compose.yml"] })));
     expect(target.services).toEqual({
-      web: { build: false, memLimit: 536870912, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: false, profiles: [] },
-      sidecar: { build: false, memLimit: null, networkMode: "service:web", aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
-      worker: { build: true, memLimit: 268435456, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: true, profiles: [] },
-      mailer: { build: false, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: ["mail"] },
+      web: { build: false, memLimit: 536870912, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: false, active: true },
+      sidecar: { build: false, memLimit: null, networkMode: "service:web", aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true },
+      worker: { build: true, memLimit: 268435456, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: true, active: true },
+      mailer: { build: false, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false },
     });
+  });
+
+  test("treat a service behind a profile as active when it is the dev container service or in runServices", async () => {
+    const compose = `services:
+  web:
+    image: nginx:1.29-alpine
+    profiles: ["dev"]
+  worker:
+    image: busybox:1.37
+    profiles: ["jobs"]
+  mailer:
+    image: axllent/mailpit:v1.27
+    profiles: ["mail"]
+`;
+    const target = await load(await fixture(compose, devcontainer({ runServices: ["worker"] })));
+    expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({ web: true, worker: true, mailer: false });
   });
 
   const unsafe: [string, string, string][] = [
@@ -187,12 +203,38 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     [
       "the Docker socket",
       "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"/var/run/docker.sock:/var/run/docker.sock\"]\n",
-      "service web mounts the Docker socket /var/run/docker.sock",
+      "service web mounts /var/run/docker.sock, which resolves to ",
     ],
     [
       "the Docker socket under /run in long syntax",
       "  web:\n    image: nginx:1.29-alpine\n    volumes:\n      - type: bind\n        source: /run/docker.sock\n        target: /docker.sock\n        read_only: true\n",
-      "service web mounts the Docker socket /run/docker.sock",
+      "service web mounts /run/docker.sock, which resolves to ",
+    ],
+    ["a host folder", "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"/etc:/host-etc:ro\"]\n", "service web mounts /etc, which resolves to /etc, outside the target directory"],
+    ["ipc host", "  web:\n    image: nginx:1.29-alpine\n    ipc: host\n", "service web sets ipc host"],
+    ["userns_mode host", "  web:\n    image: nginx:1.29-alpine\n    userns_mode: host\n", "service web sets userns_mode host"],
+    ["a device", "  web:\n    image: nginx:1.29-alpine\n    devices: [\"/dev/fuse:/dev/fuse\"]\n", "service web maps device /dev/fuse"],
+    ["an added capability", "  web:\n    image: nginx:1.29-alpine\n    cap_add: [\"NET_ADMIN\"]\n", "service web adds capability NET_ADMIN"],
+    ["an unconfined security option", "  web:\n    image: nginx:1.29-alpine\n    security_opt: [\"seccomp:unconfined\"]\n", "service web sets security_opt seccomp:unconfined"],
+    [
+      "a network alias that names another service",
+      "  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"db\"]\n  db:\n    image: postgres:17-alpine\n",
+      "service web declares network alias db, the name of another service",
+    ],
+    [
+      "a network alias that QA Interns reserves",
+      "  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"qa-proxy\"]\n",
+      "service web declares network alias qa-proxy, a name QA Interns reserves",
+    ],
+    [
+      "a network alias two services declare",
+      "  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"shop\"]\n  api:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"shop\"]\n",
+      "services api and web both declare network alias shop",
+    ],
+    [
+      "two buildable services whose names differ only by case",
+      "  web:\n    build: .\n  Web:\n    build: .\n",
+      "services Web and web differ only by case, so their prebuilt image tags collide",
     ],
     [
       "a privileged service behind a profile",
@@ -246,6 +288,20 @@ networks:
   test("accept fixed host ports, which the override removes", async () => {
     const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n    ports: [\"8080:80\"]\n"));
     expect(Object.keys(target.services)).toEqual(["web"]);
+  });
+
+  test("accept bind mounts of the target, a missing folder inside it, and a confined security option", async () => {
+    const compose = "services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: [\"..:/app\", \"./data:/data\"]\n    security_opt: [\"no-new-privileges:true\"]\n";
+    const target = await load(await fixture(compose));
+    expect(Object.keys(target.services)).toEqual(["web"]);
+  });
+
+  test("reject a bind mount through a symbolic link in the target that points outside it", async () => {
+    const root = await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: [\"../host:/host\"]\n");
+    await symlink("/etc", join(root, "host"));
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "link");
+    await expect(load(root)).rejects.toThrow("/host, which resolves to /etc, outside the target directory");
   });
 
   test("reject a single-container dev container", async () => {

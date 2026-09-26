@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rename, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { parseGroups, readConfirmation, readFindings } from "../src/findings.ts";
 import type { FindingEnvironment } from "../src/types.ts";
+
+const asRoot = process.getuid?.() === 0;
 
 const environment: FindingEnvironment = { commit: "3f9c2e1d8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d", environment: "qa-1a2b3c4d-i1", provider: "claude", model: "claude-opus-5-5" };
 
@@ -190,7 +192,7 @@ describe("readFindings", () => {
     await write("f1", "findings", "not a folder");
     expect(await readFindings(runDir, "f1", environment)).toEqual({
       findings: [],
-      rejected: [{ intern: "f1", file: "interns/f1/out/findings", reason: "the findings folder is not a directory" }],
+      rejected: [{ intern: "f1", file: "interns/f1/out/findings", reason: "the findings folder is a symbolic link or not a directory" }],
     });
   });
 
@@ -199,14 +201,14 @@ describe("readFindings", () => {
     ["the out folder", "f4", "out"],
   ];
 
-  test.each(unreadable)("rejects a findings folder it cannot read when %s has mode 000", async (_, intern, locked) => {
+  test.skipIf(asRoot).each(unreadable)("rejects a findings folder it cannot read when %s has mode 000", async (_, intern, locked) => {
     await finding(intern, "pagination-overlap", pagination);
     const dir = path.join(runDir, "interns", intern, locked);
     await chmod(dir, 0o000);
     try {
       expect(await readFindings(runDir, intern, environment)).toEqual({
         findings: [],
-        rejected: [{ intern, file: `interns/${intern}/out/findings`, reason: "the findings folder is not readable (EACCES)" }],
+        rejected: [{ intern, file: `interns/${intern}/out/findings`, reason: "the findings folder is not readable" }],
       });
     } finally {
       await chmod(dir, 0o755);
@@ -219,8 +221,34 @@ describe("readFindings", () => {
     await symlink(path.join(outside, "findings"), path.join(runDir, "interns", "f2", "out", "findings"));
     expect(await readFindings(runDir, "f2", environment)).toEqual({
       findings: [],
-      rejected: [{ intern: "f2", file: "interns/f2/out/findings", reason: "the findings folder is a symbolic link" }],
+      rejected: [{ intern: "f2", file: "interns/f2/out/findings", reason: "the findings folder is a symbolic link or not a directory" }],
     });
+  });
+
+  test("rejects the findings folder when it is swapped for a symlink between two reads", async () => {
+    await finding("s1", "pagination-overlap", { ...pagination, evidence: [] });
+    expect((await readFindings(runDir, "s1", environment)).findings.map((item) => item.id)).toEqual(["s1/pagination-overlap"]);
+    const out = path.join(runDir, "interns", "s1", "out");
+    await Bun.write(path.join(outside, "swapped", "planted.json"), JSON.stringify({ ...pagination, evidence: [] }));
+    await rename(path.join(out, "findings"), path.join(out, "findings-before"));
+    await symlink(path.join(outside, "swapped"), path.join(out, "findings"));
+    expect(await readFindings(runDir, "s1", environment)).toEqual({
+      findings: [],
+      rejected: [{ intern: "s1", file: "interns/s1/out/findings", reason: "the findings folder is a symbolic link or not a directory" }],
+    });
+  });
+
+  test("strips control characters before validating, keeps zero-width joiners, and rejects a title of only control characters", async () => {
+    await finding("b1", "control-title", { ...pagination, title: "\u0007\u{202e}\u0000", evidence: [] });
+    await finding("b1", "bidi-title", { ...pagination, title: "Totals \u{202e}disagree\u{2069} for \u{1f469}\u{200d}\u{1f4bb}", evidence: [] });
+    const { findings, rejected } = await readFindings(runDir, "b1", environment);
+    expect(findings.map((item) => [item.id, item.title])).toEqual([["b1/bidi-title", "Totals disagree for \u{1f469}\u{200d}\u{1f4bb}"]]);
+    expect(rejected).toEqual([{ intern: "b1", file: "interns/b1/out/findings/control-title.json", reason: "title must be a non-empty string" }]);
+  });
+
+  test("rejects a finding file whose name holds a control character", async () => {
+    await finding("i2", "bell\u0007", pagination);
+    expect(await reasonOf("bell\u0007")).toBe("the file name contains a control character");
   });
 
   test("rejects a finding file that is a symlink to a file outside the out dir", async () => {
@@ -234,7 +262,7 @@ describe("readFindings", () => {
     expect(await reasonOf("pipe")).toBe("the file is not a regular file");
   });
 
-  test("rejects a finding file it cannot read", async () => {
+  test.skipIf(asRoot)("rejects a finding file it cannot read", async () => {
     await finding("i2", "locked", pagination);
     await chmod(findingPath("i2", "locked"), 0o000);
     expect(await reasonOf("locked")).toBe("the file is not readable");
@@ -242,7 +270,7 @@ describe("readFindings", () => {
 
   test("rejects a finding file above 1 MiB", async () => {
     await finding("i2", "huge", { ...pagination, observed: "x".repeat(1024 ** 2) });
-    expect(await reasonOf("huge")).toBe(`the file is ${Bun.file(findingPath("i2", "huge")).size} bytes, above the limit of 1 MiB`);
+    expect(await reasonOf("huge")).toBe("the file is above the limit of 1 MiB");
   });
 
   test("accepts null contradicts for a kind other than inconsistency", async () => {

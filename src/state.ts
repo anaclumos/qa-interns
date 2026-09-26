@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,6 +9,7 @@ import type { RunState } from "./types.ts";
 const stateSchema = z.object({
   runId: z.string().min(1),
   pid: z.int().positive(),
+  pidStart: z.int().nonnegative(),
   target: z.object({ repo: z.string(), path: z.string(), commit: z.string() }),
   options: z.object({ interns: z.number(), minutes: z.number(), confirmMinutes: z.number(), concurrency: z.number() }),
   phase: z.enum(["preparing", "building", "testing", "grouping", "confirming", "reporting", "done", "failed"]),
@@ -38,6 +39,14 @@ const stateSchema = z.object({
 
 export function runsDir(): string {
   return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "qa-interns", "runs");
+}
+
+export function processStart(pid: number): number {
+  const file = `/proc/${pid}/stat`;
+  const stat = readFileSync(file, "utf8");
+  const start = Number(stat.slice(stat.lastIndexOf(")") + 1).trim().split(" ")[19]);
+  if (!Number.isSafeInteger(start)) throw new Error(`${file} has no start time in field 22`);
+  return start;
 }
 
 export function newRunId(): string {

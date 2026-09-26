@@ -1,5 +1,5 @@
 import { constants, existsSync } from "node:fs";
-import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
+import { open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { kinds, type Confirmation, type Finding, type FindingEnvironment, type Rejected } from "./types.ts";
@@ -15,17 +15,23 @@ const openFailures = new Map([
   ["ENXIO", "the file is not a regular file"],
 ]);
 
-function errorCode(error: unknown): string | null {
+const folderFailures = new Map([
+  ["ENOTDIR", "the findings folder is a symbolic link or not a directory"],
+  ["ELOOP", "the findings folder is a symbolic link or not a directory"],
+  ["EACCES", "the findings folder is not readable"],
+]);
+
+export function errorCode(error: unknown): string | null {
   return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
+function control(char: string): boolean {
+  const code = char.codePointAt(0) ?? 0;
+  return code < 0x20 || (code >= 0x7f && code <= 0x9f) || (code >= 0x2028 && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+}
+
 export function stripControl(text: string): string {
-  return [...text]
-    .filter((char) => {
-      const code = char.charCodeAt(0);
-      return char === "\n" || char === "\t" || (code >= 0x20 && code < 0x7f) || code > 0x9f;
-    })
-    .join("");
+  return [...text].filter((char) => char === "\n" || char === "\t" || !control(char)).join("");
 }
 
 export async function readAgentFile(file: string): Promise<string> {
@@ -34,10 +40,16 @@ export async function readAgentFile(file: string): Promise<string> {
     throw reason === undefined ? error : new Invalid(reason);
   });
   try {
-    const info = await handle.stat();
-    if (!info.isFile()) throw new Invalid("the file is not a regular file");
-    if (info.size > maxBytes) throw new Invalid(`the file is ${info.size} bytes, above the limit of 1 MiB`);
-    return await handle.readFile("utf8");
+    if (!(await handle.stat()).isFile()) throw new Invalid("the file is not a regular file");
+    const buffer = Buffer.alloc(maxBytes + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > maxBytes) throw new Invalid("the file is above the limit of 1 MiB");
+    return buffer.toString("utf8", 0, length);
   } finally {
     await handle.close();
   }
@@ -54,7 +66,10 @@ function fields(message: string, allowed: string[]) {
   };
 }
 
-const text = z.string({ error: required("must be a non-empty string") }).min(1, { error: "must be a non-empty string" });
+const text = z.preprocess(
+  (value) => (typeof value === "string" ? stripControl(value) : value),
+  z.string({ error: required("must be a non-empty string") }).min(1, { error: "must be a non-empty string" }),
+);
 
 const paths = z.array(text, { error: required("must be an array of paths") });
 
@@ -154,52 +169,48 @@ export async function readFindings(
   environment: FindingEnvironment,
 ): Promise<{ findings: Finding[]; rejected: Rejected[] }> {
   const folder = path.join("interns", intern, "out", "findings");
-  const dir = path.join(runDir, folder);
   const findings: Finding[] = [];
   const rejected: Rejected[] = [];
-  let names: string[];
+  let handle: FileHandle | null = null;
   try {
-    const info = await lstat(dir);
-    if (!info.isDirectory()) {
-      rejected.push({ intern, file: folder, reason: `the findings folder is ${info.isSymbolicLink() ? "a symbolic link" : "not a directory"}` });
+    let names: string[];
+    try {
+      handle = await open(path.join(runDir, folder), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      names = (await readdir(`/proc/self/fd/${handle.fd}`)).filter((name) => name.endsWith(".json")).sort();
+    } catch (error) {
+      const code = errorCode(error);
+      if (code === "ENOENT") return { findings, rejected };
+      const reason = folderFailures.get(code ?? "");
+      if (reason === undefined) throw error;
+      rejected.push({ intern, file: folder, reason });
       return { findings, rejected };
     }
-    names = (await readdir(dir)).filter((name) => name.endsWith(".json")).sort();
-  } catch (error) {
-    const code = errorCode(error);
-    if (code === "ENOENT") return { findings, rejected };
-    if (code === null) throw error;
-    rejected.push({ intern, file: folder, reason: `the findings folder is not readable (${code})` });
-    return { findings, rejected };
-  }
-  for (const name of names) {
-    const file = path.join(folder, name);
-    try {
-      const data = parse(findingSchema, await readAgentFile(path.join(dir, name)));
-      const contradicts = data.contradicts ?? null;
-      if (data.kind === "inconsistency" && contradicts === null) throw new Invalid("contradicts is required when kind is inconsistency");
-      findings.push({
-        id: stripControl(`${intern}/${name.slice(0, -".json".length)}`),
-        intern,
-        title: stripControl(data.title),
-        kind: data.kind,
-        conditions: {
-          account: stripControl(data.conditions.account),
-          data: stripControl(data.conditions.data),
-          viewport: stripControl(data.conditions.viewport),
-          browser: stripControl(data.conditions.browser),
-          network: stripControl(data.conditions.network),
-        },
-        steps: data.steps.map(stripControl),
-        observed: stripControl(data.observed),
-        contradicts: contradicts === null ? null : stripControl(contradicts),
-        evidence: (await evidence(runDir, intern, data.evidence)).map(stripControl),
-        environment,
-      });
-    } catch (err) {
-      if (!(err instanceof Invalid)) throw err;
-      rejected.push({ intern, file, reason: err.message });
+    for (const name of names) {
+      const file = path.join(folder, name);
+      try {
+        if ([...name].some(control)) throw new Invalid("the file name contains a control character");
+        const data = parse(findingSchema, await readAgentFile(`/proc/self/fd/${handle.fd}/${name}`));
+        const contradicts = data.contradicts ?? null;
+        if (data.kind === "inconsistency" && contradicts === null) throw new Invalid("contradicts is required when kind is inconsistency");
+        findings.push({
+          id: `${intern}/${name.slice(0, -".json".length)}`,
+          intern,
+          title: data.title,
+          kind: data.kind,
+          conditions: data.conditions,
+          steps: data.steps,
+          observed: data.observed,
+          contradicts,
+          evidence: (await evidence(runDir, intern, data.evidence)).map(stripControl),
+          environment,
+        });
+      } catch (err) {
+        if (!(err instanceof Invalid)) throw err;
+        rejected.push({ intern, file, reason: err.message });
+      }
     }
+  } finally {
+    await handle?.close();
   }
   return { findings, rejected };
 }
@@ -220,5 +231,5 @@ export function parseGroups(raw: string, ids: string[]): string[][] {
 
 export async function readConfirmation(runDir: string, intern: string): Promise<Confirmation> {
   const data = parse(confirmationSchema, await readAgentFile(path.join(runDir, "interns", intern, "out", "confirmation.json")));
-  return { reproduced: data.reproduced, observed: stripControl(data.observed), evidence: (await evidence(runDir, intern, data.evidence)).map(stripControl) };
+  return { reproduced: data.reproduced, observed: data.observed, evidence: (await evidence(runDir, intern, data.evidence)).map(stripControl) };
 }

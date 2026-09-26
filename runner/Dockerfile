@@ -34,7 +34,7 @@ RUN curl -fsSLo /tmp/cursor-agent.tar.gz https://downloads.cursor.com/lab/2026.0
 
 ARG QA_UID
 ARG QA_GID
-RUN if [ -z "$QA_UID" ] || [ -z "$QA_GID" ]; then echo "QA_UID and QA_GID must be set. Build the runner image with qa-interns doctor, or pass --build-arg QA_UID=<uid> --build-arg QA_GID=<gid>." >&2; exit 1; fi
+RUN if [ -z "$QA_UID" ] || [ -z "$QA_GID" ] || [ "$QA_UID" -eq 0 ] || [ "$QA_GID" -eq 0 ]; then echo "QA_UID and QA_GID must be set to a uid and gid other than 0 (root). Build the runner image with qa-interns doctor, or pass --build-arg QA_UID=<uid> --build-arg QA_GID=<gid>." >&2; exit 1; fi
 RUN userdel --remove node \
  && groupadd --non-unique --gid "$QA_GID" qa \
  && useradd --non-unique --uid "$QA_UID" --gid qa --create-home --home-dir /home/qa --shell /bin/bash qa \

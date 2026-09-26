@@ -6,6 +6,7 @@ import {
   buildImages,
   environmentMemory,
   freeSlot,
+  removeCopies,
   runnerEnv,
   startEnvironment,
   stopEnvironment,
@@ -19,8 +20,8 @@ import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
 import { renderReport } from "./report.ts";
-import { newRunId, runDirFor, writeState } from "./state.ts";
-import { exportTree, loadTarget, resolveTarget, type Target } from "./target.ts";
+import { newRunId, processStart, runDirFor, writeState } from "./state.ts";
+import { exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
 import type { Confirmation, Finding, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
@@ -60,7 +61,7 @@ type Context = {
   reserved: Set<number>;
   sessions: Set<Session>;
   startups: Limit;
-  networks: Limit;
+  teardowns: string[];
   held: number;
   waiting: (() => void)[];
   stopping: boolean;
@@ -138,7 +139,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     reserved: new Set(),
     sessions: new Set(),
     startups: limit(4),
-    networks: limit(1),
+    teardowns: [],
     held: 0,
     waiting: [],
     stopping: false,
@@ -221,10 +222,10 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
   const project = `qa-${ctx.runId}-${id}`;
   let slot: number | undefined;
   let started = false;
-  const teardown = () => ctx.networks(() => stopEnvironment(ctx.runDir, id, project, ctx.runnerImage));
+  const teardown = () => stopEnvironment(ctx.runDir, id, project, ctx.runnerImage);
   try {
     await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, project, startedAt: now() });
-    slot = await ctx.networks(() => freeSlot(ctx.reserved));
+    slot = await freeSlot(ctx.reserved);
     for (;;) {
       const spec = environmentSpec(ctx, id, slot, target, lease);
       const env = await ctx.startups(async () => {
@@ -251,6 +252,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
     try {
       if (started) await teardown();
     } catch (error) {
+      ctx.teardowns.push(`${id}: ${message(error)}`);
       await note(`teardown failed: ${message(error)}`);
     } finally {
       if (slot !== undefined) ctx.reserved.delete(slot);
@@ -427,6 +429,7 @@ function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args:
 
 async function stop(ctx: Context, running: Promise<unknown> | undefined): Promise<void> {
   ctx.stopping = true;
+  killCommands();
   const closed = await Promise.allSettled(
     [...ctx.sessions].map(async (session) => {
       try {
@@ -488,6 +491,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const state: RunState = {
     runId,
     pid: process.pid,
+    pidStart: processStart(process.pid),
     target: { repo: ref.repo, path: ref.path, commit: ref.commit },
     options: { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 },
     phase: "preparing",
@@ -525,13 +529,14 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let groups: Group[] | null = null;
 
   const finish = once(async (error: string | null): Promise<string | null> => {
-    let teardown: string | null = null;
+    const teardowns = [...ctx.teardowns];
     try {
       await stopRun(runId);
+      await removeCopies(runDir, runId, ctx.runnerImage);
     } catch (reason) {
-      teardown = message(reason);
+      teardowns.push(message(reason));
     }
-    const problems = [error, teardown === null ? null : `teardown failed: ${teardown}`].filter((entry) => entry !== null);
+    const problems = [error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
@@ -540,7 +545,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await save();
-    return teardown;
+    return teardowns.length === 0 ? null : teardowns.join("; ");
   });
 
   const phases = async () => {

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadLogins, Scheduler, type Lease } from "../src/logins.ts";
@@ -171,6 +171,18 @@ describe("loadLogins", () => {
     expect(message).toContain(`logins[1] "claude-2": duplicate store ${claudeStore}/../claude-1/, already used by logins[0]`);
   });
 
+  test("rejects two logins that name the same store through a symbolic link", async () => {
+    const link = join(dir, "claude-link");
+    await symlink(claudeStore, link);
+    const message = await failure("linked-store.json", {
+      logins: [
+        { id: "claude-1", provider: "claude", store: claudeStore },
+        { id: "claude-2", provider: "claude", store: link },
+      ],
+    });
+    expect(message).toContain(`logins[1] "claude-2": duplicate store ${link}, already used by logins[0]`);
+  });
+
   test("rejects duplicate ids and reports every problem at once", async () => {
     const message = await failure("many.json", {
       logins: [
@@ -276,6 +288,21 @@ describe("Scheduler", () => {
     const others = await Promise.all(["j2", "j3"].map((intern) => scheduler.acquire(intern, ["cursor"])));
     expect(others.map((lease) => lease?.store)).toEqual([join(pool, "j2"), join(pool, "j3")]);
     for (const lease of [retry, ...others]) lease?.release();
+  });
+
+  test("a seat store reached through a symbolic link is the same store as its target once exhausted", async () => {
+    const shared = join(dir, "shared-seat");
+    await mkdir(join(dir, "links"), { recursive: true });
+    await mkdir(shared);
+    await symlink(shared, join(dir, "links", "k1"));
+    await symlink(shared, join(dir, "links", "k2"));
+    await Bun.write(join(dir, "linked-seat.sh"), ["#!/bin/sh", "echo \"$(dirname \"$0\")/links/$QA_INTERNS_INTERN\"", ""].join("\n"));
+    const scheduler = new Scheduler([login("codex-pool", "codex", 2, ["sh", join(dir, "linked-seat.sh")])]);
+    const first = held(await scheduler.acquire("k1", []));
+    expect(first.store).toBe(await realpath(shared));
+    scheduler.exhaust(first);
+    first.release();
+    expect(await scheduler.acquire("k2", [])).toBeNull();
   });
 
   test("a failing seat command or a relative path moves on to the next login", async () => {

@@ -30,6 +30,7 @@ export type RunPhase = "preparing" | "building" | "testing" | "grouping" | "conf
 export type RunState = {
   runId: string;
   pid: number;
+  pidStart: number;
   target: { repo: string; path: string; commit: string };
   options: { interns: number; minutes: number; confirmMinutes: number; concurrency: number };
   phase: RunPhase;

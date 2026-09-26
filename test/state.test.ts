@@ -1,8 +1,8 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { formatStatus, newRunId, readState, resolveRunDir, runDirFor, runsDir, writeState } from "../src/state.ts";
+import { formatStatus, newRunId, processStart, readState, resolveRunDir, runDirFor, runsDir, writeState } from "../src/state.ts";
 import type { InternState, RunState } from "../src/types.ts";
 
 let home: string;
@@ -43,6 +43,7 @@ function runState(runId: string, startedAt: string): RunState {
   return {
     runId,
     pid: 48213,
+    pidStart: 8312765,
     target: { repo: "/home/qa/src/ledger", path: "apps/web", commit: "8d2f1c07b9e4a3f6d5c2b1a0e9f8d7c6b5a4f3e2" },
     options: { interns: 3, minutes: 30, confirmMinutes: 10, concurrency: 3 },
     phase: "testing",
@@ -142,6 +143,28 @@ describe("resolveRunDir", () => {
     expect(await resolveRunDir(`${older}/`)).toBe(older);
     await expect(resolveRunDir("deadbeef")).rejects.toThrow(`No run deadbeef in ${runsDir()}`);
     await expect(resolveRunDir(join(home, "elsewhere"))).rejects.toThrow(`No run state at ${join(home, "elsewhere", "state.json")}`);
+  });
+});
+
+describe("processStart", () => {
+  test("reads field 22 after the last parenthesis, stays stable, and fails once the process is gone", async () => {
+    const sleep = Bun.which("sleep");
+    if (sleep === null) throw new Error("sleep is not on PATH");
+    const renamed = join(home, "sleep) 1 (2");
+    await symlink(sleep, renamed);
+    const odd = Bun.spawn([renamed, "30"]);
+    const plain = Bun.spawn([sleep, "30"]);
+    try {
+      const start = processStart(odd.pid);
+      expect(processStart(odd.pid)).toBe(start);
+      expect(start).toBeGreaterThanOrEqual(processStart(process.pid));
+      expect(start).toBeLessThanOrEqual(processStart(plain.pid));
+    } finally {
+      odd.kill();
+      plain.kill();
+      await Promise.all([odd.exited, plain.exited]);
+    }
+    expect(() => processStart(odd.pid)).toThrow("ENOENT");
   });
 });
 

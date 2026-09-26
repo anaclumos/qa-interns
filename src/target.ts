@@ -1,5 +1,7 @@
-import { appendFile, mkdir } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import type { Subprocess } from "bun";
+import { existsSync } from "node:fs";
+import { appendFile, mkdir, realpath } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import { z } from "zod";
 
 export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[] };
@@ -12,7 +14,7 @@ export type ComposeService = {
   hasCpus: boolean;
   hasPidsLimit: boolean;
   deployLimits: boolean;
-  profiles: string[];
+  active: boolean;
 };
 export type Target = TargetRef & {
   settings: QaSettings;
@@ -24,18 +26,26 @@ export type Target = TargetRef & {
 
 type CommandOptions = { env?: Record<string, string | undefined>; log?: string; timeout?: number };
 
+const running = new Set<Subprocess>();
+
+export function killCommands(): void {
+  for (const proc of running) proc.kill();
+}
+
 export async function capture(cmd: string[], options: CommandOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
-  const start = performance.now();
-  const proc = Bun.spawn(cmd, { env: options.env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: options.timeout });
-  const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  const argv = options.timeout === undefined ? cmd : ["timeout", "--kill-after=10s", `${options.timeout / 1000}s`, ...cmd];
+  const proc = Bun.spawn(argv, { env: options.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  running.add(proc);
+  const output = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  const [stdout, stderr, code] = await output.finally(() => running.delete(proc));
   if (options.log !== undefined) await appendFile(options.log, stderr);
-  if (options.timeout !== undefined && proc.signalCode !== null && performance.now() - start >= options.timeout) {
+  if (options.timeout !== undefined && (code === 124 || code === 137)) {
     throw new Error(`${cmd.join(" ")} timed out after ${options.timeout / 1000} seconds: ${stderr.trim().slice(-2000)}`);
   }
   return { code, stdout, stderr };
 }
 
-function failure(cmd: string[], code: number, stderr: string): Error {
+export function failure(cmd: string[], code: number, stderr: string): Error {
   return new Error(`${cmd.join(" ")} exited with ${code}: ${stderr.trim().slice(-2000)}`);
 }
 
@@ -83,7 +93,12 @@ const composeSchema = z.object({
       profiles: z.array(z.string()).optional(),
       privileged: z.boolean().optional(),
       pid: z.string().optional(),
-      volumes: z.array(z.object({ source: z.string().optional() })).optional(),
+      ipc: z.string().optional(),
+      userns_mode: z.string().optional(),
+      devices: z.array(z.object({ source: z.string() })).optional(),
+      cap_add: z.array(z.string()).optional(),
+      security_opt: z.array(z.string()).optional(),
+      volumes: z.array(z.object({ type: z.string(), source: z.string().optional() })).optional(),
     }),
   ),
   volumes: z.record(z.string(), z.object({ name: z.string(), external: z.boolean().optional() })).optional(),
@@ -91,7 +106,6 @@ const composeSchema = z.object({
 });
 
 const reservedServices = ["qa-proxy", "qa-runner"];
-const dockerSockets = ["/var/run/docker.sock", "/run/docker.sock"];
 
 export async function resolveTarget(dir: string, rev: string): Promise<TargetRef> {
   const git = ["git", "-C", dir, "rev-parse"];
@@ -123,6 +137,11 @@ function bytes(value: string, where: string): number {
   return size;
 }
 
+function within(dir: string, file: string): boolean {
+  const path = relative(dir, file);
+  return path !== ".." && !path.startsWith("../");
+}
+
 export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Target> {
   const file = join(sourceDir, ".devcontainer", "devcontainer.json");
   const object = z.record(z.string(), z.unknown()).safeParse(Bun.JSONC.parse(await Bun.file(file).text()));
@@ -133,7 +152,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   }
   const parsed = configSchema.safeParse(config);
   if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
-  const { dockerComposeFile, service } = parsed.data;
+  const { dockerComposeFile, service, runServices } = parsed.data;
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
   const files = composeFiles.flatMap((entry) => ["-f", resolve(sourceDir, ".devcontainer", entry)]);
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
@@ -141,7 +160,12 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
 
+  const named = [service, ...(runServices ?? [])];
+  const root = await realpath(sourceDir);
   const violations: string[] = [];
+  const services: Record<string, ComposeService> = {};
+  const tags = new Map<string, string>();
+  const aliasOwners = new Map<string, string>();
   for (const [name, entry] of Object.entries(project.services)) {
     if (reservedServices.includes(name)) violations.push(`service ${name} uses a name QA Interns reserves`);
     if (entry.container_name !== undefined) violations.push(`service ${name} sets container_name ${entry.container_name}`);
@@ -150,9 +174,45 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     }
     if (entry.privileged === true) violations.push(`service ${name} sets privileged`);
     if (entry.pid === "host") violations.push(`service ${name} sets pid host`);
-    for (const volume of entry.volumes ?? []) {
-      if (volume.source !== undefined && dockerSockets.includes(volume.source)) violations.push(`service ${name} mounts the Docker socket ${volume.source}`);
+    if (entry.ipc === "host") violations.push(`service ${name} sets ipc host`);
+    if (entry.userns_mode === "host") violations.push(`service ${name} sets userns_mode host`);
+    for (const device of entry.devices ?? []) violations.push(`service ${name} maps device ${device.source}`);
+    for (const capability of entry.cap_add ?? []) violations.push(`service ${name} adds capability ${capability}`);
+    for (const option of entry.security_opt ?? []) {
+      if (option.includes("unconfined")) violations.push(`service ${name} sets security_opt ${option}`);
     }
+    for (const volume of entry.volumes ?? []) {
+      if (volume.type !== "bind" || volume.source === undefined) continue;
+      const exists = existsSync(volume.source);
+      const real = exists ? await realpath(volume.source) : resolve(volume.source);
+      if (!within(exists ? root : sourceDir, real)) violations.push(`service ${name} mounts ${volume.source}, which resolves to ${real}, outside the target directory`);
+    }
+    const aliases = [...new Set(Object.values(entry.networks ?? {}).flatMap((network) => network?.aliases ?? []))];
+    for (const alias of aliases) {
+      if (reservedServices.includes(alias)) violations.push(`service ${name} declares network alias ${alias}, a name QA Interns reserves`);
+      else if (alias !== name && Object.hasOwn(project.services, alias)) violations.push(`service ${name} declares network alias ${alias}, the name of another service`);
+      const owner = aliasOwners.get(alias);
+      if (owner === undefined) aliasOwners.set(alias, name);
+      else violations.push(`services ${owner} and ${name} both declare network alias ${alias}`);
+    }
+    const active = (entry.profiles ?? []).length === 0 || named.includes(name);
+    if (active && entry.build !== undefined) {
+      const other = tags.get(name.toLowerCase());
+      if (other === undefined) tags.set(name.toLowerCase(), name);
+      else violations.push(`services ${other} and ${name} differ only by case, so their prebuilt image tags collide`);
+    }
+    const limits = entry.deploy?.resources?.limits;
+    const memory = entry.mem_limit ?? limits?.memory;
+    services[name] = {
+      build: entry.build !== undefined,
+      memLimit: memory === undefined ? null : bytes(memory, `The memory limit of service ${name}`),
+      networkMode: entry.network_mode ?? null,
+      aliases,
+      hasCpus: entry.cpus !== undefined || limits?.cpus !== undefined,
+      hasPidsLimit: entry.pids_limit !== undefined || limits?.pids !== undefined,
+      deployLimits: limits !== undefined,
+      active,
+    };
   }
   for (const [kind, entries] of [
     ["volume", project.volumes ?? {}],
@@ -165,22 +225,6 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   }
   if (violations.length > 0) {
     throw new Error(`The Compose files of ${file} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
-  }
-
-  const services: Record<string, ComposeService> = {};
-  for (const [name, entry] of Object.entries(project.services)) {
-    const limits = entry.deploy?.resources?.limits;
-    const memory = entry.mem_limit ?? limits?.memory;
-    services[name] = {
-      build: entry.build !== undefined,
-      memLimit: memory === undefined ? null : bytes(memory, `The memory limit of service ${name}`),
-      networkMode: entry.network_mode ?? null,
-      aliases: [...new Set(Object.values(entry.networks ?? {}).flatMap((network) => network?.aliases ?? []))],
-      hasCpus: entry.cpus !== undefined || limits?.cpus !== undefined,
-      hasPidsLimit: entry.pids_limit !== undefined || limits?.pids !== undefined,
-      deployLimits: limits !== undefined,
-      profiles: entry.profiles ?? [],
-    };
   }
   return { ...ref, settings: parsed.data.customizations["qa-interns"], config, composeFiles, service, services };
 }

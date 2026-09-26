@@ -24,6 +24,7 @@ function intern(id: string, role: InternState["role"], provider: Provider | null
 const state: RunState = {
   runId: "7c1e9a04",
   pid: 48213,
+  pidStart: 8312765,
   target: { repo: "/home/owner/src/qa-interns", path: "eval/ledger", commit: "3f9c2e1d8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d" },
   options: { interns: 3, minutes: 30, confirmMinutes: 10, concurrency: 3 },
   phase: "done",
@@ -133,6 +134,22 @@ describe("renderReport", () => {
     expect(data.rejected).toEqual(rejected);
     expect(data.interns).toEqual(state.interns);
     expect(JSON.parse(JSON.stringify(json))).toEqual(json);
+  });
+
+  test("strips control characters from agent text and file names and keeps the sections", () => {
+    const noisy: Group = {
+      id: "g1",
+      findings: [{ ...finding("i1/bidi", "Totals \u{202e}disagree", "Row \u001b[31mred\u001b[0m"), evidence: ["interns/i1/out/evidence/a\u0007.png"] }],
+      confirmation: { intern: "c1", provider: "codex", result: null, error: "adapter said \u009bno" },
+    };
+    const text = renderReport(state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }]).markdown;
+    for (const char of ["\u{202e}", "\u001b", "\u0007", "\u009b", "\u{2066}", "\u0000"]) expect(text.includes(char)).toBe(false);
+    expect(text).toContain("### Totals disagree\n");
+    expect(text).toContain("> Row [31mred[0m\n");
+    expect(text).toContain("- `interns/i1/out/evidence/a.png`\n");
+    expect(text).toContain("Confirmation: c1 (codex) failed: adapter said no\n");
+    expect(text).toContain("- `interns/i2/out/findings/xy.json`: bad input\n");
+    expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"]);
   });
 
   test("a run with nothing to report still has a line in every section", () => {

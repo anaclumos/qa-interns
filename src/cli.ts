@@ -2,11 +2,12 @@
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor } from "./doctor.ts";
-import { stopRun } from "./environment.ts";
+import { removeCopies, stopRun } from "./environment.ts";
+import { errorCode, stripControl } from "./findings.ts";
 import { defaultLoginsPath } from "./logins.ts";
 import { runQa } from "./run.ts";
-import { ensureRunnerImage } from "./runner.ts";
-import { formatStatus, readState, resolveRunDir } from "./state.ts";
+import { ensureRunnerImage, runnerImage } from "./runner.ts";
+import { formatStatus, processStart, readState, resolveRunDir } from "./state.ts";
 
 const usage = `Usage: qa-interns <command> [options]
 
@@ -23,7 +24,8 @@ Commands:
       Print report.md.
   down [<run>]
       Stop the run's orchestrator with SIGTERM when it is still running, then
-      tear down every environment the run still has.
+      tear down every environment the run still has and delete its leftover
+      workspace copies.
   help
       Print this help.
 
@@ -47,12 +49,11 @@ function minutes(value: string, option: string): number {
   return number;
 }
 
-function alive(pid: number): boolean {
+function running(pid: number, start: number): boolean {
   try {
-    process.kill(pid, 0);
-    return true;
+    return processStart(pid) === start;
   } catch (error) {
-    if (error instanceof Error && "code" in error && (error.code === "ESRCH" || error.code === "EPERM")) return false;
+    if (errorCode(error) === "ENOENT" || errorCode(error) === "ESRCH") return false;
     throw error;
   }
 }
@@ -110,15 +111,21 @@ async function main(args: string[]): Promise<number> {
       return 0;
     }
     case "down": {
-      const state = await readState(await resolveRunDir(runArg(command, rest)));
-      if (state.phase !== "done" && state.phase !== "failed" && alive(state.pid)) {
-        process.kill(state.pid, "SIGTERM");
-        print(`Sent SIGTERM to run ${state.runId} (process ${state.pid}).`);
+      const dir = await resolveRunDir(runArg(command, rest));
+      const state = await readState(dir);
+      if (state.phase !== "done" && state.phase !== "failed" && running(state.pid, state.pidStart)) {
+        try {
+          process.kill(state.pid, "SIGTERM");
+          print(`Sent SIGTERM to run ${state.runId} (process ${state.pid}).`);
+        } catch (error) {
+          if (errorCode(error) !== "ESRCH") throw error;
+        }
         const deadline = Date.now() + 120_000;
-        while (alive(state.pid) && Date.now() < deadline) await Bun.sleep(500);
-        print(alive(state.pid) ? `Process ${state.pid} is still running after 120 seconds.` : `Process ${state.pid} exited.`);
+        while (running(state.pid, state.pidStart) && Date.now() < deadline) await Bun.sleep(500);
+        print(running(state.pid, state.pidStart) ? `Process ${state.pid} is still running after 120 seconds.` : `Process ${state.pid} exited.`);
       }
       await stopRun(state.runId);
+      await removeCopies(dir, state.runId, await runnerImage());
       print(`Run ${state.runId} has no environments left.`);
       return 0;
     }
@@ -138,6 +145,6 @@ async function main(args: string[]): Promise<number> {
 try {
   process.exitCode = await main(Bun.argv.slice(2));
 } catch (error) {
-  process.stderr.write(`qa-interns: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.stderr.write(`qa-interns: ${stripControl(error instanceof Error ? error.message : String(error))}\n`);
   process.exitCode = 1;
 }

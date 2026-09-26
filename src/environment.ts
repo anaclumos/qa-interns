@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { capture, execute, isHttpUrl, type Target } from "./target.ts";
+import { capture, execute, failure, isHttpUrl, type Target } from "./target.ts";
 import type { GeneratedFile, Mount } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
@@ -51,9 +52,20 @@ function overlaps(a: Cidr, b: Cidr): boolean {
 const networksSchema = z.array(z.object({ IPAM: z.object({ Config: z.array(z.object({ Subnet: z.string() })).nullable() }) }));
 const routesSchema = z.array(z.object({ dst: z.string() }));
 
+async function networkIds(): Promise<string[]> {
+  return (await execute(["docker", "network", "ls", "-q"])).split("\n").filter((id) => id !== "");
+}
+
+async function inspectNetwork(id: string): Promise<z.infer<typeof networksSchema>> {
+  const cmd = ["docker", "network", "inspect", id];
+  const result = await capture(cmd);
+  if (result.code === 0) return networksSchema.parse(JSON.parse(result.stdout));
+  if (!(await networkIds()).includes(id)) return [];
+  throw failure(cmd, result.code, result.stderr);
+}
+
 async function usedBlocks(): Promise<Cidr[]> {
-  const ids = (await execute(["docker", "network", "ls", "-q"])).split("\n").filter((id) => id !== "");
-  const networks = networksSchema.parse(JSON.parse(await execute(["docker", "network", "inspect", ...ids])));
+  const networks = (await Promise.all((await networkIds()).map(inspectNetwork))).flat();
   const routes = routesSchema.parse(JSON.parse(await execute(["ip", "-4", "-j", "route", "show", "table", "all"])));
   const subnets = networks.flatMap((network) => (network.IPAM.Config ?? []).map((config) => config.Subnet)).filter((subnet) => !subnet.includes(":"));
   const destinations = routes.map((route) => route.dst).filter((dst) => dst !== "default");
@@ -158,7 +170,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
 }
 
 export function environmentMemory(target: Target | null): number {
-  const services = Object.values(target?.services ?? {}).filter((service) => service.profiles.length === 0);
+  const services = Object.values(target?.services ?? {}).filter((service) => service.active);
   return services.reduce((sum, service) => sum + (service.memLimit ?? gib), 2 * gib + 128 * mib);
 }
 
@@ -193,9 +205,9 @@ function sourceComposeArgs(target: Target, root: string): string[] {
 
 export async function buildImages(runId: string, target: Target, sourceDir: string): Promise<Record<string, string>> {
   const services = Object.entries(target.services)
-    .filter(([, service]) => service.build && service.profiles.length === 0)
+    .filter(([, service]) => service.build && service.active)
     .map(([name]) => name);
-  const images = Object.fromEntries(services.map((name) => [name, `qa-${runId}-${name}:latest`]));
+  const images = Object.fromEntries(services.map((name) => [name, `qa-${runId}-${name.toLowerCase()}:latest`]));
   if (services.length === 0) return images;
   const dir = await mkdtemp(join(tmpdir(), "qa-interns-tags-"));
   try {
@@ -246,7 +258,7 @@ async function waitReady(ready: string, runner: string, exec: string[], log: str
     : [...exec, "sh", "-c", ready];
   const deadline = Date.now() + readyTimeout;
   while (true) {
-    const result = await capture(probe, { log, timeout: url ? undefined : minute });
+    const result = await capture(probe, { log, timeout: url ? undefined : Math.max(1000, deadline - Date.now()) });
     const status = Number(result.stdout.trim());
     if (result.code === 0 && (!url || (status >= 200 && status < 300))) return;
     if (Date.now() >= deadline) {
@@ -322,11 +334,25 @@ async function removeImages(prefixes: string[]): Promise<void> {
   if (images.length > 0) await execute(["docker", "image", "rm", ...images]);
 }
 
+async function removeAsRoot(dir: string, image: string, paths: string[]): Promise<void> {
+  await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
+}
+
 export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<void> {
   await down(project);
   await removeImages([`vsc-${project}-`]);
-  const dir = join(runDir, "envs", name);
-  await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", `/env/${project}`, "/env/tmp"]);
+  await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
+}
+
+export async function removeCopies(runDir: string, runId: string, image: string): Promise<void> {
+  const envs = join(runDir, "envs");
+  const names = existsSync(envs) ? await readdir(envs) : [];
+  const paths = names.flatMap((name) => [join(name, projectName(runId, name)), join(name, "tmp")]).filter((path) => existsSync(join(envs, path)));
+  if (paths.length === 0) return;
+  if ((await capture(["docker", "image", "inspect", image])).code !== 0) {
+    throw new Error(`${envs} still holds ${paths.join(", ")}, which only a container of the runner image can remove, and the runner image ${image} does not exist. Build it with qa-interns doctor, then run qa-interns down again.`);
+  }
+  await removeAsRoot(envs, image, paths);
 }
 
 export async function stopRun(runId: string): Promise<void> {

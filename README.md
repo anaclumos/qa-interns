@@ -41,7 +41,7 @@ qa-interns doctor
 | `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
 | `qa-interns report [<run>]` | Prints `report.md`. |
-| `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when it is still running, then tears down every environment the run still has. |
+| `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when that process, matched by its pid and start time, is still running. Then tears down every environment the run still has and deletes the run's leftover workspace copies with a container of the current runner image. When copies are left and that image does not exist, it fails; build the image with `qa-interns doctor` and run `down` again. |
 
 `<run>` is a run id or a run directory. Without it, the command uses the most recent run.
 
@@ -71,7 +71,19 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - `focus` (optional): areas the project wants covered, added to the charter deck.
 - `offLimits` (optional): actions interns must not take.
 
-The Compose files carry no `container_name`, no external volume or network, no volume or network with an explicit `name:`, and no `network_mode: host`, because each of those collides across copies. `run` rejects a target that has any of them. Published ports are allowed; QA Interns removes them.
+`run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
+
+- A `container_name`.
+- An external volume or network, or a volume or network with an explicit `name:`.
+- A `network_mode` other than `service:<name>`, including `host`.
+- A service named `qa-proxy` or `qa-runner`.
+- A network alias that is the name of another service, `qa-proxy`, or `qa-runner`, or that two services declare.
+- Two services with a `build` section whose names differ only in case, when both start. A service behind a Compose profile starts only when it is the dev container `service` or in `runServices`.
+- `privileged: true`, `pid: host`, `ipc: host`, or `userns_mode: host`.
+- A `devices` entry, a `cap_add` entry, or a `security_opt` entry that contains `unconfined`.
+- A bind mount whose source lies outside the target directory. A source that exists is checked after its symbolic links are resolved, so a Docker socket is rejected whether it is mounted directly or through a symbolic link.
+
+Published ports are allowed; QA Interns removes them.
 
 The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint. The target project owns that guarantee.
 
@@ -131,7 +143,7 @@ A finding is confirmed when two or more interns reproduced it.
 - The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential file it was given, and that write reaches the store on the host.
 - The runner reaches the internet only through a proxy container that allows HTTPS to the model provider hosts and nothing else.
 - Target services have no internet access. Lifecycle commands that run in a target container, and application code, fail when they need the network.
-- Every agent session starts with no MCP servers. Claude and Codex start with their own MCP sources blocked. The runner's home directory is an empty tmpfs, so no user-level MCP file exists for any agent.
+- Every agent session starts with no MCP servers. Claude and Codex have their MCP sources blocked in `src/providers.ts`. A Cursor runner has no MCP source, because its home directory is an empty tmpfs and the Cursor store holds credentials only.
 - Chrome runs with `--no-sandbox`, because Docker's default seccomp profile blocks its sandbox, so the container is the boundary. A compromised renderer can read what the runner user can read, including that intern's login.
 
 ## Known limits

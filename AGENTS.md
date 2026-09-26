@@ -18,9 +18,9 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 ## Invariants
 
 - An intern never fixes, suggests, ranks, or explains. Prompts, the report, and the finding format carry no field or instruction for any of those.
-- No MCP anywhere. Every `session/new` sends `mcpServers: []`, and each provider's own MCP sources are blocked in `src/providers.ts`. Adding a provider means finding and blocking its MCP sources first.
+- No MCP anywhere. Every `session/new` sends `mcpServers: []`. Claude and Codex have their MCP sources blocked in `src/providers.ts`, and a Cursor runner has no MCP source because its home is an empty tmpfs and the Cursor store holds credentials only. Adding a provider means finding and blocking its MCP sources first.
 - The runner container holds no source, no Docker socket, and no credential beyond its own login store. Egress goes only through the proxy allowlist in `src/providers.ts`.
 - Usage-limit detection is structural: JSON-RPC `code` and `data` fields only, never message text.
 - A Codex `auth.json` serves one running process at a time.
-- Docker objects of a run are named `qa-<runId>-*` and prebuilt images `qa-<runId>-<service>:latest`. Manual and test work uses other prefixes and removes what it creates.
+- Docker objects of a run are named `qa-<runId>-*` and prebuilt images `qa-<runId>-<service in lowercase>:latest`. Manual and test work uses other prefixes and removes what it creates.
 - Adapter and browser versions are pinned in `runner/Dockerfile`. A version bump re-verifies the adapter's usage-limit error shape and MCP sources from its source before it lands.
