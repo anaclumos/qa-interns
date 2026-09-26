@@ -95,7 +95,7 @@ type Slot = { login: Login; active: number; exhausted: boolean };
 type Seat = { store: string; keeper: Subprocess | null };
 
 async function seat(login: Login, intern: string): Promise<Seat | null> {
-  if (login.store !== null) return { store: login.store, keeper: null };
+  if (login.store !== null) return { store: realpathSync(login.store), keeper: null };
   if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
   const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
   try {
@@ -124,6 +124,7 @@ export class Scheduler {
   private readonly slots: Slot[];
   private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0 };
   private readonly exhaustedStores = new Set<string>();
+  private readonly live = new Set<{ login: Login; store: string }>();
 
   constructor(logins: Login[]) {
     this.slots = logins.map((login) => ({ login, active: 0, exhausted: false }));
@@ -147,7 +148,7 @@ export class Scheduler {
       let granted: Seat | null = null;
       try {
         granted = await seat(slot.login, intern);
-        if (granted !== null && this.exhaustedStores.has(granted.store)) {
+        if (granted !== null && (this.exhaustedStores.has(granted.store) || this.held(slot.login, granted.store))) {
           granted.keeper?.kill();
           granted = null;
         }
@@ -158,6 +159,8 @@ export class Scheduler {
       this.used[slot.login.provider] += 1;
       let released = false;
       const keeper = granted.keeper;
+      const entry = { login: slot.login, store: granted.store };
+      this.live.add(entry);
       return {
         login: slot.login,
         store: granted.store,
@@ -165,6 +168,7 @@ export class Scheduler {
           if (released) return;
           released = true;
           slot.active -= 1;
+          this.live.delete(entry);
           keeper?.kill();
         },
       };
@@ -176,6 +180,10 @@ export class Scheduler {
     if (slot === undefined) throw new Error(`No login with id ${lease.login.id}`);
     if (slot.login.store === null) this.exhaustedStores.add(lease.store);
     else slot.exhausted = true;
+  }
+
+  private held(login: Login, store: string): boolean {
+    return [...this.live].some((lease) => lease.store === store && (lease.login !== login || login.store === null));
   }
 
   private next(avoid: Provider[], tried: Set<Slot>): Slot | undefined {

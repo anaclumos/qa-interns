@@ -332,6 +332,13 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
         return correctionPrompt(`/qa/out/${file}`, message(error));
       }
     });
+    if (parsed === null && (await Bun.file(path).exists())) {
+      try {
+        parsed = { value: parse(await readAgentFile(path)) };
+      } catch (error) {
+        throw new Error(`${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes: ${message(error)}`);
+      }
+    }
     if (parsed === null) throw new Error(`${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes`);
     return parsed.value;
   });

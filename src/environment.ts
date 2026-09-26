@@ -72,22 +72,21 @@ async function usedBlocks(): Promise<Cidr[]> {
   return [...subnets, ...destinations].map(parseCidr);
 }
 
-export function slotSubnets(slot: number): { internal: string; egress: string } {
+export function slotSubnets(slot: number): { internal: string; agent: string; egress: string } {
   if (!Number.isInteger(slot) || slot < 0 || slot > 127) throw new Error(`Slot ${slot} is not an integer from 0 to 127`);
-  return { internal: `10.213.${slot * 2}.0/24`, egress: `10.213.${slot * 2 + 1}.0/24` };
+  return { internal: `10.213.${slot * 2}.0/25`, agent: `10.213.${slot * 2}.128/25`, egress: `10.213.${slot * 2 + 1}.0/24` };
 }
 
 export async function freeSlot(reserved: Set<number>): Promise<number> {
   const used = await usedBlocks();
   for (let slot = 0; slot < 128; slot++) {
     if (reserved.has(slot)) continue;
-    const { internal, egress } = slotSubnets(slot);
-    const blocks = [parseCidr(internal), parseCidr(egress)];
+    const blocks = Object.values(slotSubnets(slot)).map(parseCidr);
     if (used.some((block) => blocks.some((own) => overlaps(block, own)))) continue;
     reserved.add(slot);
     return slot;
   }
-  throw new Error("No free network slot: every 10.213.x.0/24 pair overlaps a Docker network, a host route, or a slot this run holds");
+  throw new Error("No free network slot: every 10.213.x.0/23 block overlaps a Docker network, a host route, or a slot this run holds");
 }
 
 function projectName(runId: string, name: string): string {
@@ -108,8 +107,9 @@ function bind(source: string, target: string, readOnly: boolean) {
 
 export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number): string {
   if (spec.egress.length === 0) throw new Error(`Environment ${spec.name} has no egress hosts for qa-proxy`);
-  const { internal, egress } = slotSubnets(spec.slot);
+  const { internal, agent, egress } = slotSubnets(spec.slot);
   const y = (value: unknown) => JSON.stringify(value);
+  const isolated = (subnet: string) => ({ internal: true, driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" }, ipam: { config: [{ subnet }] } });
   const lines = ["services:"];
   for (const [name, service] of Object.entries(spec.target?.services ?? {})) {
     lines.push(`  ${y(name)}:`, "    ports: !reset []");
@@ -143,7 +143,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     `    image: ${y(spec.runner.image)}`,
     `    command: ${y(["node", "/opt/qa-interns/proxy.mjs"])}`,
     `    environment: ${y({ QA_PROXY_ALLOW: spec.egress.join(",") })}`,
-    `    networks: ${y(["qa_internal", "qa_egress"])}`,
+    `    networks: ${y(["qa_agent", "qa_egress"])}`,
     ...hardening,
     `    mem_limit: ${y("128m")}`,
     "    cpus: 0.5",
@@ -161,9 +161,10 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     "    pids_limit: 1024",
     `    mem_limit: ${y("2g")}`,
     "    cpus: 2",
-    `    networks: ${y(["qa_internal"])}`,
+    `    networks: ${y(["qa_internal", "qa_agent"])}`,
     "networks:",
-    `  qa_internal: ${y({ internal: true, driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" }, ipam: { config: [{ subnet: internal }] } })}`,
+    `  qa_internal: ${y(isolated(internal))}`,
+    `  qa_agent: ${y(isolated(agent))}`,
     `  qa_egress: ${y({ ipam: { config: [{ subnet: egress }] } })}`,
   );
   return `${lines.join("\n")}\n`;

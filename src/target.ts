@@ -159,6 +159,13 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
   const { dockerComposeFile, service, runServices } = parsed.data;
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
+  const root = await realpath(sourceDir);
+  for (const entry of composeFiles) {
+    const path = resolve(sourceDir, ".devcontainer", entry);
+    if (!within(sourceDir, path) || (existsSync(path) && !within(root, await realpath(path)))) {
+      throw new Error(`${file} names the Compose file ${entry}, which resolves outside the target directory`);
+    }
+  }
   const files = composeFiles.flatMap((entry) => ["-f", resolve(sourceDir, ".devcontainer", entry)]);
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
   const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"]);
@@ -166,7 +173,6 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
 
   const named = [service, ...(runServices ?? [])];
-  const root = await realpath(sourceDir);
   const violations: string[] = [];
   const services: Record<string, ComposeService> = {};
   const tags = new Map<string, string>();

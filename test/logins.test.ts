@@ -19,7 +19,7 @@ beforeAll(async () => {
   cursorStore = join(dir, "stores", "cursor-1");
   emptyStore = join(dir, "stores", "codex-empty");
   pool = join(dir, "pool");
-  for (const store of [claudeStore, codexStore, cursorStore, emptyStore, pool]) await mkdir(store, { recursive: true });
+  for (const store of [claudeStore, join(dir, "stores", "claude-2"), codexStore, cursorStore, emptyStore, pool]) await mkdir(store, { recursive: true });
   await Bun.write(join(claudeStore, ".credentials.json"), "{}");
   await Bun.write(join(codexStore, "auth.json"), "{}");
   await Bun.write(
@@ -303,6 +303,26 @@ describe("Scheduler", () => {
     scheduler.exhaust(first);
     first.release();
     expect(await scheduler.acquire("k2", [])).toBeNull();
+  });
+
+  test("a store that a live lease holds is released at once when a seat login returns it, until that lease ends", async () => {
+    await mkdir(join(dir, "same-store"));
+    await Bun.write(
+      join(dir, "same-seat.sh"),
+      ["#!/bin/sh", "printf '%s\\n' \"$QA_INTERNS_LEASE_PID\" > \"$(dirname \"$0\")/seat-$QA_INTERNS_INTERN.pid\"", "echo \"$(dirname \"$0\")/same-store\"", ""].join("\n"),
+    );
+    const command = ["sh", join(dir, "same-seat.sh")];
+    const scheduler = new Scheduler([login("codex-pool-a", "codex", 2, command), login("codex-pool-b", "codex", 1, command)]);
+    const first = held(await scheduler.acquire("m1", []));
+    expect(first.login.id).toBe("codex-pool-a");
+    expect(first.store).toBe(await realpath(join(dir, "same-store")));
+    expect(await scheduler.acquire("m2", [])).toBeNull();
+    expect(await ended(await leasePid("m2"))).toBe(true);
+    expect(alive(await leasePid("m1"))).toBe(true);
+    first.release();
+    const second = held(await scheduler.acquire("m3", []));
+    expect(second.store).toBe(first.store);
+    second.release();
   });
 
   test("a failing seat command or a relative path moves on to the next login", async () => {

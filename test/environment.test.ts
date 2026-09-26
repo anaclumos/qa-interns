@@ -59,10 +59,10 @@ async function normalize(runDir: string, composeFiles: string[], override: strin
 }
 
 describe.skipIf(!dockerAvailable)("slots", () => {
-  test("map a slot to its internal and egress subnets", () => {
-    expect(slotSubnets(0)).toEqual({ internal: "10.213.0.0/24", egress: "10.213.1.0/24" });
-    expect(slotSubnets(3)).toEqual({ internal: "10.213.6.0/24", egress: "10.213.7.0/24" });
-    expect(slotSubnets(127)).toEqual({ internal: "10.213.254.0/24", egress: "10.213.255.0/24" });
+  test("map a slot to its internal, agent, and egress subnets", () => {
+    expect(slotSubnets(0)).toEqual({ internal: "10.213.0.0/25", agent: "10.213.0.128/25", egress: "10.213.1.0/24" });
+    expect(slotSubnets(3)).toEqual({ internal: "10.213.6.0/25", agent: "10.213.6.128/25", egress: "10.213.7.0/24" });
+    expect(slotSubnets(127)).toEqual({ internal: "10.213.254.0/25", agent: "10.213.254.128/25", egress: "10.213.255.0/24" });
   });
 
   test.each([-1, 128, 1.5])("reject slot %p", (slot) => {
@@ -95,8 +95,8 @@ describe.skipIf(!dockerAvailable)("slots", () => {
     });
   });
 
-  test("skip a slot that overlaps a smaller Docker network", async () => {
-    await withNetwork("10.213.254.64/26", async () => {
+  test.each(["10.213.254.64/26", "10.213.254.192/26", "10.213.255.64/26"])("skip a slot that overlaps the smaller Docker network %s", async (subnet) => {
+    await withNetwork(subnet, async () => {
       const reserved = new Set(Array.from({ length: 127 }, (_, slot) => slot));
       await expect(freeSlot(reserved)).rejects.toThrow("No free network slot");
     });
@@ -131,7 +131,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
       cpus: 0.5,
       pids_limit: 128,
     });
-    expect(Object.keys(config.services["qa-proxy"]?.networks ?? {}).sort()).toEqual(["qa_egress", "qa_internal"]);
+    expect(Object.keys(config.services["qa-proxy"]?.networks ?? {}).sort()).toEqual(["qa_agent", "qa_egress"]);
 
     const runner = config.services["qa-runner"];
     expect(runner).toMatchObject({
@@ -150,7 +150,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
       ],
       environment: environment.runner.env,
     });
-    expect(Object.keys(runner?.networks ?? {})).toEqual(["qa_internal"]);
+    expect(Object.keys(runner?.networks ?? {}).sort()).toEqual(["qa_agent", "qa_internal"]);
     const volumes = z.array(z.object({ type: z.string(), source: z.string(), target: z.string(), read_only: z.boolean().default(false) }));
     expect(volumes.parse(runner?.volumes)).toEqual([
       { type: "bind", source: join(runDir, "interns", "i1", "out"), target: "/qa/out", read_only: false },
@@ -172,7 +172,12 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
     expect(config.networks.qa_internal).toMatchObject({
       internal: true,
       driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" },
-      ipam: { config: [{ subnet: "10.213.6.0/24" }] },
+      ipam: { config: [{ subnet: "10.213.6.0/25" }] },
+    });
+    expect(config.networks.qa_agent).toMatchObject({
+      internal: true,
+      driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" },
+      ipam: { config: [{ subnet: "10.213.6.128/25" }] },
     });
     expect(config.networks.qa_egress).toMatchObject({ ipam: { config: [{ subnet: "10.213.7.0/24" }] } });
     expect(config.networks.qa_egress?.internal).toBeUndefined();

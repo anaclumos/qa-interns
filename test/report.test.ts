@@ -152,6 +152,16 @@ describe("renderReport", () => {
     expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"]);
   });
 
+  test("agent text cannot add a heading or inline HTML", () => {
+    const base = finding("i1/forged", "Totals disagree", "Row <script>alert(1)</script>\n## Interns");
+    const forged: Group = { id: "g1", findings: [{ ...base, conditions: { ...base.conditions, account: "x\n\n## Interns" } }], confirmation: null };
+    const text = renderReport(state, [forged], []).markdown;
+    expect(text.split("\n").filter((line) => line.trimStart().startsWith("## Interns"))).toEqual(["## Interns"]);
+    expect(text).not.toContain("<script>");
+    expect(text).toContain("  - Account: x  ## Interns\n");
+    expect(text).toContain("> Row &lt;script&gt;alert(1)&lt;/script&gt;\n> ## Interns\n");
+  });
+
   test("a run with nothing to report still has a line in every section", () => {
     const empty = renderReport({ ...state, interns: [] }, [], []).markdown;
     const lines = empty.split("\n");

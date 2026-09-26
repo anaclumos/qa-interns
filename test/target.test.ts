@@ -304,6 +304,20 @@ networks:
     await expect(load(root)).rejects.toThrow("/host, which resolves to /etc, outside the target directory");
   });
 
+  test("reject a Compose file outside the target, by its path or through a symbolic link", async () => {
+    const compose = "services:\n  web:\n    image: nginx:1.29-alpine\n";
+    const parent = await fixture(compose, devcontainer({ dockerComposeFile: ["compose.yml", "../../outside.yml"] }));
+    await expect(load(parent)).rejects.toThrow("names the Compose file ../../outside.yml, which resolves outside the target directory");
+
+    const outside = await scratch("qa-interns-outside-");
+    await Bun.write(join(outside, "compose.yml"), compose);
+    const linked = await fixture(compose, devcontainer({ dockerComposeFile: "linked.yml" }));
+    await symlink(join(outside, "compose.yml"), join(linked, ".devcontainer", "linked.yml"));
+    git(linked, "add", "-A");
+    git(linked, "commit", "-q", "-m", "link");
+    await expect(load(linked)).rejects.toThrow("names the Compose file linked.yml, which resolves outside the target directory");
+  });
+
   test("reject a single-container dev container", async () => {
     const config = JSON.stringify({ name: "Image", image: "mcr.microsoft.com/devcontainers/typescript-node:22", customizations: { "qa-interns": settings } });
     const root = await repo({ ".devcontainer/devcontainer.json": config });
