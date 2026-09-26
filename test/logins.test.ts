@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadLogins, Scheduler } from "../src/logins.ts";
+import { loadLogins, Scheduler, type Lease } from "../src/logins.ts";
 import type { Login } from "../src/types.ts";
 
 let dir: string;
@@ -61,6 +61,29 @@ async function failure(name: string, content: unknown): Promise<string> {
 
 function login(id: string, provider: Login["provider"], concurrency: number, seat: string[] | null = null): Login {
   return { id, provider, store: seat === null ? join(dir, "stores", id) : null, seat, concurrency };
+}
+
+function held(lease: Lease | null): Lease {
+  if (lease === null) throw new Error("the scheduler granted no lease");
+  return lease;
+}
+
+async function leasePid(intern: string): Promise<number> {
+  return Number((await Bun.file(join(dir, `seat-${intern}.pid`)).text()).trim());
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function ended(pid: number): Promise<boolean> {
+  for (let tries = 0; tries < 50 && alive(pid); tries++) await Bun.sleep(20);
+  return !alive(pid);
 }
 
 describe("loadLogins", () => {
@@ -133,6 +156,21 @@ describe("loadLogins", () => {
     expect(message).toContain("logins[1] \"codex-1\": a codex store must have concurrency 1");
   });
 
+  test("rejects a claude store without .credentials.json", async () => {
+    const message = await failure("claude.json", { logins: [{ id: "claude-empty", provider: "claude", store: emptyStore }] });
+    expect(message).toContain(`logins[0] "claude-empty": claude store ${emptyStore} has no .credentials.json`);
+  });
+
+  test("rejects two logins that name the same store after resolving the path", async () => {
+    const message = await failure("same-store.json", {
+      logins: [
+        { id: "claude-1", provider: "claude", store: claudeStore },
+        { id: "claude-2", provider: "claude", store: `${claudeStore}/../claude-1/` },
+      ],
+    });
+    expect(message).toContain(`logins[1] "claude-2": duplicate store ${claudeStore}/../claude-1/, already used by logins[0]`);
+  });
+
   test("rejects duplicate ids and reports every problem at once", async () => {
     const message = await failure("many.json", {
       logins: [
@@ -144,6 +182,7 @@ describe("loadLogins", () => {
     });
     expect(message.split("\n").slice(1)).toEqual([
       "  logins[1] \"claude-1\": duplicate id, already used by logins[0]",
+      `  logins[1] "claude-1": duplicate store ${claudeStore}, already used by logins[0]; one store serves one process at a time`,
       "  logins[2]: id: Invalid input: expected string, received undefined",
       "  logins[2]: Unrecognized key: \"concurency\"",
       "  logins[3] \"codex-pool\": seat: Too small: expected array to have >=1 items",
@@ -188,19 +227,20 @@ describe("Scheduler", () => {
     expect(again?.login.id).toBe("claude-1");
     expect((await scheduler.acquire("i3", ["codex", "cursor"]))?.login.id).toBe("cursor-1");
 
-    scheduler.exhaust("claude-1");
+    scheduler.exhaust(held(again));
     expect(scheduler.capacity()).toBe(4);
     expect(scheduler.providers()).toEqual(["codex", "cursor"]);
     again?.release();
     const picks = await Promise.all(["i4", "i5", "i6", "i7"].map((intern) => scheduler.acquire(intern, [])));
     expect(picks.map((lease) => lease?.login.id ?? null).sort()).toEqual(["codex-1", "cursor-1", "cursor-1", null]);
 
-    scheduler.exhaust("cursor-1");
-    scheduler.exhaust("codex-1");
+    scheduler.exhaust(held(picks.find((lease) => lease?.login.id === "cursor-1") ?? null));
+    scheduler.exhaust(held(picks.find((lease) => lease?.login.id === "codex-1") ?? null));
     expect(scheduler.capacity()).toBe(0);
     expect(scheduler.providers()).toEqual([]);
     expect(await scheduler.acquire("i8", [])).toBeNull();
-    expect(() => scheduler.exhaust("gemini-1")).toThrow("No login with id gemini-1");
+    const unknown = { login: login("claude-9", "claude", 1), store: join(dir, "stores", "claude-9"), release: () => {} };
+    expect(() => scheduler.exhaust(unknown)).toThrow("No login with id claude-9");
   });
 
   test("a seat command gives each intern its own store and a lease pid that lives until release", async () => {
@@ -209,25 +249,33 @@ describe("Scheduler", () => {
     expect(one?.store).toBe(join(pool, "i1"));
     expect(two?.store).toBe(join(pool, "i2"));
     expect(three).toBeNull();
-    const leasePid = async (intern: string) => Number((await Bun.file(join(dir, `seat-${intern}.pid`)).text()).trim());
-    const alive = (pid: number) => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    };
     const [first, second] = [await leasePid("i1"), await leasePid("i2")];
     expect(first).not.toBe(second);
     expect(first).not.toBe(process.pid);
     expect(alive(first)).toBe(true);
     one?.release();
-    for (let tries = 0; tries < 50 && alive(first); tries++) await Bun.sleep(20);
-    expect(alive(first)).toBe(false);
+    expect(await ended(first)).toBe(true);
     expect(alive(second)).toBe(true);
     expect((await scheduler.acquire("i4", []))?.store).toBe(join(pool, "i4"));
     two?.release();
+  });
+
+  test("a usage limit on a seat login exhausts only that store, and a later grant of it is released at once", async () => {
+    const scheduler = new Scheduler([login("codex-pool", "codex", 2, ["sh", join(dir, "seat.sh")]), login("cursor-1", "cursor", 1)]);
+    const limited = held(await scheduler.acquire("j1", ["cursor"]));
+    expect(limited.store).toBe(join(pool, "j1"));
+    scheduler.exhaust(limited);
+    limited.release();
+    expect(scheduler.capacity()).toBe(3);
+    expect(scheduler.providers()).toEqual(["codex", "cursor"]);
+
+    const retry = await scheduler.acquire("j1", ["cursor"]);
+    expect(retry?.login.id).toBe("cursor-1");
+    expect(await ended(await leasePid("j1"))).toBe(true);
+
+    const others = await Promise.all(["j2", "j3"].map((intern) => scheduler.acquire(intern, ["cursor"])));
+    expect(others.map((lease) => lease?.store)).toEqual([join(pool, "j2"), join(pool, "j3")]);
+    for (const lease of [retry, ...others]) lease?.release();
   });
 
   test("a failing seat command or a relative path moves on to the next login", async () => {

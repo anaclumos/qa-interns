@@ -129,7 +129,7 @@ export function continuePrompt(minutesLeft: number, rejected: Rejected[]): strin
   ];
   if (rejected.length > 0) {
     lines.push("", "These finding files were rejected. Rewrite each one in the finding format:");
-    for (const entry of rejected) lines.push(`- /qa/out/findings/${path.basename(entry.file)}: ${entry.reason}`);
+    for (const entry of rejected) lines.push(`- /qa/out/${path.relative(path.join("interns", entry.intern, "out"), entry.file)}: ${entry.reason}`);
   }
   return lines.join("\n");
 }

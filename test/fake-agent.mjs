@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const sessionId = "fake-session-1";
@@ -144,7 +144,7 @@ const prompt = (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  if (existsSync("/qa/login/limit")) {
+  if (JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).limit === true) {
     return { error: { code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } } };
   }
   if (text.includes("/qa/out/groups.json")) return groupsTurn(text);

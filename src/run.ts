@@ -6,7 +6,6 @@ import {
   buildImages,
   environmentMemory,
   freeSlot,
-  replaceRunner,
   runnerEnv,
   startEnvironment,
   stopEnvironment,
@@ -15,7 +14,7 @@ import {
   type Environment,
   type EnvironmentSpec,
 } from "./environment.ts";
-import { parseGroups, readConfirmation, readFindings } from "./findings.ts";
+import { parseGroups, readAgentFile, readConfirmation, readFindings } from "./findings.ts";
 import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
@@ -61,6 +60,7 @@ type Context = {
   reserved: Set<number>;
   sessions: Set<Session>;
   startups: Limit;
+  networks: Limit;
   held: number;
   waiting: (() => void)[];
   stopping: boolean;
@@ -71,6 +71,7 @@ const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
+const stopWaitMs = 30_000;
 const gib = 1024 ** 3;
 const noLogin = "no login has spare capacity";
 
@@ -137,6 +138,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     reserved: new Set(),
     sessions: new Set(),
     startups: limit(4),
+    networks: limit(1),
     held: 0,
     waiting: [],
     stopping: false,
@@ -219,19 +221,22 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
   const project = `qa-${ctx.runId}-${id}`;
   let slot: number | undefined;
   let started = false;
+  const teardown = () => ctx.networks(() => stopEnvironment(ctx.runDir, id, project, ctx.runnerImage));
   try {
     await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, project, startedAt: now() });
-    slot = await freeSlot(ctx.reserved);
-    const spec = environmentSpec(ctx, id, slot, target, lease);
-    let env = await ctx.startups(async () => {
-      checkStopping(ctx);
-      started = true;
-      return startEnvironment(spec);
-    });
+    slot = await ctx.networks(() => freeSlot(ctx.reserved));
     for (;;) {
+      const spec = environmentSpec(ctx, id, slot, target, lease);
+      const env = await ctx.startups(async () => {
+        checkStopping(ctx);
+        started = true;
+        return startEnvironment(spec);
+      });
       const outcome = await attempt(ctx, id, env, lease, work, note);
       if (!(outcome instanceof AgentError)) return outcome;
-      ctx.scheduler.exhaust(lease.login.id);
+      ctx.scheduler.exhaust(lease);
+      await teardown();
+      started = false;
       lease.release();
       const next = await acquire(ctx, id, avoid);
       if (next === null) {
@@ -241,11 +246,12 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
       await note(`moved from ${lease.login.id} to ${next.login.id} after a login failure (${outcome.code}: ${outcome.message})`);
       lease = next;
       await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, model: null });
-      env = await replaceRunner(environmentSpec(ctx, id, slot, target, lease), env);
     }
   } finally {
     try {
-      if (started) await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage);
+      if (started) await teardown();
+    } catch (error) {
+      await note(`teardown failed: ${message(error)}`);
     } finally {
       if (slot !== undefined) ctx.reserved.delete(slot);
       lease.release();
@@ -274,6 +280,7 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, avo
 }
 
 async function turnUntil(session: Session, text: string, deadline: number): Promise<Turn | null> {
+  if (Date.now() >= deadline) return null;
   const turn = session.prompt(text);
   const result = await within(turn, deadline - Date.now());
   if (result !== null) return result;
@@ -307,12 +314,6 @@ function promptEnvironment(target: Target, env: Environment, minutes: number): P
   return { urls: target.settings.urls, seed: env.seed, minutes, offLimits: target.settings.offLimits };
 }
 
-async function readOut(file: string): Promise<string> {
-  const handle = Bun.file(file);
-  if (!(await handle.exists())) throw new Error("the file does not exist");
-  return handle.text();
-}
-
 async function askWith<T>(ctx: Context, id: string, prompt: string, file: string, parse: (raw: string) => T): Promise<T> {
   const outcome = await agentTask(ctx, id, null, [], async (session) => {
     const path = join(ctx.runDir, "interns", id, "out", file);
@@ -321,7 +322,7 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
     let corrected = false;
     await converse(session, prompt, Date.now() + askMinutes * minute, async () => {
       try {
-        parsed = { value: parse(await readOut(path)) };
+        parsed = { value: parse(await readAgentFile(path)) };
         return null;
       } catch (error) {
         if (corrected) throw new Error(`/qa/out/${file} is still invalid after one correction: ${message(error)}`);
@@ -436,7 +437,7 @@ async function stop(ctx: Context, running: Promise<unknown> | undefined): Promis
     }),
   );
   for (const result of closed) if (result.status === "rejected") process.stderr.write(`Closing a session failed: ${message(result.reason)}\n`);
-  await Promise.allSettled([running]);
+  await within(Promise.allSettled([running]), stopWaitMs);
 }
 
 async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () => Promise<void>): Promise<T> {

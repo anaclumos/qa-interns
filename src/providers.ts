@@ -43,14 +43,14 @@ export const providers: Record<Provider, ProviderSpec> = {
   claude: {
     adapter: ["claude-agent-acp"],
     env: {
-      CLAUDE_CONFIG_DIR: "/qa/login",
+      CLAUDE_CONFIG_DIR: "/home/qa/.claude",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       ENABLE_CLAUDEAI_MCP_SERVERS: "false",
       DISABLE_AUTOUPDATER: "1",
     },
-    mounts: (store) => [{ source: storePath(store), target: "/qa/login", readOnly: false }],
+    mounts: (store) => [{ source: path.join(storePath(store), ".credentials.json"), target: "/home/qa/.claude/.credentials.json", readOnly: false }],
     files: [],
-    tmpfs: [],
+    tmpfs: ["/home/qa/.claude"],
     egress: ["api.anthropic.com", "platform.claude.com"],
     sessionMeta: { claudeCode: { options: { strictMcpConfig: true } } },
     modeId: "bypassPermissions",

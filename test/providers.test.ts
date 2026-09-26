@@ -55,9 +55,9 @@ describe("isLoginFailure", () => {
 });
 
 describe("mounts", () => {
-  test("claude mounts the store directory as the config dir", () => {
+  test("claude mounts only .credentials.json from the store into its config dir", () => {
     expect(providers.claude.mounts("/srv/qa-logins/claude-1")).toEqual([
-      { source: "/srv/qa-logins/claude-1", target: "/qa/login", readOnly: false },
+      { source: "/srv/qa-logins/claude-1/.credentials.json", target: "/home/qa/.claude/.credentials.json", readOnly: false },
     ]);
   });
 

@@ -95,9 +95,9 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 | Provider | Store | How to fill it |
 | --- | --- | --- |
-| `claude` | A Claude Code config directory, mounted as `CLAUDE_CONFIG_DIR`. Claude Code writes its session files into it. | `CLAUDE_CONFIG_DIR=<store> claude /login` |
+| `claude` | A directory with `.credentials.json`. Only `.credentials.json` is mounted into the runner. | `CLAUDE_CONFIG_DIR=<store> claude /login` |
 | `codex` | A directory with `auth.json`. Only `auth.json` is mounted into the runner. | `CODEX_HOME=<store> codex login` |
-| `cursor` | A Cursor credential directory, mounted as `$XDG_CONFIG_HOME/cursor`. | `XDG_CONFIG_HOME=<parent of store> agent login`, with the store named `cursor` |
+| `cursor` | A Cursor credential directory, mounted whole as `$XDG_CONFIG_HOME/cursor`. Use a directory that only QA Interns uses. | `XDG_CONFIG_HOME=<parent of store> agent login`, with the store named `cursor` |
 
 - Each running intern holds one lease on one login. A Codex store has `concurrency` 1, because OpenAI states that one `auth.json` copy serves one machine or one serialized job stream ([Codex CI/CD auth](https://learn.chatgpt.com/docs/auth/ci-cd-auth)).
 - A seat command is an external program that hands out a store for one intern. It runs with `QA_INTERNS_INTERN` and `QA_INTERNS_LEASE_PID` in its environment and prints an absolute store path as its last line. `QA_INTERNS_LEASE_PID` is a process that lives exactly as long as the intern holds the store, and ends when the orchestrator ends, so a pool manager can hold the store until that process exits. A nonzero exit means the seat command has no store now.
@@ -128,9 +128,10 @@ A finding is confirmed when two or more interns reproduced it.
 ## Isolation
 
 - Every environment is its own Compose project with its own internal network in `10.213.0.0/16`. The network has no gateway address, so containers reach neither the host nor other environments.
-- The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login.
+- The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential file it was given, and that write reaches the store on the host.
 - The runner reaches the internet only through a proxy container that allows HTTPS to the model provider hosts and nothing else.
-- Every agent session starts with no MCP servers, and each agent's own MCP configuration is blocked.
+- Target services have no internet access. Lifecycle commands that run in a target container, and application code, fail when they need the network.
+- Every agent session starts with no MCP servers. Claude and Codex start with their own MCP sources blocked. The runner's home directory is an empty tmpfs, so no user-level MCP file exists for any agent.
 - Chrome runs with `--no-sandbox`, because Docker's default seccomp profile blocks its sandbox, so the container is the boundary. A compromised renderer can read what the runner user can read, including that intern's login.
 
 ## Known limits

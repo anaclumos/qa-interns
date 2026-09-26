@@ -1,10 +1,38 @@
-import { existsSync } from "node:fs";
-import { readdir, realpath, stat } from "node:fs/promises";
+import { constants, existsSync } from "node:fs";
+import { lstat, open, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { kinds, type Confirmation, type Finding, type FindingEnvironment, type Rejected } from "./types.ts";
 
 class Invalid extends Error {}
+
+const maxBytes = 1024 ** 2;
+
+const openFailures = new Map([
+  ["ENOENT", "the file does not exist"],
+  ["ELOOP", "the file is a symbolic link"],
+  ["EACCES", "the file is not readable"],
+  ["ENXIO", "the file is not a regular file"],
+]);
+
+function errorCode(error: unknown): string | null {
+  return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : null;
+}
+
+export async function readAgentFile(file: string): Promise<string> {
+  const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch((error: unknown) => {
+    const reason = openFailures.get(errorCode(error) ?? "");
+    throw reason === undefined ? error : new Invalid(reason);
+  });
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) throw new Invalid("the file is not a regular file");
+    if (info.size > maxBytes) throw new Invalid(`the file is ${info.size} bytes, above the limit of 1 MiB`);
+    return await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
+}
 
 function required(message: string) {
   return (issue: z.core.$ZodRawIssue) => (issue.input === undefined ? "is required" : message);
@@ -116,18 +144,24 @@ export async function readFindings(
   intern: string,
   environment: FindingEnvironment,
 ): Promise<{ findings: Finding[]; rejected: Rejected[] }> {
-  const dir = path.join(runDir, "interns", intern, "out", "findings");
+  const folder = path.join("interns", intern, "out", "findings");
+  const dir = path.join(runDir, folder);
   const findings: Finding[] = [];
   const rejected: Rejected[] = [];
-  if (!existsSync(dir)) return { findings, rejected };
-  const names = (await readdir(dir, { withFileTypes: true }))
-    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => entry.name)
-    .sort();
+  const info = await lstat(dir).catch((error: unknown) => {
+    if (errorCode(error) === "ENOENT") return null;
+    throw error;
+  });
+  if (info === null) return { findings, rejected };
+  if (!info.isDirectory()) {
+    rejected.push({ intern, file: folder, reason: `the findings folder is ${info.isSymbolicLink() ? "a symbolic link" : "not a directory"}` });
+    return { findings, rejected };
+  }
+  const names = (await readdir(dir)).filter((name) => name.endsWith(".json")).sort();
   for (const name of names) {
-    const file = path.join("interns", intern, "out", "findings", name);
+    const file = path.join(folder, name);
     try {
-      const data = parse(findingSchema, await Bun.file(path.join(dir, name)).text());
+      const data = parse(findingSchema, await readAgentFile(path.join(dir, name)));
       const contradicts = data.contradicts ?? null;
       if (data.kind === "inconsistency" && contradicts === null) throw new Invalid("contradicts is required when kind is inconsistency");
       findings.push({
@@ -165,8 +199,6 @@ export function parseGroups(raw: string, ids: string[]): string[][] {
 }
 
 export async function readConfirmation(runDir: string, intern: string): Promise<Confirmation> {
-  const file = Bun.file(path.join(runDir, "interns", intern, "out", "confirmation.json"));
-  if (!(await file.exists())) throw new Invalid("the file does not exist");
-  const data = parse(confirmationSchema, await file.text());
+  const data = parse(confirmationSchema, await readAgentFile(path.join(runDir, "interns", intern, "out", "confirmation.json")));
   return { reproduced: data.reproduced, observed: data.observed, evidence: await evidence(runDir, intern, data.evidence) };
 }

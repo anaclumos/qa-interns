@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { AgentError, openSession, type Session } from "../src/acp.ts";
@@ -15,6 +15,7 @@ const web = `${name}-web`;
 const root = path.join(tmpdir(), name);
 const out = path.join(root, "out");
 const login = path.join(root, "login");
+const credentials = path.join(login, ".credentials.json");
 const internDir = path.join(root, "intern");
 const transcript = path.join(internDir, "transcript.jsonl");
 const adapterLog = path.join(internDir, "adapter.log");
@@ -73,6 +74,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     mkdirSync(root);
     mkdirSync(out);
     mkdirSync(login);
+    writeFileSync(credentials, "{}");
     mkdirSync(internDir);
     await docker("network", "create", name);
     const server = `require("node:http").createServer((request, response) => response.end(${JSON.stringify(page)})).listen(8080)`;
@@ -86,6 +88,8 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
       name,
       "--user",
       `${process.getuid?.()}:${process.getgid?.()}`,
+      "-e",
+      "CLAUDE_CONFIG_DIR=/qa/login",
       "-v",
       `${path.join(import.meta.dir, "fake-agent.mjs")}:/opt/qa/fake-agent.mjs:ro`,
       "-v",
@@ -144,14 +148,14 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
   });
 
   test("a usage limit rejects the prompt with an AgentError that Claude counts as a login failure", async () => {
-    writeFileSync(path.join(login, "limit"), "");
+    writeFileSync(credentials, JSON.stringify({ limit: true }));
     let error: unknown;
     try {
       await session.prompt("You have 11 minutes left. Keep testing your charter.");
     } catch (reason) {
       error = reason;
     }
-    unlinkSync(path.join(login, "limit"));
+    writeFileSync(credentials, "{}");
     expect(error).toBeInstanceOf(AgentError);
     expect(error).toMatchObject({ code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } });
     expect(error instanceof AgentError && providers.claude.isLoginFailure(error)).toBe(true);

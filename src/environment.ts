@@ -22,7 +22,8 @@ export type Environment = { project: string; runner: string; devContainer: strin
 const devcontainer = join(dirname(fileURLToPath(import.meta.resolve("@devcontainers/cli/package.json"))), "devcontainer.js");
 const gib = 1024 ** 3;
 const mib = 1024 ** 2;
-const readyTimeout = 5 * 60_000;
+const minute = 60_000;
+const readyTimeout = 5 * minute;
 const waitTimeoutSeconds = "600";
 const proxyUrl = "http://qa-proxy:3128";
 
@@ -130,6 +131,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     `    networks: ${y(["qa_internal", "qa_egress"])}`,
     ...hardening,
     `    mem_limit: ${y("128m")}`,
+    "    cpus: 0.5",
     "    pids_limit: 128",
     `  "qa-runner":`,
     `    image: ${y(spec.runner.image)}`,
@@ -143,6 +145,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...hardening,
     "    pids_limit: 1024",
     `    mem_limit: ${y("2g")}`,
+    "    cpus: 2",
     `    networks: ${y(["qa_internal"])}`,
     "networks:",
     `  qa_internal: ${y({ internal: true, driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" }, ipam: { config: [{ subnet: internal }] } })}`,
@@ -152,7 +155,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
 }
 
 export function environmentMemory(target: Target | null): number {
-  const services = Object.values(target?.services ?? {});
+  const services = Object.values(target?.services ?? {}).filter((service) => service.profiles.length === 0);
   return services.reduce((sum, service) => sum + (service.memLimit ?? gib), 2 * gib + 128 * mib);
 }
 
@@ -187,7 +190,7 @@ function sourceComposeArgs(target: Target, root: string): string[] {
 
 export async function buildImages(runId: string, target: Target, sourceDir: string): Promise<Record<string, string>> {
   const services = Object.entries(target.services)
-    .filter(([, service]) => service.build)
+    .filter(([, service]) => service.build && service.profiles.length === 0)
     .map(([name]) => name);
   const images = Object.fromEntries(services.map((name) => [name, `qa-${runId}-${name}:latest`]));
   if (services.length === 0) return images;
@@ -196,7 +199,7 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
     const tags = join(dir, "tags.yml");
     const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(images[name])}`]);
     await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
-    await execute(["docker", "compose", "-p", projectName(runId, "build"), ...sourceComposeArgs(target, sourceDir), "-f", tags, "build", ...services]);
+    await execute(["docker", "compose", "-p", projectName(runId, "build"), ...sourceComposeArgs(target, sourceDir), "-f", tags, "build", ...services], { timeout: 30 * minute });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -240,7 +243,7 @@ async function waitReady(ready: string, runner: string, exec: string[], log: str
     : [...exec, "sh", "-c", ready];
   const deadline = Date.now() + readyTimeout;
   while (true) {
-    const result = await capture(probe, { log });
+    const result = await capture(probe, { log, timeout: url ? undefined : minute });
     const status = Number(result.stdout.trim());
     if (result.code === 0 && (!url || (status >= 200 && status < 300))) return;
     if (Date.now() >= deadline) {
@@ -268,8 +271,8 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   await Bun.write(config, `${JSON.stringify(overrideConfig(target, join(dir, "compose.qa.yml")), null, 2)}\n`);
 
   const up = await capture(
-    [devcontainer, "up", "--workspace-folder", workspace, "--override-config", config, "--user-data-folder", join(dir, "devcontainer-data"), "--id-label", `qa-interns.env=${project}`, "--log-format", "json"],
-    { env: { ...process.env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp }, log },
+    [process.execPath, devcontainer, "up", "--workspace-folder", workspace, "--override-config", config, "--user-data-folder", join(dir, "devcontainer-data"), "--id-label", `qa-interns.env=${project}`, "--log-format", "json"],
+    { env: { ...process.env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp }, log, timeout: 20 * minute },
   );
   const last = up.stdout.trim().split("\n").at(-1) ?? "";
   const result = upSchema.safeParse(last.startsWith("{") ? JSON.parse(last) : null);
@@ -286,9 +289,9 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
     { log },
   );
   const runner = await runnerId(project);
-  const exec = [devcontainer, "exec", "--container-id", devContainer, "--workspace-folder", workspace, "--override-config", config];
+  const exec = [process.execPath, devcontainer, "exec", "--container-id", devContainer, "--workspace-folder", workspace, "--override-config", config];
   await waitReady(target.settings.ready, runner, exec, log);
-  const output = await execute([...exec, "sh", "-c", target.settings.seed], { log });
+  const output = await execute([...exec, "sh", "-c", target.settings.seed], { log, timeout: 10 * minute });
   let seed: unknown;
   try {
     seed = JSON.parse(output);
@@ -296,13 +299,6 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
     throw new Error(`The seed command ${target.settings.seed} did not print one JSON document (${String(error)}); it printed: ${output.slice(0, 500)}`);
   }
   return { project, runner, devContainer, seed };
-}
-
-export async function replaceRunner(spec: EnvironmentSpec, env: Environment): Promise<Environment> {
-  await writeFiles(spec);
-  const log = join(envDir(spec), "env.log");
-  await execute(["docker", "compose", "-p", env.project, ...composeArgs(spec), "up", "-d", "--no-deps", "--force-recreate", "qa-runner", "qa-proxy"], { log });
-  return { ...env, runner: await runnerId(env.project) };
 }
 
 async function down(project: string): Promise<void> {

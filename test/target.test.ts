@@ -132,8 +132,8 @@ describe("loadTarget", () => {
     expect(target.service).toBe("web");
     expect(target.config.workspaceFolder).toBe("/app");
     expect(target.services).toEqual({
-      web: { build: true, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false },
-      db: { build: false, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false },
+      web: { build: true, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
+      db: { build: false, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
     });
   });
 
@@ -161,10 +161,10 @@ describe("loadTarget", () => {
 `;
     const target = await load(await fixture(compose, devcontainer({ dockerComposeFile: ["compose.yml"] })));
     expect(target.services).toEqual({
-      web: { build: false, memLimit: 536870912, networkMode: null, hasCpus: true, hasPidsLimit: true, deployLimits: false },
-      sidecar: { build: false, memLimit: null, networkMode: "service:web", hasCpus: false, hasPidsLimit: false, deployLimits: false },
-      worker: { build: true, memLimit: 268435456, networkMode: null, hasCpus: true, hasPidsLimit: true, deployLimits: true },
-      mailer: { build: false, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false },
+      web: { build: false, memLimit: 536870912, networkMode: null, hasCpus: true, hasPidsLimit: true, deployLimits: false, profiles: [] },
+      sidecar: { build: false, memLimit: null, networkMode: "service:web", hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] },
+      worker: { build: true, memLimit: 268435456, networkMode: null, hasCpus: true, hasPidsLimit: true, deployLimits: true, profiles: [] },
+      mailer: { build: false, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: ["mail"] },
     });
   });
 
@@ -180,6 +180,23 @@ describe("loadTarget", () => {
     ["named volume", "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"uploads:/data\"]\nvolumes:\n  uploads:\n    name: shop-uploads\n", "volume uploads sets name shop-uploads"],
     ["external network", "  web:\n    image: nginx:1.29-alpine\n    networks: [\"shared\"]\nnetworks:\n  shared:\n    external: true\n", "network shared is external (shared)"],
     ["named network", "  web:\n    image: nginx:1.29-alpine\n    networks: [\"backend\"]\nnetworks:\n  backend:\n    name: shop-backend\n", "network backend sets name shop-backend"],
+    ["privileged", "  web:\n    image: nginx:1.29-alpine\n    privileged: true\n", "service web sets privileged"],
+    ["pid host", "  web:\n    image: nginx:1.29-alpine\n    pid: host\n", "service web sets pid host"],
+    [
+      "the Docker socket",
+      "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"/var/run/docker.sock:/var/run/docker.sock\"]\n",
+      "service web mounts the Docker socket /var/run/docker.sock",
+    ],
+    [
+      "the Docker socket under /run in long syntax",
+      "  web:\n    image: nginx:1.29-alpine\n    volumes:\n      - type: bind\n        source: /run/docker.sock\n        target: /docker.sock\n        read_only: true\n",
+      "service web mounts the Docker socket /run/docker.sock",
+    ],
+    [
+      "a privileged service behind a profile",
+      "  web:\n    image: nginx:1.29-alpine\n  debug:\n    image: busybox:1.37\n    profiles: [\"debug\"]\n    privileged: true\n",
+      "service debug sets privileged",
+    ],
   ];
 
   test.each(unsafe)("reject %s", async (_, services, message) => {

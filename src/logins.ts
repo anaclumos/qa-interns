@@ -1,7 +1,7 @@
 import type { Subprocess } from "bun";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import type { Login, Provider } from "./types.ts";
 
@@ -45,6 +45,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
   const problems: string[] = [];
   const logins: Login[] = [];
   const firstIndex = new Map<string, number>();
+  const storeIndex = new Map<string, number>();
   for (const [index, value] of top.data.logins.entries()) {
     const id = rawId(value);
     const where = id === null ? `logins[${index}]` : `logins[${index}] "${id}"`;
@@ -62,6 +63,14 @@ export async function loadLogins(file: string): Promise<Login[]> {
     }
     const entry = parsed.data;
     if ((entry.store === undefined) === (entry.seat === undefined)) problems.push(`${where}: set exactly one of "store" or "seat"`);
+    if (entry.store !== undefined) {
+      const first = storeIndex.get(resolve(entry.store));
+      if (first === undefined) storeIndex.set(resolve(entry.store), index);
+      else problems.push(`${where}: duplicate store ${entry.store}, already used by logins[${first}]; one store serves one process at a time`);
+    }
+    if (entry.provider === "claude" && entry.store !== undefined && statSync(join(entry.store, ".credentials.json"), { throwIfNoEntry: false })?.isFile() !== true) {
+      problems.push(`${where}: claude store ${entry.store} has no .credentials.json`);
+    }
     if (entry.provider === "codex" && entry.store !== undefined) {
       if (statSync(join(entry.store, "auth.json"), { throwIfNoEntry: false })?.isFile() !== true) {
         problems.push(`${where}: codex store ${entry.store} has no auth.json`);
@@ -113,6 +122,7 @@ async function seat(login: Login, intern: string): Promise<Seat | null> {
 export class Scheduler {
   private readonly slots: Slot[];
   private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0 };
+  private readonly exhaustedStores = new Set<string>();
 
   constructor(logins: Login[]) {
     this.slots = logins.map((login) => ({ login, active: 0, exhausted: false }));
@@ -136,6 +146,10 @@ export class Scheduler {
       let granted: Seat | null = null;
       try {
         granted = await seat(slot.login, intern);
+        if (granted !== null && this.exhaustedStores.has(granted.store)) {
+          granted.keeper?.kill();
+          granted = null;
+        }
       } finally {
         if (granted === null) slot.active -= 1;
       }
@@ -156,10 +170,11 @@ export class Scheduler {
     }
   }
 
-  exhaust(loginId: string): void {
-    const slot = this.slots.find((candidate) => candidate.login.id === loginId);
-    if (slot === undefined) throw new Error(`No login with id ${loginId}`);
-    slot.exhausted = true;
+  exhaust(lease: Lease): void {
+    const slot = this.slots.find((candidate) => candidate.login.id === lease.login.id);
+    if (slot === undefined) throw new Error(`No login with id ${lease.login.id}`);
+    if (slot.login.store === null) this.exhaustedStores.add(lease.store);
+    else slot.exhausted = true;
   }
 
   private next(avoid: Provider[], tried: Set<Slot>): Slot | undefined {

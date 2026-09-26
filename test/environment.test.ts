@@ -2,7 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { environmentMemory, freeSlot, renderOverride, runnerEnv, slotSubnets, writeChromePolicy, type EnvironmentSpec } from "../src/environment.ts";
+import { z } from "zod";
+import { buildImages, environmentMemory, freeSlot, renderOverride, runnerEnv, slotSubnets, writeChromePolicy, type EnvironmentSpec } from "../src/environment.ts";
 import { loadTarget, type Target } from "../src/target.ts";
 
 const ledgerSource = join(import.meta.dir, "..", "eval", "ledger");
@@ -125,6 +126,7 @@ describe("renderOverride", () => {
       cap_drop: ["ALL"],
       security_opt: ["no-new-privileges:true"],
       mem_limit: "134217728",
+      cpus: 0.5,
       pids_limit: 128,
     });
     expect(Object.keys(config.services["qa-proxy"]?.networks ?? {}).sort()).toEqual(["qa_egress", "qa_internal"]);
@@ -137,6 +139,7 @@ describe("renderOverride", () => {
       cap_drop: ["ALL"],
       security_opt: ["no-new-privileges:true"],
       mem_limit: "2147483648",
+      cpus: 2,
       pids_limit: 1024,
       tmpfs: [
         "/tmp:rw,nosuid,nodev,size=1g",
@@ -146,21 +149,21 @@ describe("renderOverride", () => {
       environment: environment.runner.env,
     });
     expect(Object.keys(runner?.networks ?? {})).toEqual(["qa_internal"]);
-    expect(runner?.volumes).toEqual([
-      { type: "bind", source: join(runDir, "interns", "i1", "out"), target: "/qa/out", bind: { create_host_path: false } },
+    const volumes = z.array(z.object({ type: z.string(), source: z.string(), target: z.string(), read_only: z.boolean().default(false) }));
+    expect(volumes.parse(runner?.volumes)).toEqual([
+      { type: "bind", source: join(runDir, "interns", "i1", "out"), target: "/qa/out", read_only: false },
       {
         type: "bind",
         source: join(runDir, "chrome-policy.json"),
         target: "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json",
         read_only: true,
-        bind: { create_host_path: false },
       },
-      { type: "bind", source: "/home/dev/.local/share/claude-1", target: "/qa/login", bind: { create_host_path: false } },
+      { type: "bind", source: "/home/dev/.local/share/claude-1", target: "/qa/login", read_only: false },
       {
         type: "bind",
         source: join(runDir, "envs", "i1", "files", "home", "qa", ".codex", "config.toml"),
         target: "/home/qa/.codex/config.toml",
-        bind: { create_host_path: false },
+        read_only: false,
       },
     ]);
 
@@ -238,9 +241,21 @@ describe("environment helpers", () => {
     const mib = 1024 ** 2;
     const target = await loadTarget(ref, ledgerSource);
     expect(environmentMemory(target)).toBe(4 * gib + 128 * mib);
-    const limited: Target = { ...target, services: { ...target.services, db: { build: false, memLimit: 512 * mib, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false } } };
+    const limited: Target = { ...target, services: { ...target.services, db: { build: false, memLimit: 512 * mib, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: [] } } };
     expect(environmentMemory(limited)).toBe(3 * gib + 640 * mib);
     expect(environmentMemory(null)).toBe(2 * gib + 128 * mib);
+  });
+
+  test("leave services behind a Compose profile out of the memory reservation and the image build", async () => {
+    const gib = 1024 ** 3;
+    const mib = 1024 ** 2;
+    const target = await loadTarget(ref, ledgerSource);
+    const profiled: Target = {
+      ...target,
+      services: { web: { build: true, memLimit: null, networkMode: null, hasCpus: false, hasPidsLimit: false, deployLimits: false, profiles: ["debug"] } },
+    };
+    expect(environmentMemory(profiled)).toBe(2 * gib + 128 * mib);
+    expect(await buildImages("3f9a1c2e", profiled, ledgerSource)).toEqual({});
   });
 
   test("route every environment host around the proxy and allow only those hosts in the browser", () => {

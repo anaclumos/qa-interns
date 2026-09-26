@@ -11,6 +11,7 @@ export type ComposeService = {
   hasCpus: boolean;
   hasPidsLimit: boolean;
   deployLimits: boolean;
+  profiles: string[];
 };
 export type Target = TargetRef & {
   settings: QaSettings;
@@ -20,12 +21,16 @@ export type Target = TargetRef & {
   services: Record<string, ComposeService>;
 };
 
-type CommandOptions = { env?: Record<string, string | undefined>; log?: string };
+type CommandOptions = { env?: Record<string, string | undefined>; log?: string; timeout?: number };
 
 export async function capture(cmd: string[], options: CommandOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
-  const proc = Bun.spawn(cmd, { env: options.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const start = performance.now();
+  const proc = Bun.spawn(cmd, { env: options.env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: options.timeout });
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (options.log !== undefined) await appendFile(options.log, stderr);
+  if (options.timeout !== undefined && proc.signalCode !== null && performance.now() - start >= options.timeout) {
+    throw new Error(`${cmd.join(" ")} timed out after ${options.timeout / 1000} seconds: ${stderr.trim().slice(-2000)}`);
+  }
   return { code, stdout, stderr };
 }
 
@@ -73,6 +78,10 @@ const composeSchema = z.object({
       cpus: z.number().optional(),
       pids_limit: z.number().optional(),
       deploy: z.object({ resources: z.object({ limits: limitsSchema.optional() }).optional() }).optional(),
+      profiles: z.array(z.string()).optional(),
+      privileged: z.boolean().optional(),
+      pid: z.string().optional(),
+      volumes: z.array(z.object({ source: z.string().optional() })).optional(),
     }),
   ),
   volumes: z.record(z.string(), z.object({ name: z.string(), external: z.boolean().optional() })).optional(),
@@ -80,6 +89,7 @@ const composeSchema = z.object({
 });
 
 const checkProject = "qa-interns-check";
+const dockerSockets = ["/var/run/docker.sock", "/run/docker.sock"];
 
 export async function resolveTarget(dir: string, rev: string): Promise<TargetRef> {
   const git = ["git", "-C", dir, "rev-parse"];
@@ -134,6 +144,11 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     if (entry.network_mode !== undefined && !entry.network_mode.startsWith("service:")) {
       violations.push(`service ${name} sets network_mode ${entry.network_mode}`);
     }
+    if (entry.privileged === true) violations.push(`service ${name} sets privileged`);
+    if (entry.pid === "host") violations.push(`service ${name} sets pid host`);
+    for (const volume of entry.volumes ?? []) {
+      if (volume.source !== undefined && dockerSockets.includes(volume.source)) violations.push(`service ${name} mounts the Docker socket ${volume.source}`);
+    }
   }
   for (const [kind, entries] of [
     ["volume", project.volumes ?? {}],
@@ -159,6 +174,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       hasCpus: entry.cpus !== undefined || limits?.cpus !== undefined,
       hasPidsLimit: entry.pids_limit !== undefined || limits?.pids !== undefined,
       deployLimits: limits !== undefined,
+      profiles: entry.profiles ?? [],
     };
   }
   return { ...ref, settings: parsed.data.customizations["qa-interns"], config, composeFiles, service, services };

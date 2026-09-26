@@ -90,7 +90,7 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
   });
   await check("compose", checkCompose);
   await check("isolated network", checkNetwork);
-  await check("dev container cli", async () => `version ${(await execute([devcontainer, "--version"])).trim()}`);
+  await check("dev container cli", async () => `version ${(await execute([process.execPath, devcontainer, "--version"])).trim()}`);
   await check("git", async () => (await execute(["git", "--version"])).trim());
   let image: string | null = null;
   await check("runner image", async () => {

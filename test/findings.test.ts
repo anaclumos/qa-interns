@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { parseGroups, readConfirmation, readFindings } from "../src/findings.ts";
@@ -54,12 +54,25 @@ async function finding(intern: string, name: string, value: unknown) {
   await write(intern, `findings/${name}.json`, JSON.stringify(value, null, 2));
 }
 
-async function reasonFor(name: string, value: unknown) {
-  await finding("i2", name, value);
+async function reasonOf(name: string) {
   const { rejected } = await readFindings(runDir, "i2", environment);
   const entry = rejected.find((item) => item.file === `interns/i2/out/findings/${name}.json`);
   if (entry === undefined) throw new Error(`${name}.json was not rejected`);
   return entry.reason;
+}
+
+async function reasonFor(name: string, value: unknown) {
+  await finding("i2", name, value);
+  return reasonOf(name);
+}
+
+function mkfifo(file: string) {
+  const made = Bun.spawnSync(["mkfifo", file], { stderr: "pipe" });
+  if (made.exitCode !== 0) throw new Error(made.stderr.toString());
+}
+
+function findingPath(intern: string, name: string) {
+  return path.join(runDir, "interns", intern, "out", "findings", `${name}.json`);
 }
 
 beforeAll(async () => {
@@ -173,6 +186,46 @@ describe("readFindings", () => {
     expect(await reasonFor("array", [pagination])).toBe("the file must be one JSON object");
   });
 
+  test("rejects a findings folder that is a file", async () => {
+    await write("f1", "findings", "not a folder");
+    expect(await readFindings(runDir, "f1", environment)).toEqual({
+      findings: [],
+      rejected: [{ intern: "f1", file: "interns/f1/out/findings", reason: "the findings folder is not a directory" }],
+    });
+  });
+
+  test("rejects a findings folder that is a symlink to a folder outside the out dir", async () => {
+    await Bun.write(path.join(outside, "findings", "planted.json"), JSON.stringify({ ...pagination, evidence: [] }));
+    await mkdir(path.join(runDir, "interns", "f2", "out"), { recursive: true });
+    await symlink(path.join(outside, "findings"), path.join(runDir, "interns", "f2", "out", "findings"));
+    expect(await readFindings(runDir, "f2", environment)).toEqual({
+      findings: [],
+      rejected: [{ intern: "f2", file: "interns/f2/out/findings", reason: "the findings folder is a symbolic link" }],
+    });
+  });
+
+  test("rejects a finding file that is a symlink to a file outside the out dir", async () => {
+    await Bun.write(path.join(outside, "planted.json"), JSON.stringify({ ...pagination, evidence: [] }));
+    await symlink(path.join(outside, "planted.json"), findingPath("i2", "planted"));
+    expect(await reasonOf("planted")).toBe("the file is a symbolic link");
+  });
+
+  test("rejects a FIFO finding file without waiting for a writer", async () => {
+    mkfifo(findingPath("i2", "pipe"));
+    expect(await reasonOf("pipe")).toBe("the file is not a regular file");
+  });
+
+  test("rejects a finding file it cannot read", async () => {
+    await finding("i2", "locked", pagination);
+    await chmod(findingPath("i2", "locked"), 0o000);
+    expect(await reasonOf("locked")).toBe("the file is not readable");
+  });
+
+  test("rejects a finding file above 1 MiB", async () => {
+    await finding("i2", "huge", { ...pagination, observed: "x".repeat(1024 ** 2) });
+    expect(await reasonOf("huge")).toBe(`the file is ${Bun.file(findingPath("i2", "huge")).size} bytes, above the limit of 1 MiB`);
+  });
+
   test("accepts null contradicts for a kind other than inconsistency", async () => {
     await finding("i1", "null-contradicts", { ...pagination, contradicts: null, evidence: [] });
     const { findings } = await readFindings(runDir, "i1", environment);
@@ -241,6 +294,16 @@ describe("readConfirmation", () => {
   test("throws when reproduced is not a boolean", async () => {
     await write("c3", "confirmation.json", JSON.stringify({ reproduced: "yes", observed: "The row repeats.", evidence: [] }));
     await expect(readConfirmation(runDir, "c3")).rejects.toThrow("reproduced must be true or false");
+  });
+
+  test("throws when confirmation.json is a symlink or a FIFO", async () => {
+    await Bun.write(path.join(outside, "confirmation.json"), JSON.stringify({ reproduced: true, observed: "Planted outside the out dir.", evidence: [] }));
+    await mkdir(path.join(runDir, "interns", "c5", "out"), { recursive: true });
+    await symlink(path.join(outside, "confirmation.json"), path.join(runDir, "interns", "c5", "out", "confirmation.json"));
+    await expect(readConfirmation(runDir, "c5")).rejects.toThrow("the file is a symbolic link");
+    await mkdir(path.join(runDir, "interns", "c6", "out"), { recursive: true });
+    mkfifo(path.join(runDir, "interns", "c6", "out", "confirmation.json"));
+    await expect(readConfirmation(runDir, "c6")).rejects.toThrow("the file is not a regular file");
   });
 
   test("throws when an evidence file does not exist", async () => {

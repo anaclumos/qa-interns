@@ -23,7 +23,7 @@ async function logins(name: string, entries: { id: string; limit: boolean }[]): 
   for (const entry of entries) {
     const store = join(root, "stores", name, entry.id);
     await mkdir(store, { recursive: true });
-    if (entry.limit) await Bun.write(join(store, "limit"), "");
+    await Bun.write(join(store, ".credentials.json"), JSON.stringify({ limit: entry.limit }));
     list.push({ id: entry.id, provider: "claude", store });
   }
   const file = join(root, `${name}-logins.json`);
