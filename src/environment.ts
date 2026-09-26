@@ -129,7 +129,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
       if (pids !== null) lines.push(`    pids_limit: ${pids}`);
     }
     const image = spec.images[name];
-    if (image !== undefined) lines.push(`    image: ${y(image)}`, "    build: !reset null");
+    if (image !== undefined) lines.push(`    image: ${y(image)}`, "    build: !reset null", `    pull_policy: ${y("never")}`);
   }
   const hardening = ["    init: true", "    read_only: true", `    cap_drop: ${y(["ALL"])}`, `    security_opt: ${y(["no-new-privileges:true"])}`];
   const volumes = [

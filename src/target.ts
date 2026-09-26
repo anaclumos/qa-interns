@@ -96,7 +96,7 @@ const composeSchema = z.object({
       pids_limit: z.number().optional(),
       deploy: z.object({ resources: z.object({ limits: limitsSchema.optional() }).optional() }).optional(),
       profiles: z.array(z.string()).optional(),
-      depends_on: z.record(z.string(), z.unknown()).optional(),
+      depends_on: z.record(z.string(), z.object({ required: z.boolean().optional() })).optional(),
       privileged: z.boolean().optional(),
       pid: z.string().optional(),
       ipc: z.string().optional(),
@@ -183,7 +183,9 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const start = (name: string) => {
     if (starts.has(name)) return;
     starts.add(name);
-    for (const dependency of Object.keys(project.services[name]?.depends_on ?? {})) start(dependency);
+    for (const [dependency, condition] of Object.entries(project.services[name]?.depends_on ?? {})) {
+      if (condition.required !== false) start(dependency);
+    }
   };
   started.forEach(start);
   const violations: string[] = [];
@@ -233,7 +235,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       networkMode: entry.network_mode ?? null,
       aliases,
       hasCpus: entry.cpus !== undefined || limits?.cpus !== undefined,
-      hasPidsLimit: entry.pids_limit !== undefined || limits?.pids !== undefined,
+      hasPidsLimit: (entry.pids_limit ?? 0) > 0 || (limits?.pids ?? 0) > 0,
       deployLimits: limits !== undefined,
       active,
     };

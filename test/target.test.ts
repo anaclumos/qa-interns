@@ -186,20 +186,43 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({ web: true, worker: true, mailer: false });
   });
 
-  test("treat a dependency behind a profile as active when a started service depends on it", async () => {
+  test("treat a required dependency behind a profile as active and an optional one as inactive", async () => {
     const compose = `services:
   web:
     image: nginx:1.29-alpine
-    depends_on: ["cache"]
+    depends_on:
+      cache:
+        condition: service_started
+      tracing:
+        condition: service_started
+        required: false
   cache:
     image: redis:8.2-alpine
     profiles: ["cache"]
+  tracing:
+    image: jaegertracing/jaeger:2.9.0
+    profiles: ["tracing"]
   mailer:
     image: axllent/mailpit:v1.27
     profiles: ["mail"]
 `;
     const target = await load(await fixture(compose, devcontainer({})));
-    expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({ web: true, cache: true, mailer: false });
+    expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({
+      web: true,
+      cache: true,
+      tracing: false,
+      mailer: false,
+    });
+  });
+
+  test("treat an unlimited pids_limit as no limit", async () => {
+    const compose = `services:
+  web:
+    image: nginx:1.29-alpine
+    pids_limit: -1
+`;
+    const target = await load(await fixture(compose, devcontainer({})));
+    expect(target.services.web?.hasPidsLimit).toBe(false);
   });
 
   const unsafe: [string, string, string][] = [

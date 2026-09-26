@@ -20,7 +20,7 @@ import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
 import { renderReport } from "./report.ts";
-import { newRunId, processStart, runDirFor, writeState } from "./state.ts";
+import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
 import type { Confirmation, Finding, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
 
@@ -494,7 +494,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const ref = await resolveTarget(opts.dir, opts.rev);
   const runId = newRunId();
   const runDir = runDirFor(runId);
-  await mkdir(runDir, { recursive: true });
+  await mkdir(runsDir(), { recursive: true });
+  await mkdir(runDir);
   const state: RunState = {
     runId,
     pid: process.pid,
