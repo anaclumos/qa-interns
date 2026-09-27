@@ -488,6 +488,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         }
       } finally {
         await stopRun(runId);
+        await removeCopies(runDir, runId, image);
       }
     },
     5 * 60_000,
