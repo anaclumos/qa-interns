@@ -390,7 +390,9 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     expect(images).toEqual({ web: run, worker: run, hub: run, tagged: run });
     const runDir = await scratch();
     const config = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target, { images }), 1000, 1000));
-    expect(config.services.worker).toMatchObject({ image: run, pull_policy: "never" });
+    for (const name of ["worker", "hub", "tagged"]) expect(config.services[name]).toMatchObject({ image: run, pull_policy: "never" });
+    expect(config.services.other?.image).toBe(`${scope}app:v2`);
+    expect(config.services.other?.pull_policy).toBeUndefined();
   });
 
   test("route every environment host around the proxy and allow only those hosts in the browser", () => {
