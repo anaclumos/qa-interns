@@ -1,12 +1,17 @@
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError, type AnyMessage, type NewSessionResponse } from "@agentclientprotocol/sdk";
 import { spawn } from "node:child_process";
 import { appendFileSync, statSync } from "node:fs";
-import { Readable, Writable } from "node:stream";
+import { Writable } from "node:stream";
+import { ReadableStream } from "node:stream/web";
 import { version } from "../package.json";
 import type { ProviderSpec } from "./providers.ts";
 
 const startupMs = 5 * 60_000;
 const logLimit = 64 * 1024 ** 2;
+const lineLimit = 64 * 1024 ** 2;
+const heldReads = 1024;
+const sentLimit = 64 * 1024 ** 2;
+const lastMessageLength = 300;
 
 export class AgentError extends Error {
   code: number;
@@ -68,12 +73,46 @@ export async function openSession(opts: { container: string; provider: ProviderS
 
   const record = (from: "client" | "agent", message: AnyMessage) =>
     transcript(`${JSON.stringify({ t: new Date().toISOString(), from, message })}\n`);
-  const wire = ndJsonStream(Writable.toWeb(stdin), Readable.toWeb(stdout) as ReadableStream<Uint8Array>);
+  const overlong = new Error(`${argv.join(" ")} printed more than ${lineLimit / 1024 ** 2} MiB without a newline`);
+  const oversent = new Error(`qa-interns sent more than ${sentLimit / 1024 ** 2} MiB to ${argv.join(" ")}`);
+  let unterminated = 0;
+  let held: Uint8Array[] = [];
+  const lines = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      for (let start = 0; ; ) {
+        const newline = chunk.indexOf(0x0a, start);
+        unterminated += (newline === -1 ? chunk.byteLength : newline) - start;
+        if (unterminated > lineLimit) throw overlong;
+        if (newline === -1) break;
+        unterminated = 0;
+        start = newline + 1;
+      }
+      held.push(chunk);
+      if (held.length < heldReads && !chunk.includes(0x0a)) return;
+      controller.enqueue(held.length === 1 ? chunk : Buffer.concat(held));
+      held = [];
+    },
+    flush(controller) {
+      if (held.length > 0) controller.enqueue(Buffer.concat(held));
+    },
+  });
+  let sent = 0;
+  const stdinWriter = Writable.toWeb(stdin).getWriter();
+  const input = new WritableStream<Uint8Array>({
+    write(bytes) {
+      sent += bytes.byteLength;
+      if (sent > sentLimit) throw oversent;
+      return stdinWriter.write(bytes);
+    },
+  });
+  const wire = ndJsonStream(input, ReadableStream.from<Uint8Array>(stdout).pipeThrough(lines));
   const writer = wire.writable.getWriter();
+  let turn: string | number | null | undefined;
   const stream = {
     writable: new WritableStream<AnyMessage>({
       write(message) {
         record("client", message);
+        if ("method" in message && "id" in message && message.method === methods.agent.session.prompt) turn = message.id;
         return writer.write(message);
       },
     }),
@@ -81,6 +120,11 @@ export async function openSession(opts: { container: string; provider: ProviderS
       new TransformStream<AnyMessage, AnyMessage>({
         transform(message, controller) {
           record("agent", message);
+          if ("method" in message) {
+            if (message.method === methods.client.session.update && turn === undefined) return;
+          } else if (message.id === turn) {
+            turn = undefined;
+          }
           controller.enqueue(message);
         },
       }),
@@ -116,6 +160,7 @@ export async function openSession(opts: { container: string; provider: ProviderS
   const failure = async (error: unknown) => {
     if (error instanceof RequestError) return new AgentError(error.code, error.message, error.data);
     await close();
+    if (error === overlong || error === oversent) return error;
     const stderr = (await Bun.file(opts.adapterLog).text()).slice(-2000);
     return new Error(`${argv.join(" ")} exited with ${child.exitCode ?? child.signalCode}: ${stderr}`, { cause: error });
   };
@@ -154,7 +199,7 @@ export async function openSession(opts: { container: string; provider: ProviderS
             if (message.kind === "stop") return;
             if (message.update.sessionUpdate === "tool_call") toolCalls += 1;
             if (message.update.sessionUpdate === "agent_message_chunk" && message.update.content.type === "text") {
-              lastMessage += message.update.content.text;
+              lastMessage = (lastMessage + message.update.content.text).slice(0, lastMessageLength);
             }
           }
         };
