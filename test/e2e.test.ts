@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { cp, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -19,7 +20,7 @@ const timeout = 20 * 60_000;
 const title = "Home page shows the fake defect";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false };
+type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
@@ -57,6 +58,14 @@ function intern(state: RunState, internId: string) {
   const found = state.interns.find((entry) => entry.id === internId);
   if (found === undefined) throw new Error(`state has no intern ${internId}`);
   return found;
+}
+
+function internalSubnet(runDir: string, internId: string): string {
+  const network = readFileSync(join(runDir, "envs", internId, "compose.qa.yml"), "utf8")
+    .split("\n")
+    .find((entry) => entry.startsWith("  qa_internal: "));
+  if (network === undefined) throw new Error(`compose.qa.yml of ${internId} has no qa_internal network`);
+  return JSON.parse(network.slice("  qa_internal: ".length)).ipam.config[0].subnet;
 }
 
 describe.skipIf(!dockerAvailable)("runQa end to end with the fake agent", () => {
@@ -167,9 +176,12 @@ USER qa
   );
 
   test(
-    "an intern at a usage limit moves to another login and restarts its charter, and each attempt keeps its own output",
+    "an intern at a usage limit moves to another login and restarts its charter in a free subnet, and each attempt keeps its own output",
     async () => {
       const lines: string[] = [];
+      const blocker = `qair-f-e2e-${id}-slot`;
+      let first = null as string | null;
+      let blocked = null as number | null;
       const runDir = await runQa({
         dir: target,
         rev: "HEAD",
@@ -182,11 +194,20 @@ USER qa
           { id: "claude-no-confirm", provider: "claude", confirms: false, model: "fake-model-c" },
         ]),
         runnerImage: async () => fakeImage,
-        print: (line) => lines.push(line),
+        print: (line) => {
+          lines.push(line);
+          const [dir] = lines;
+          if (dir === undefined || line !== "i1 starting on claude-confirm-limit (claude)") return;
+          first = internalSubnet(dir, "i1");
+          blocked = Bun.spawnSync(["docker", "network", "create", "--internal", "--subnet", first, blocker], { stdout: "ignore" }).exitCode;
+        },
+      }).finally(async () => {
+        if (blocked === 0) await execute(["docker", "network", "rm", blocker]);
       });
 
       expect(lines).toContain("i1 starting on claude-charter-limit (claude)");
       expect(lines).toContain("i1 starting on claude-confirm-limit (claude)");
+      expect(internalSubnet(runDir, "i1")).not.toBe(first);
       expect(lines).toContain("c1 starting on claude-confirm-limit (claude)");
       expect(lines).toContain("c1 starting on claude-no-confirm (claude)");
       const state = await readState(runDir);
@@ -225,6 +246,42 @@ USER qa
         ["i1/out-2/fake-home", ["interns/i1/out-2/evidence/page.html"], { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-b" }],
       ]);
       expect(await Bun.file(join(runDir, "interns", "c1", "out-2", "confirmation.json")).exists()).toBe(false);
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "a runner file stops at 1 GiB, and an intern whose /qa/out passes 1 GiB is stopped and keeps its findings",
+    async () => {
+      const lines: string[] = [];
+      const run = runQa({
+        dir: target,
+        rev: "HEAD",
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      await expect(run).rejects.toThrow("No testing intern completed");
+      const runDir = lines[0];
+      if (runDir === undefined) throw new Error("runQa printed no run directory");
+      const state = await readState(runDir);
+      expect(state.phase).toBe("failed");
+      expect(intern(state, "i1")).toMatchObject({
+        status: "failed",
+        findings: 1,
+        detail: `${join(runDir, "interns", "i1", "out")} holds more than 1 GiB, so its runner was stopped`,
+      });
+      expect(Bun.file(join(runDir, "interns", "i1", "out", "evidence", "big.bin")).size).toBe(1024 ** 3);
+
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.groups.map((group: { findings: { id: string }[] }) => group.findings.map((finding) => finding.id))).toEqual([["i1/fake-home"]]);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
