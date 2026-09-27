@@ -348,6 +348,66 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       "  web:\n    image: nginx:1.29-alpine\n  debug:\n    image: busybox:1.37\n    profiles: [\"debug\"]\n    privileged: true\n",
       "service debug sets privileged",
     ],
+    ["uts host", "  web:\n    image: nginx:1.29-alpine\n    uts: host\n", "service web sets uts host"],
+    ["a seccomp profile from a file", "  web:\n    image: nginx:1.29-alpine\n    security_opt: [\"seccomp=../allow.json\"]\n", "service web sets security_opt seccomp=../allow.json"],
+    ["the pid namespace of a container outside the project", "  web:\n    image: nginx:1.29-alpine\n    pid: \"container:shop-db\"\n", "service web sets pid container:shop-db"],
+    ["the ipc namespace of a container outside the project", "  web:\n    image: nginx:1.29-alpine\n    ipc: \"container:shop-db\"\n", "service web sets ipc container:shop-db"],
+    ["a build on the host network", "  web:\n    build:\n      context: ..\n      network: host\n", "service web builds on network host"],
+    ["a privileged build", "  web:\n    build:\n      context: ..\n      privileged: true\n", "service web builds privileged"],
+    ["a build entitlement", "  web:\n    build:\n      context: ..\n      entitlements: [\"security.insecure\"]\n", "service web builds with entitlement security.insecure"],
+    ["SSH agent forwarding into a build", "  web:\n    build:\n      context: ..\n      ssh: [\"default\"]\n", "service web builds with SSH default"],
+    ["a build cache read with exporter attributes", "  web:\n    build:\n      context: ..\n      cache_from: [\"TYPE=local,src=/srv/cache\"]\n", "service web builds with cache_from TYPE=local,src=/srv/cache"],
+    ["a build cache written anywhere", "  web:\n    build:\n      context: ..\n      cache_to: [\"type=registry,ref=shop/web:buildcache\"]\n", "service web builds with cache_to type=registry,ref=shop/web:buildcache"],
+    ["cgroup host", "  web:\n    image: nginx:1.29-alpine\n    cgroup: host\n", "service web sets cgroup host"],
+    [
+      "a privileged lifecycle hook",
+      "  web:\n    image: nginx:1.29-alpine\n    post_start:\n      - command: [\"sysctl\", \"-w\", \"kernel.core_pattern=/tmp/core\"]\n        privileged: true\n",
+      "service web runs a privileged post_start hook",
+    ],
+    ["a device cgroup rule", "  web:\n    image: nginx:1.29-alpine\n    device_cgroup_rules: [\"b 8:* rmw\"]\n", "service web sets device_cgroup_rules b 8:* rmw"],
+    ["GPUs", "  web:\n    image: nginx:1.29-alpine\n    gpus: all\n", "service web requests GPUs"],
+    ["a container runtime other than runc", "  web:\n    image: nginx:1.29-alpine\n    runtime: nvidia\n", "service web sets runtime nvidia"],
+    [
+      "a device reservation",
+      "  web:\n    image: nginx:1.29-alpine\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - capabilities: [\"gpu\"]\n",
+      "service web reserves devices",
+    ],
+    ["the Docker API socket", "  web:\n    image: nginx:1.29-alpine\n    use_api_socket: true\n", "service web sets use_api_socket"],
+    ["volumes from a container outside the project", "  web:\n    image: nginx:1.29-alpine\n    volumes_from: [\"container:shared-uploads\"]\n", "service web takes volumes from container:shared-uploads"],
+    [
+      "a volume whose driver options bind a host folder",
+      "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"uploads:/data\"]\nvolumes:\n  uploads:\n    driver: local\n    driver_opts: { type: none, o: bind, device: /srv/uploads }\n",
+      "volume uploads sets driver_opts",
+    ],
+    ["a volume driver other than local", "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"uploads:/data\"]\nvolumes:\n  uploads:\n    driver: rclone\n", "volume uploads uses driver rclone"],
+    ["an env_file outside the target", "  web:\n    image: nginx:1.29-alpine\n    env_file: /etc/hostname\n", "service web reads env_file /etc/hostname, which resolves to /etc/hostname, outside the target directory"],
+    ["an env_file path that a variable points outside the target", "  web:\n    image: nginx:1.29-alpine\n    env_file: ${HOME}/.config/shop/app.env\n", "/.config/shop/app.env, which resolves to "],
+    [
+      "a secret file outside the target",
+      "  web:\n    image: nginx:1.29-alpine\n    secrets: [\"hosts\"]\nsecrets:\n  hosts:\n    file: /etc/hosts\n",
+      "secret hosts reads file /etc/hosts, which resolves to /etc/hosts, outside the target directory",
+    ],
+    [
+      "a config file outside the target",
+      "  web:\n    image: nginx:1.29-alpine\n    configs: [\"hosts\"]\nconfigs:\n  hosts:\n    file: /etc/hosts\n",
+      "config hosts reads file /etc/hosts, which resolves to /etc/hosts, outside the target directory",
+    ],
+    ["a build context outside the target", "  web:\n    build: /etc\n", "service web builds from context /etc, which resolves to /etc, outside the target directory"],
+    [
+      "a Dockerfile outside the target",
+      "  web:\n    build:\n      context: ..\n      dockerfile: /etc/hostname\n",
+      "service web builds from Dockerfile /etc/hostname, which resolves to /etc/hostname, outside the target directory",
+    ],
+    [
+      "an additional build context outside the target",
+      "  web:\n    build:\n      context: ..\n      additional_contexts:\n        host: /etc\n",
+      "service web builds with additional context host /etc, which resolves to /etc, outside the target directory",
+    ],
+    [
+      "an additional build context from a host OCI layout",
+      "  web:\n    build:\n      context: ..\n      additional_contexts:\n        base: oci-layout:///srv/layouts/base\n",
+      "service web builds with additional context base from host OCI layout oci-layout:///srv/layouts/base",
+    ],
   ];
 
   test.each(unsafe)("reject %s", async (_, services, message) => {
@@ -403,12 +463,71 @@ networks:
     expect(Object.keys(target.services)).toEqual(["web"]);
   });
 
+  test("accept host paths inside the target and build contexts that name no host path", async () => {
+    const compose = `services:
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      additional_contexts:
+        base: docker-image://alpine:3.22
+        docs: https://github.com/docker/buildx.git
+      network: none
+      cache_from: ["shop/web:buildcache"]
+    env_file: ["../app.env"]
+    secrets: ["token"]
+    configs: ["nginx"]
+    volumes_from: ["db"]
+    volumes: ["cache:/cache"]
+  db:
+    image: postgres:17-alpine
+    volumes: ["../data/postgres:/var/lib/postgresql/data"]
+secrets:
+  token:
+    file: ../token.txt
+configs:
+  nginx:
+    content: "server { listen 80; }"
+volumes:
+  cache:
+    driver: local
+`;
+    const root = await repo({
+      ".devcontainer/devcontainer.json": devcontainer(),
+      ".devcontainer/compose.yml": compose,
+      "Dockerfile": "FROM nginx:1.29-alpine\n",
+      "app.env": "APP_MODE=test\n",
+      "token.txt": "sandbox-token\n",
+    });
+    const target = await load(root);
+    expect(Object.keys(target.services)).toEqual(["db", "web"]);
+  });
+
   test("reject a bind mount through a symbolic link in the target that points outside it", async () => {
     const root = await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: [\"../host:/host\"]\n");
     await symlink("/etc", join(root, "host"));
     git(root, "add", "-A");
     git(root, "commit", "-q", "-m", "link");
     await expect(load(root)).rejects.toThrow("/host, which resolves to /etc, outside the target directory");
+  });
+
+  test("reject a project .env file that is a symbolic link to a host file", async () => {
+    const outside = await scratch("qa-interns-outside-");
+    await Bun.write(join(outside, "host.env"), "TAG=from-host\n");
+    const root = await fixture("services:\n  web:\n    image: busybox:${TAG:-1.37}\n");
+    await symlink(join(outside, "host.env"), join(root, ".devcontainer", ".env"));
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "link");
+    await expect(load(root)).rejects.toThrow(`/.devcontainer/.env, which resolves to ${await realpath(outside)}/host.env, outside the target directory`);
+  });
+
+  test("reject a missing bind source under a symbolic link in the target that points outside it", async () => {
+    const outside = await scratch("qa-interns-outside-");
+    const root = await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: [\"../shared/uploads:/data\"]\n");
+    await symlink(outside, join(root, "shared"));
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "link");
+    await expect(load(root)).rejects.toThrow(`/shared/uploads, which resolves to ${await realpath(outside)}/uploads, outside the target directory`);
   });
 
   test("reject a Compose file outside the target, by its path or through a symbolic link", async () => {
