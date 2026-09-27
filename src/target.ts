@@ -175,6 +175,7 @@ const composeSchema = z.object({
       mem_limit: z.string().optional(),
       cpus: z.number().optional(),
       pids_limit: z.number().optional(),
+      scale: z.number().optional(),
       deploy: z
         .object({
           replicas: z.number().optional(),
@@ -554,7 +555,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       hasCpus: (entry.cpus ?? 0) > 0 || (limits?.cpus ?? 0) > 0,
       hasPidsLimit: (entry.pids_limit ?? 0) > 0 || (limits?.pids ?? 0) > 0,
       deployLimits: limits !== undefined,
-      replicas: entry.deploy?.replicas ?? 1,
+      replicas: entry.scale ?? entry.deploy?.replicas ?? 1,
       active,
     };
   }
