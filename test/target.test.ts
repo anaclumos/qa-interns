@@ -191,14 +191,18 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
   web:
     image: nginx:1.29-alpine
     depends_on:
-      cache:
-        condition: service_started
       tracing:
         condition: service_started
         required: false
-  cache:
+  worker:
+    image: busybox:1.37
+    profiles: ["jobs"]
+    depends_on:
+      queue:
+        condition: service_started
+  queue:
     image: redis:8.2-alpine
-    profiles: ["cache"]
+    profiles: ["jobs"]
   tracing:
     image: jaegertracing/jaeger:2.9.0
     profiles: ["tracing"]
@@ -206,11 +210,41 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     image: axllent/mailpit:v1.27
     profiles: ["mail"]
 `;
-    const target = await load(await fixture(compose, devcontainer({})));
+    const target = await load(await fixture(compose, devcontainer({ runServices: ["worker"] })));
     expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({
       web: true,
-      cache: true,
+      worker: true,
+      queue: true,
       tracing: false,
+      mailer: false,
+    });
+  });
+
+  test("treat services behind a profile that the target's .env enables as active", async () => {
+    const compose = `services:
+  web:
+    image: nginx:1.29-alpine
+    depends_on:
+      tracing:
+        condition: service_started
+        required: false
+  tools:
+    build: ./tools
+    image: shop/tools:latest
+    profiles: ["tools"]
+  tracing:
+    image: jaegertracing/jaeger:2.9.0
+    profiles: ["tracing"]
+  mailer:
+    image: axllent/mailpit:v1.27
+    profiles: ["mail"]
+`;
+    const root = await repo({ ".devcontainer/devcontainer.json": devcontainer(), ".devcontainer/compose.yml": compose, ".devcontainer/.env": "COMPOSE_PROFILES=tools,tracing\n" });
+    const target = await load(root);
+    expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({
+      web: true,
+      tools: true,
+      tracing: true,
       mailer: false,
     });
   });

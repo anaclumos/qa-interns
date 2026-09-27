@@ -96,7 +96,6 @@ const composeSchema = z.object({
       cpus: z.number().optional(),
       pids_limit: z.number().optional(),
       deploy: z.object({ replicas: z.number().optional(), resources: z.object({ limits: limitsSchema.optional() }).optional() }).optional(),
-      profiles: z.array(z.string()).optional(),
       depends_on: z.record(z.string(), z.object({ required: z.boolean().optional() })).optional(),
       privileged: z.boolean().optional(),
       pid: z.string().optional(),
@@ -173,19 +172,15 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"]);
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
+  const enabled = (await execute(["docker", "compose", "-p", checkProject, ...files, "config", "--services"])).split("\n").filter((name) => name !== "");
 
-  const started =
-    runServices === undefined
-      ? Object.entries(project.services)
-          .filter(([name, entry]) => (entry.profiles ?? []).length === 0 || name === service)
-          .map(([name]) => name)
-      : [service, ...runServices];
+  const started = [service, ...(runServices ?? enabled)];
   const starts = new Set<string>();
   const start = (name: string) => {
     if (starts.has(name)) return;
     starts.add(name);
     for (const [dependency, condition] of Object.entries(project.services[name]?.depends_on ?? {})) {
-      if (condition.required !== false || (project.services[dependency]?.profiles ?? []).length === 0) start(dependency);
+      if (condition.required !== false || enabled.includes(dependency)) start(dependency);
     }
   };
   started.forEach(start);
