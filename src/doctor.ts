@@ -6,7 +6,7 @@ import { z } from "zod";
 import { environmentMemory, freeSlot, slotSubnets } from "./environment.ts";
 import { loadLogins, Scheduler } from "./logins.ts";
 import { ensureRunnerImage } from "./runner.ts";
-import { execute } from "./target.ts";
+import { composeVersion, execute } from "./target.ts";
 
 const devcontainer = join(dirname(fileURLToPath(import.meta.resolve("@devcontainers/cli/package.json"))), "devcontainer.js");
 const gib = 1024 ** 3;
@@ -53,8 +53,7 @@ async function checkCompose(): Promise<string> {
     if ((app.ports ?? []).length > 0) throw new Error(`!reset [] left ports ${JSON.stringify(app.ports)}`);
     const networks = Object.keys(app.networks ?? {});
     if (networks.join(",") !== "second") throw new Error(`!override [second] gave networks ${JSON.stringify(networks)}`);
-    const version = (await execute(["docker", "compose", "version", "--short"])).trim();
-    return `Compose ${version} applies !reset and !override`;
+    return `Compose ${await composeVersion()} applies !reset and !override`;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
