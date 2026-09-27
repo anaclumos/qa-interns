@@ -187,19 +187,29 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({ web: true, worker: true, mailer: false });
   });
 
-  test("treat a required dependency behind a profile as active and an optional one as inactive", async () => {
+  test("treat dependencies behind the profile of a service in runServices as active and an optional one behind another profile as inactive", async () => {
     const compose = `services:
   web:
     image: nginx:1.29-alpine
     depends_on:
-      cache:
-        condition: service_started
       tracing:
         condition: service_started
         required: false
-  cache:
+  worker:
+    image: busybox:1.37
+    profiles: ["jobs"]
+    depends_on:
+      queue:
+        condition: service_started
+      scheduler:
+        condition: service_started
+        required: false
+  queue:
     image: redis:8.2-alpine
-    profiles: ["cache"]
+    profiles: ["jobs"]
+  scheduler:
+    image: busybox:1.37
+    profiles: ["jobs"]
   tracing:
     image: jaegertracing/jaeger:2.9.0
     profiles: ["tracing"]
@@ -207,10 +217,12 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     image: axllent/mailpit:v1.27
     profiles: ["mail"]
 `;
-    const target = await load(await fixture(compose, devcontainer({})));
+    const target = await load(await fixture(compose, devcontainer({ runServices: ["worker"] })));
     expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({
       web: true,
-      cache: true,
+      worker: true,
+      queue: true,
+      scheduler: true,
       tracing: false,
       mailer: false,
     });
@@ -230,6 +242,35 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
 `;
     const target = await load(await fixture(compose, devcontainer({})));
     expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.replicas]))).toEqual({ web: 1, worker: 3, queue: 2 });
+  });
+
+  test("treat services behind a profile that the target's .env enables as active", async () => {
+    const compose = `services:
+  web:
+    image: nginx:1.29-alpine
+    depends_on:
+      tracing:
+        condition: service_started
+        required: false
+  tools:
+    build: ./tools
+    image: shop/tools:latest
+    profiles: ["tools"]
+  tracing:
+    image: jaegertracing/jaeger:2.9.0
+    profiles: ["tracing"]
+  mailer:
+    image: axllent/mailpit:v1.27
+    profiles: ["mail"]
+`;
+    const root = await repo({ ".devcontainer/devcontainer.json": devcontainer(), ".devcontainer/compose.yml": compose, ".devcontainer/.env": "COMPOSE_PROFILES=tools,tracing\n" });
+    const target = await load(root);
+    expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({
+      web: true,
+      tools: true,
+      tracing: true,
+      mailer: false,
+    });
   });
 
   test("resolve Compose variables from the host only for the names hostEnv lists", async () => {
