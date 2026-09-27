@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { AgentError, openSession, type Session } from "./acp.ts";
 import {
   buildImages,
+  checkDevContainer,
   environmentMemory,
   freeSlot,
   removeCopies,
@@ -580,6 +581,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     await phase("building");
     ctx.images = await buildImages(runId, target, source);
+    await checkDevContainer(target, source, ctx.images);
 
     await phase("testing");
     const running = limit(concurrency);

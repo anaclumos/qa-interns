@@ -1,7 +1,6 @@
 import type { Subprocess } from "bun";
-import { existsSync } from "node:fs";
 import { appendFile, mkdir, realpath } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 
 export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[] };
@@ -83,36 +82,59 @@ const configSchema = z.object({
 });
 
 const limitsSchema = z.object({ memory: z.string().optional(), cpus: z.number().optional(), pids: z.number().optional() });
+const hooksSchema = z.array(z.object({ privileged: z.boolean().optional() })).optional();
+const filesSchema = z.record(z.string(), z.object({ file: z.string().optional() })).optional();
 
 const composeSchema = z.object({
   services: z.record(
     z.string(),
     z.object({
-      build: z.unknown().optional(),
+      build: z.object({ context: z.string(), dockerfile: z.string().optional(), additional_contexts: z.record(z.string(), z.string()).optional() }).optional(),
       container_name: z.string().optional(),
       network_mode: z.string().optional(),
       networks: z.record(z.string(), z.object({ aliases: z.array(z.string()).optional() }).nullable()).optional(),
       mem_limit: z.string().optional(),
       cpus: z.number().optional(),
       pids_limit: z.number().optional(),
-      deploy: z.object({ replicas: z.number().optional(), resources: z.object({ limits: limitsSchema.optional() }).optional() }).optional(),
+      deploy: z
+        .object({
+          replicas: z.number().optional(),
+          resources: z.object({ limits: limitsSchema.optional(), reservations: z.object({ devices: z.array(z.unknown()).optional() }).optional() }).optional(),
+        })
+        .optional(),
       profiles: z.array(z.string()).optional(),
       depends_on: z.record(z.string(), z.object({ required: z.boolean().optional() })).optional(),
       privileged: z.boolean().optional(),
       pid: z.string().optional(),
       ipc: z.string().optional(),
+      uts: z.string().optional(),
+      cgroup: z.string().optional(),
       userns_mode: z.string().optional(),
       devices: z.array(z.object({ source: z.string() })).optional(),
+      device_cgroup_rules: z.array(z.string()).optional(),
+      gpus: z.array(z.unknown()).optional(),
       cap_add: z.array(z.string()).optional(),
       security_opt: z.array(z.string()).optional(),
+      use_api_socket: z.boolean().optional(),
+      env_file: z.array(z.object({ path: z.string() })).optional(),
       volumes: z.array(z.object({ type: z.string(), source: z.string().optional() })).optional(),
+      volumes_from: z.array(z.string()).optional(),
+      pre_start: hooksSchema,
+      post_start: hooksSchema,
+      pre_stop: hooksSchema,
     }),
   ),
-  volumes: z.record(z.string(), z.object({ name: z.string(), external: z.boolean().optional() })).optional(),
+  volumes: z
+    .record(z.string(), z.object({ name: z.string(), external: z.boolean().optional(), driver: z.string().optional(), driver_opts: z.record(z.string(), z.unknown()).optional() }))
+    .optional(),
   networks: z.record(z.string(), z.object({ name: z.string(), external: z.boolean().optional() })).optional(),
+  secrets: filesSchema,
+  configs: filesSchema,
 });
 
 const reservedServices = ["qa-proxy", "qa-runner"];
+const hostModes = ["pid", "ipc", "uts", "cgroup", "userns_mode"] as const;
+const hooks = ["pre_start", "post_start", "pre_stop"] as const;
 
 export async function resolveTarget(dir: string, rev: string): Promise<TargetRef> {
   const git = ["git", "-C", dir, "rev-parse"];
@@ -149,6 +171,20 @@ function within(dir: string, file: string): boolean {
   return path !== ".." && !path.startsWith("../");
 }
 
+async function resolveReal(path: string): Promise<string> {
+  try {
+    return await realpath(path);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    return join(await resolveReal(dirname(path)), basename(path));
+  }
+}
+
+export async function escapes(root: string, subject: string, path: string): Promise<string[]> {
+  const real = await resolveReal(path);
+  return within(root, real) ? [] : [`${subject} ${path}, which resolves to ${real}, outside the target directory`];
+}
+
 export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Target> {
   const file = join(sourceDir, ".devcontainer", "devcontainer.json");
   const object = z.record(z.string(), z.unknown()).safeParse(Bun.JSONC.parse(await Bun.file(file).text()));
@@ -163,14 +199,13 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
   const root = await realpath(sourceDir);
   for (const entry of composeFiles) {
-    const path = resolve(sourceDir, ".devcontainer", entry);
-    if (!within(sourceDir, path) || (existsSync(path) && !within(root, await realpath(path)))) {
+    if (!within(root, await resolveReal(resolve(sourceDir, ".devcontainer", entry)))) {
       throw new Error(`${file} names the Compose file ${entry}, which resolves outside the target directory`);
     }
   }
   const files = composeFiles.flatMap((entry) => ["-f", resolve(sourceDir, ".devcontainer", entry)]);
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
-  const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"]);
+  const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json", "--no-env-resolution"]);
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
 
@@ -200,19 +235,39 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       violations.push(`service ${name} sets network_mode ${entry.network_mode}`);
     }
     if (entry.privileged === true) violations.push(`service ${name} sets privileged`);
-    if (entry.pid === "host") violations.push(`service ${name} sets pid host`);
-    if (entry.ipc === "host") violations.push(`service ${name} sets ipc host`);
-    if (entry.userns_mode === "host") violations.push(`service ${name} sets userns_mode host`);
+    for (const mode of hostModes) {
+      if (entry[mode] === "host") violations.push(`service ${name} sets ${mode} host`);
+    }
+    for (const hook of hooks) {
+      if (entry[hook]?.some((command) => command.privileged === true)) violations.push(`service ${name} runs a privileged ${hook} hook`);
+    }
     for (const device of entry.devices ?? []) violations.push(`service ${name} maps device ${device.source}`);
+    for (const rule of entry.device_cgroup_rules ?? []) violations.push(`service ${name} sets device_cgroup_rules ${rule}`);
+    if ((entry.gpus ?? []).length > 0) violations.push(`service ${name} requests GPUs`);
+    if ((entry.deploy?.resources?.reservations?.devices ?? []).length > 0) violations.push(`service ${name} reserves devices`);
     for (const capability of entry.cap_add ?? []) violations.push(`service ${name} adds capability ${capability}`);
     for (const option of entry.security_opt ?? []) {
       if (option.includes("unconfined")) violations.push(`service ${name} sets security_opt ${option}`);
     }
+    if (entry.use_api_socket === true) violations.push(`service ${name} sets use_api_socket`);
+    for (const source of entry.volumes_from ?? []) {
+      if (source.startsWith("container:")) violations.push(`service ${name} takes volumes from ${source}`);
+    }
     for (const volume of entry.volumes ?? []) {
-      if (volume.type !== "bind" || volume.source === undefined) continue;
-      const exists = existsSync(volume.source);
-      const real = exists ? await realpath(volume.source) : resolve(volume.source);
-      if (!within(exists ? root : sourceDir, real)) violations.push(`service ${name} mounts ${volume.source}, which resolves to ${real}, outside the target directory`);
+      if (volume.type === "bind" && volume.source !== undefined) violations.push(...(await escapes(root, `service ${name} mounts`, volume.source)));
+    }
+    for (const envFile of entry.env_file ?? []) violations.push(...(await escapes(root, `service ${name} reads env_file`, envFile.path)));
+    if (entry.build !== undefined) {
+      const { context, dockerfile, additional_contexts: contexts = {} } = entry.build;
+      const local = isAbsolute(context);
+      if (local) violations.push(...(await escapes(root, `service ${name} builds from context`, context)));
+      if (dockerfile !== undefined && (local || isAbsolute(dockerfile))) {
+        violations.push(...(await escapes(root, `service ${name} builds from Dockerfile`, resolve(context, dockerfile))));
+      }
+      for (const [key, value] of Object.entries(contexts)) {
+        if (isAbsolute(value)) violations.push(...(await escapes(root, `service ${name} builds with additional context ${key}`, value)));
+        else if (value.startsWith("oci-layout://")) violations.push(`service ${name} builds with additional context ${key} from host OCI layout ${value}`);
+      }
     }
     const aliases = [...new Set(Object.values(entry.networks ?? {}).flatMap((network) => network?.aliases ?? []))];
     for (const alias of aliases) {
@@ -250,6 +305,18 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     for (const [key, entry] of Object.entries(entries)) {
       if (entry.external === true) violations.push(`${kind} ${key} is external (${entry.name})`);
       else if (entry.name !== `${checkProject}_${key}`) violations.push(`${kind} ${key} sets name ${entry.name}`);
+    }
+  }
+  for (const [key, volume] of Object.entries(project.volumes ?? {})) {
+    if (volume.driver !== undefined && volume.driver !== "local") violations.push(`volume ${key} uses driver ${volume.driver}`);
+    if (volume.driver_opts !== undefined) violations.push(`volume ${key} sets driver_opts`);
+  }
+  for (const [kind, entries] of [
+    ["secret", project.secrets ?? {}],
+    ["config", project.configs ?? {}],
+  ] as const) {
+    for (const [key, entry] of Object.entries(entries)) {
+      if (entry.file !== undefined) violations.push(...(await escapes(root, `${kind} ${key} reads file`, entry.file)));
     }
   }
   if (violations.length > 0) {
