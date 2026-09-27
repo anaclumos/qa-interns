@@ -8,6 +8,8 @@ import type { ProviderSpec } from "./providers.ts";
 
 const startupMs = 5 * 60_000;
 const lineLimit = 64 * 1024 ** 2;
+const heldReads = 1024;
+const sentLimit = 64 * 1024 ** 2;
 const lastMessageLength = 300;
 
 export class AgentError extends Error {
@@ -54,7 +56,9 @@ export async function openSession(opts: { container: string; provider: ProviderS
   const record = (from: "client" | "agent", message: AnyMessage) =>
     appendFileSync(opts.transcript, `${JSON.stringify({ t: new Date().toISOString(), from, message })}\n`);
   const overlong = new Error(`${argv.join(" ")} printed more than ${lineLimit / 1024 ** 2} MiB without a newline`);
+  const oversent = new Error(`qa-interns sent more than ${sentLimit / 1024 ** 2} MiB to ${argv.join(" ")}`);
   let unterminated = 0;
+  let held: Uint8Array[] = [];
   const lines = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       for (let start = 0; ; ) {
@@ -65,10 +69,25 @@ export async function openSession(opts: { container: string; provider: ProviderS
         unterminated = 0;
         start = newline + 1;
       }
-      controller.enqueue(chunk);
+      held.push(chunk);
+      if (held.length < heldReads && !chunk.includes(0x0a)) return;
+      controller.enqueue(held.length === 1 ? chunk : Buffer.concat(held));
+      held = [];
+    },
+    flush(controller) {
+      if (held.length > 0) controller.enqueue(Buffer.concat(held));
     },
   });
-  const wire = ndJsonStream(Writable.toWeb(stdin), ReadableStream.from<Uint8Array>(stdout).pipeThrough(lines));
+  let sent = 0;
+  const stdinWriter = Writable.toWeb(stdin).getWriter();
+  const input = new WritableStream<Uint8Array>({
+    write(bytes) {
+      sent += bytes.byteLength;
+      if (sent > sentLimit) throw oversent;
+      return stdinWriter.write(bytes);
+    },
+  });
+  const wire = ndJsonStream(input, ReadableStream.from<Uint8Array>(stdout).pipeThrough(lines));
   const writer = wire.writable.getWriter();
   let turn: string | number | null | undefined;
   const stream = {
@@ -116,7 +135,7 @@ export async function openSession(opts: { container: string; provider: ProviderS
   const failure = async (error: unknown) => {
     if (error instanceof RequestError) return new AgentError(error.code, error.message, error.data);
     await close();
-    if (error === overlong) return overlong;
+    if (error === overlong || error === oversent) return error;
     const stderr = (await Bun.file(opts.adapterLog).text()).slice(-2000);
     return new Error(`${argv.join(" ")} exited with ${child.exitCode ?? child.signalCode}: ${stderr}`, { cause: error });
   };
