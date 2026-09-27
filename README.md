@@ -74,6 +74,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
 
 - A `dockerComposeFile` entry outside the target directory, so the tested services always come from the commit.
+- An `include` path, `project_directory`, or `env_file`, or an `extends.file`, that is not an existing path inside the target directory. These paths are checked as written, so a remote source or a path with a variable is rejected. An `include` inside an included file cannot set a relative `project_directory` or `env_file`, because Compose resolves those against the directory it runs in.
 - A `container_name`.
 - An external volume or network, or a volume or network with an explicit `name:`.
 - A `network_mode` other than `service:<name>`, including `host`.
