@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { AgentError, openSession, type Session } from "../src/acp.ts";
@@ -245,9 +245,10 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     });
     try {
       const turn = locked.prompt("SLOW: keep working until you are stopped.").catch((error: unknown) => error);
-      chmodSync(lockedLog, 0o444);
+      rmSync(lockedLog);
+      mkdirSync(lockedLog);
       await docker("exec", agent, "node", "-e", [...fakeAgentPid, "writeFileSync(`/proc/${pid}/fd/2`, 'adapter error output\\n');"].join("\n"));
-      expect(await turn).toMatchObject({ cause: { code: "EACCES" } });
+      expect(await turn).toMatchObject({ code: "EISDIR" });
     } finally {
       await locked.close();
     }
