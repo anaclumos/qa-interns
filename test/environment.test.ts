@@ -576,7 +576,6 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         const web = (await execute(["docker", "compose", "-p", environment.project, "ps", "-q", "web"])).trim();
         await execute(["docker", "exec", web, "sh", "-c", `rmdir /app/uploads && ln -s ${host} /app/uploads && touch /app/stop`]);
         await execute(["docker", "wait", web]);
-        await Bun.sleep(3000);
         expect((await execute(["docker", "inspect", "--format", "{{.State.Status}} {{.RestartCount}}", web])).trim()).toBe("exited 0");
       } finally {
         await stopRun(runId);
