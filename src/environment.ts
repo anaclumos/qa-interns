@@ -337,10 +337,14 @@ function vanished<T>(value: T): (error: unknown) => T {
 
 async function overLimit(dir: string): Promise<boolean> {
   let total = 0;
+  const seen = new Set<string>();
   const paths = [dir];
   for (let path = paths.pop(); path !== undefined; path = paths.pop()) {
     const stats = await lstat(path).catch(vanished(null));
     if (stats === null) continue;
+    const inode = `${stats.dev}:${stats.ino}`;
+    if (seen.has(inode)) continue;
+    seen.add(inode);
     total += stats.blocks * 512;
     if (total > outLimit) return true;
     if (!stats.isDirectory()) continue;

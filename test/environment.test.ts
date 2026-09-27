@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { link, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -13,6 +13,7 @@ import {
   slotSubnets,
   startEnvironment,
   stopRun,
+  watchOut,
   writeChromePolicy,
   type EnvironmentSpec,
 } from "../src/environment.ts";
@@ -70,6 +71,23 @@ async function normalize(runDir: string, composeFiles: string[], override: strin
   if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
   return JSON.parse(proc.stdout.toString());
 }
+
+describe("watchOut", () => {
+  test("count a file with two names once, and fire when the directory holds more than 1 GiB", async () => {
+    const dir = await scratch();
+    const mib = 1024 ** 2;
+    await Bun.write(join(dir, "recording.webm"), new Uint8Array(600 * mib).fill(1));
+    await link(join(dir, "recording.webm"), join(dir, "recording-copy.webm"));
+    const quiet = new AbortController();
+    const watching = watchOut(dir, quiet.signal);
+    await Bun.sleep(2500);
+    quiet.abort();
+    await expect(watching).rejects.toThrow("aborted");
+
+    await Bun.write(join(dir, "trace.har"), new Uint8Array(500 * mib).fill(1));
+    expect(await watchOut(dir, new AbortController().signal)).toBe(`${dir} holds more than 1 GiB`);
+  }, 60_000);
+});
 
 describe.skipIf(!dockerAvailable)("slots", () => {
   test("map a slot to its internal, agent, and egress subnets", () => {
