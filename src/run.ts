@@ -356,7 +356,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     const deadline = start + minutes * minute;
     await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes)), deadline, async (turn, idle) => {
       if (idle) {
-        await note(`stopped at minute ${Math.floor((Date.now() - start) / minute)}: "${turn.lastMessage.slice(0, 300)}"`);
+        await note(`stopped at minute ${Math.floor((Date.now() - start) / minute)}: "${turn.lastMessage}"`);
         return null;
       }
       const { rejected } = await readFindings(ctx.runDir, intern.id, attempt, environment);

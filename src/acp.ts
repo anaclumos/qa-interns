@@ -1,11 +1,14 @@
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError, type AnyMessage, type NewSessionResponse } from "@agentclientprotocol/sdk";
 import { spawn } from "node:child_process";
 import { appendFileSync, closeSync, openSync } from "node:fs";
-import { Readable, Writable } from "node:stream";
+import { Writable } from "node:stream";
+import { ReadableStream } from "node:stream/web";
 import { version } from "../package.json";
 import type { ProviderSpec } from "./providers.ts";
 
 const startupMs = 5 * 60_000;
+const lineLimit = 64 * 1024 ** 2;
+const lastMessageLength = 300;
 
 export class AgentError extends Error {
   code: number;
@@ -50,12 +53,24 @@ export async function openSession(opts: { container: string; provider: ProviderS
 
   const record = (from: "client" | "agent", message: AnyMessage) =>
     appendFileSync(opts.transcript, `${JSON.stringify({ t: new Date().toISOString(), from, message })}\n`);
-  const wire = ndJsonStream(Writable.toWeb(stdin), Readable.toWeb(stdout) as ReadableStream<Uint8Array>);
+  const overlong = new Error(`${argv.join(" ")} printed more than ${lineLimit / 1024 ** 2} MiB without a newline`);
+  let unterminated = 0;
+  const lines = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      const newline = chunk.lastIndexOf(0x0a);
+      unterminated = newline === -1 ? unterminated + chunk.byteLength : chunk.byteLength - newline - 1;
+      if (unterminated > lineLimit) throw overlong;
+      controller.enqueue(chunk);
+    },
+  });
+  const wire = ndJsonStream(Writable.toWeb(stdin), ReadableStream.from<Uint8Array>(stdout).pipeThrough(lines));
   const writer = wire.writable.getWriter();
+  let turn: string | number | null | undefined;
   const stream = {
     writable: new WritableStream<AnyMessage>({
       write(message) {
         record("client", message);
+        if ("method" in message && "id" in message && message.method === methods.agent.session.prompt) turn = message.id;
         return writer.write(message);
       },
     }),
@@ -63,6 +78,11 @@ export async function openSession(opts: { container: string; provider: ProviderS
       new TransformStream<AnyMessage, AnyMessage>({
         transform(message, controller) {
           record("agent", message);
+          if ("method" in message) {
+            if (message.method === methods.client.session.update && turn === undefined) return;
+          } else if (message.id === turn) {
+            turn = undefined;
+          }
           controller.enqueue(message);
         },
       }),
@@ -91,6 +111,7 @@ export async function openSession(opts: { container: string; provider: ProviderS
   const failure = async (error: unknown) => {
     if (error instanceof RequestError) return new AgentError(error.code, error.message, error.data);
     await close();
+    if (error === overlong) return overlong;
     const stderr = (await Bun.file(opts.adapterLog).text()).slice(-2000);
     return new Error(`${argv.join(" ")} exited with ${child.exitCode ?? child.signalCode}: ${stderr}`, { cause: error });
   };
@@ -129,7 +150,7 @@ export async function openSession(opts: { container: string; provider: ProviderS
             if (message.kind === "stop") return;
             if (message.update.sessionUpdate === "tool_call") toolCalls += 1;
             if (message.update.sessionUpdate === "agent_message_chunk" && message.update.content.type === "text") {
-              lastMessage += message.update.content.text;
+              lastMessage = (lastMessage + message.update.content.text).slice(0, lastMessageLength);
             }
           }
         };

@@ -67,6 +67,30 @@ async function until(check: () => boolean | Promise<boolean>, what: string) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+function fakeSession(label: string): Promise<Session> {
+  return openSession({
+    container: agent,
+    provider: { ...providers.claude, adapter: ["node", "/opt/qa/fake-agent.mjs"] },
+    transcript: path.join(internDir, `${label}-transcript.jsonl`),
+    adapterLog: path.join(internDir, `${label}-adapter.log`),
+  });
+}
+
+function printAsAdapter(expression: string): Promise<string> {
+  const script = [
+    "const { readdirSync, readFileSync, writeFileSync } = require('node:fs');",
+    "const pid = readdirSync('/proc')",
+    "  .filter((entry) => Number.isInteger(Number(entry)))",
+    "  .find((entry) => readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\\0')[1] === '/opt/qa/fake-agent.mjs');",
+    `writeFileSync(\`/proc/\${pid}/fd/1\`, ${expression});`,
+  ].join("\n");
+  return docker("exec", agent, "node", "-e", script);
+}
+
+function updateLines(...updates: object[]): string {
+  return updates.map((update) => `${JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "fake-session-1", update } })}\n`).join("");
+}
+
 describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
   let session: Session;
 
@@ -196,4 +220,55 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
       { stopReason: "cancelled" },
     ]);
   });
+
+  test("updates the agent prints between turns do not reach the next turn", async () => {
+    const between = await fakeSession("between");
+    try {
+      const idle = { stopReason: "end_turn", toolCalls: 0, lastMessage: "Nothing more to test." };
+      expect(await between.prompt("Keep testing your charter.")).toEqual(idle);
+      const stale = updateLines(
+        { sessionUpdate: "tool_call", toolCallId: "call-9", title: "Fetch the home page", kind: "fetch", status: "in_progress" },
+        { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Printed between turns." } },
+      );
+      await printAsAdapter(JSON.stringify(stale));
+      await until(
+        () => readFileSync(path.join(internDir, "between-transcript.jsonl"), "utf8").includes("Printed between turns."),
+        "the updates to reach the transcript",
+      );
+      expect(await between.prompt("Keep testing your charter.")).toEqual(idle);
+    } finally {
+      await between.close();
+    }
+  });
+
+  test("a turn keeps the first 300 characters of the agent's text", async () => {
+    const long = await fakeSession("long");
+    try {
+      const turn = long.prompt("SLOW: keep working until you are stopped.");
+      await until(() => readFileSync(path.join(internDir, "long-transcript.jsonl"), "utf8").includes("Slow turn started."), "the slow turn to start");
+      const text = "The invoice total differs from the sum of its line items. ".repeat(20);
+      await printAsAdapter(JSON.stringify(updateLines({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } })));
+      await long.cancel();
+      expect(await turn).toEqual({ stopReason: "cancelled", toolCalls: 0, lastMessage: `Slow turn started.${text}`.slice(0, 300) });
+    } finally {
+      await long.close();
+    }
+  });
+
+  test("an agent line of more than 64 MiB with no newline fails the session", async () => {
+    const overlong = await fakeSession("overlong");
+    try {
+      const turn = overlong.prompt("SLOW: keep working until you are stopped.");
+      await until(
+        () => readFileSync(path.join(internDir, "overlong-transcript.jsonl"), "utf8").includes("Slow turn started."),
+        "the slow turn to start",
+      );
+      const flood = printAsAdapter("'x'.repeat(65 * 2 ** 20)");
+      await expect(turn).rejects.toThrow(`docker exec -i -w /qa/out ${agent} node /opt/qa/fake-agent.mjs printed more than 64 MiB without a newline`);
+      await flood;
+    } finally {
+      await overlong.close();
+    }
+    expect(execProcesses(agent)).toHaveLength(0);
+  }, 60_000);
 });
