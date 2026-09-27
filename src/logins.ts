@@ -4,6 +4,7 @@ import { closeSync, mkdirSync, openSync, realpathSync, statSync } from "node:fs"
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { providers } from "./providers.ts";
 import { stateDir } from "./state.ts";
 import { track } from "./target.ts";
 import type { Login, Provider } from "./types.ts";
@@ -118,9 +119,15 @@ export async function loadLogins(file: string): Promise<Login[]> {
   return logins;
 }
 
-export type Lease = { login: Login; store: string; credential: string; release(): void };
+export type Lease = { login: Login; store: string; mounted: string; release(): void };
 
-type Slot = { login: Login; active: number; exhausted: boolean; store: { store: string; credential: string; where: string } | null };
+type Grant = { store: string; credential: string; mounted: string; where: string };
+
+type Slot = { login: Login; active: number; exhausted: boolean; store: Grant | null };
+
+function mountedPath(provider: Provider, store: string): string {
+  return providers[provider].mounts(store).map((mount) => realpathSync(mount.source)).join("\n");
+}
 
 const lockHeld = 75;
 
@@ -140,10 +147,10 @@ async function seatStore(command: string[], leasePid: number, intern: string): P
   return exitCode === 0 && store !== undefined && isAbsolute(store) && isDirectory(store) ? store : null;
 }
 
-function lock(credential: string, slots: number): (() => void) | null {
+function lock(mounted: string, slots: number): (() => void) | null {
   const dir = join(stateDir(), "locks");
   mkdirSync(dir, { recursive: true });
-  const key = createHash("sha256").update(credential).digest("hex");
+  const key = createHash("sha256").update(mounted).digest("hex");
   for (let slot = 0; slot < slots; slot++) {
     const file = join(dir, `${key}-${slot}.lock`);
     const fd = openSync(file, "a", 0o600);
@@ -164,7 +171,7 @@ function lock(credential: string, slots: number): (() => void) | null {
 export class Scheduler {
   private readonly slots: Slot[];
   private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0, grok: 0 };
-  private readonly exhaustedCredentials = new Set<string>();
+  private readonly exhaustedMounts = new Set<string>();
   private readonly live = new Set<Held>();
 
   constructor(logins: Login[]) {
@@ -172,7 +179,8 @@ export class Scheduler {
       if (login.store === null) return { login, active: 0, exhausted: false, store: null };
       const found = resolveStore(login.provider, login.store);
       if (found.credential === null) throw new Error(`${login.provider} store ${login.store} has no ${credentialName(login.provider)}`);
-      return { login, active: 0, exhausted: false, store: { store: found.store, credential: found.credential, where: `login ${login.id}` } };
+      const store = { store: found.store, credential: found.credential, mounted: mountedPath(login.provider, login.store), where: `login ${login.id}` };
+      return { login, active: 0, exhausted: false, store };
     });
   }
 
@@ -204,13 +212,13 @@ export class Scheduler {
   exhaust(lease: Lease): void {
     const slot = this.slots.find((candidate) => candidate.login.id === lease.login.id);
     if (slot === undefined) throw new Error(`No login with id ${lease.login.id}`);
-    if (slot.login.store === null) this.exhaustedCredentials.add(lease.credential);
+    if (slot.login.store === null) this.exhaustedMounts.add(lease.mounted);
     else slot.exhausted = true;
   }
 
   private async lease(slot: Slot, intern: string): Promise<Lease | null> {
     const { login } = slot;
-    if (slot.store !== null) return this.grant(slot, slot.store.store, slot.store.credential, login.concurrency, null);
+    if (slot.store !== null) return this.grant(slot, slot.store, login.concurrency, null);
     if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
     const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
     let lease: Lease | null = null;
@@ -219,8 +227,9 @@ export class Scheduler {
       if (path !== null) {
         const found = resolveStore(login.provider, path);
         const known = [...this.slots.flatMap((other) => other.store ?? []), ...this.live];
-        if (found.credential !== null && !this.exhaustedCredentials.has(found.credential) && storeProblems(login.provider, path, found, known).length === 0) {
-          lease = this.grant(slot, found.store, found.credential, 1, keeper);
+        if (found.credential !== null && storeProblems(login.provider, path, found, known).length === 0) {
+          const mounted = mountedPath(login.provider, path);
+          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, credential: found.credential, mounted, where: `login ${login.id}` }, 1, keeper);
         }
       }
     } finally {
@@ -229,17 +238,17 @@ export class Scheduler {
     return lease;
   }
 
-  private grant(slot: Slot, store: string, credential: string, slots: number, keeper: Subprocess | null): Lease | null {
-    const unlock = lock(credential, slots);
+  private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null): Lease | null {
+    const unlock = lock(grant.mounted, slots);
     if (unlock === null) return null;
     this.used[slot.login.provider] += 1;
-    const entry = { store, credential, where: `login ${slot.login.id}` };
+    const entry = { ...grant };
     this.live.add(entry);
     let released = false;
     return {
       login: slot.login,
-      store,
-      credential,
+      store: grant.store,
+      mounted: grant.mounted,
       release: () => {
         if (released) return;
         released = true;

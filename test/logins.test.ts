@@ -337,7 +337,7 @@ describe("Scheduler", () => {
     expect(scheduler.capacity()).toBe(0);
     expect(scheduler.providers()).toEqual([]);
     expect(await scheduler.acquire("i8", [])).toBeNull();
-    const unknown = { login: login("claude-9", "claude", 1), store: join(dir, "stores", "claude-9"), credential: join(dir, "stores", "claude-9", ".credentials.json"), release: () => {} };
+    const unknown = { login: login("claude-9", "claude", 1), store: join(dir, "stores", "claude-9"), mounted: join(dir, "stores", "claude-9", ".credentials.json"), release: () => {} };
     expect(() => scheduler.exhaust(unknown)).toThrow("No login with id claude-9");
     releaseAll([cursor, ...picks]);
   });
@@ -481,6 +481,23 @@ describe("Scheduler", () => {
     scheduler.exhaust(second);
     second.release();
     expect(await scheduler.acquire("n1", [])).toBeNull();
+  });
+
+  test("a store mounted whole stays locked when its agent replaces the credential file", async () => {
+    const store = join(dir, "grok-linked");
+    await mkdir(join(store, "tokens"), { recursive: true });
+    await Bun.write(join(store, "tokens", "auth.json"), "{}");
+    await symlink("tokens/auth.json", join(store, "auth.json"));
+    const grok: Login = { id: "grok-linked", provider: "grok", store, seat: null, concurrency: 1 };
+    const first = held(await new Scheduler([grok]).acquire("r1", []));
+    await Bun.write(join(store, "auth.json.new"), "{}");
+    await rename(join(store, "auth.json.new"), join(store, "auth.json"));
+    const other = new Scheduler([grok]);
+    expect(await other.acquire("r2", [])).toBeNull();
+    first.release();
+    const second = held(await other.acquire("r3", []));
+    expect(second.store).toBe(store);
+    second.release();
   });
 
   test("another process's lease on a credential counts against its concurrency until that process ends", async () => {
