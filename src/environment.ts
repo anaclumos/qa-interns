@@ -110,9 +110,10 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
   const { internal, agent, egress } = slotSubnets(spec.slot);
   const y = (value: unknown) => JSON.stringify(value);
   const isolated = (subnet: string) => ({ internal: true, driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" }, ipam: { config: [{ subnet }] } });
+  const logging = `    logging: !override ${y({ driver: "local", options: { "max-size": "10m", "max-file": "2" } })}`;
   const lines = ["services:"];
   for (const [name, service] of Object.entries(spec.target?.services ?? {})) {
-    lines.push(`  ${y(name)}:`, "    ports: !reset []");
+    lines.push(`  ${y(name)}:`, "    ports: !reset []", logging);
     if (!service.networkMode?.startsWith("service:")) {
       const networks = service.aliases.length > 0 ? { qa_internal: { aliases: service.aliases } } : ["qa_internal"];
       lines.push(`    networks: !override ${y(networks)}`);
@@ -131,7 +132,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     const image = spec.images[name];
     if (image !== undefined) lines.push(`    image: ${y(image)}`, "    build: !reset null", `    pull_policy: ${y("never")}`);
   }
-  const hardening = ["    init: true", "    read_only: true", `    cap_drop: ${y(["ALL"])}`, `    security_opt: ${y(["no-new-privileges:true"])}`];
+  const hardening = ["    init: true", "    read_only: true", `    cap_drop: ${y(["ALL"])}`, `    security_opt: ${y(["no-new-privileges:true"])}`, logging];
   const volumes = [
     bind(spec.runner.out, "/qa/out", false),
     bind(join(spec.runDir, "chrome-policy.json"), "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json", true),
