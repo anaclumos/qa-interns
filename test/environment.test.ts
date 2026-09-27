@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { buildImages, checkDevContainer, environmentMemory, freeSlot, renderOverride, runnerEnv, slotSubnets, writeChromePolicy, type EnvironmentSpec } from "../src/environment.ts";
-import { execute, loadTarget, type Target } from "../src/target.ts";
+import { buildImages, environmentMemory, freeSlot, renderOverride, runnerEnv, slotSubnets, writeChromePolicy, type EnvironmentSpec } from "../src/environment.ts";
+import { loadTarget, type Target } from "../src/target.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -323,88 +323,5 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     const runDir = await scratch();
     await writeChromePolicy(runDir, { app: "http://app:3000", api: "http://app:3000/api", dev: "http://dev:5173", admin: "https://admin.shop.test" });
     expect(await Bun.file(join(runDir, "chrome-policy.json")).json()).toEqual({ HSTSPolicyBypassList: ["app", "dev"] });
-  });
-});
-
-describe.skipIf(!dockerAvailable)("checkDevContainer", () => {
-  const repository = `qair-devcontainer-${crypto.randomUUID().slice(0, 8)}`;
-  const tags: string[] = [];
-
-  afterAll(async () => {
-    if (tags.length > 0) await execute(["docker", "image", "rm", ...tags]);
-  });
-
-  async function image(tag: string, metadata: unknown[] = []): Promise<string> {
-    const context = await scratch();
-    const label = metadata.length === 0 ? "" : `LABEL devcontainer.metadata=${JSON.stringify(JSON.stringify(metadata))}\n`;
-    await Bun.write(join(context, "Dockerfile"), `FROM scratch\n${label}`);
-    const name = `${repository}:${tag}`;
-    await execute(["docker", "build", "-q", "-t", name, context]);
-    tags.push(name);
-    return name;
-  }
-
-  async function devTarget(config: Record<string, unknown>, files: Record<string, string> = {}): Promise<[Target, string]> {
-    const dir = await scratch();
-    const qa = { urls: { app: "http://web:8080" }, ready: "http://web:8080/health", seed: "node seed.mjs" };
-    const all = {
-      ".devcontainer/devcontainer.json": JSON.stringify({ dockerComposeFile: "compose.yml", service: "web", customizations: { "qa-interns": qa }, ...config }),
-      ".devcontainer/compose.yml": "services:\n  web:\n    build: ..\n",
-      ...files,
-    };
-    for (const [path, content] of Object.entries(all)) await Bun.write(join(dir, path), content);
-    return [await loadTarget(ref, dir), dir];
-  }
-
-  async function violations(check: Promise<void>): Promise<string[]> {
-    const error = await check.catch((reason: unknown) => reason);
-    if (!(error instanceof Error)) throw new Error("checkDevContainer accepted an unsafe dev container configuration");
-    return error.message.split("\n").filter((line) => line.startsWith("- "));
-  }
-
-  test("reject privileges and host mounts that devcontainer.json and its features add", async () => {
-    const feature = { id: "host-tools", version: "1.0.0", name: "Host tools", privileged: true, mounts: [{ source: "/etc", target: "/host-etc", type: "bind" }] };
-    const [target, dir] = await devTarget(
-      {
-        mounts: ["src=/usr/share,dst=/host-share,type=bind", "source=shop-uploads,target=/uploads,type=volume,external=true", { source: "~/.ssh", target: "/root/.ssh", type: "bind" }],
-        capAdd: ["SYS_PTRACE"],
-        securityOpt: ["seccomp=unconfined"],
-        hostRequirements: { gpu: "optional" },
-        features: { "./host-tools": {} },
-      },
-      { ".devcontainer/host-tools/devcontainer-feature.json": JSON.stringify(feature), ".devcontainer/host-tools/install.sh": "#!/bin/sh\n" },
-    );
-    const lines = await violations(checkDevContainer(target, dir, { web: await image("plain") }));
-    expect(lines.filter((line) => !line.startsWith(`- mounts ${join(homedir(), ".ssh")}, which resolves to `)).sort()).toEqual(
-      [
-        "- sets privileged",
-        "- adds capability SYS_PTRACE",
-        "- sets securityOpt seccomp=unconfined",
-        "- mounts /etc, which resolves to /etc, outside the target directory",
-        "- mounts /usr/share, which resolves to /usr/share, outside the target directory",
-        "- mounts external volume shop-uploads",
-        "- requests a GPU",
-      ].sort(),
-    );
-    expect(lines).toHaveLength(8);
-  });
-
-  test("reject privileges and host mounts in the devcontainer.metadata label of the built image", async () => {
-    const labeled = await image("labeled", [{ privileged: true }, { mounts: [{ source: "/etc", target: "/host-etc", type: "bind" }] }]);
-    const [target, dir] = await devTarget({});
-    expect(await violations(checkDevContainer(target, dir, { web: labeled }))).toEqual(["- sets privileged", "- mounts /etc, which resolves to /etc, outside the target directory"]);
-  });
-
-  test("accept volumes, mounts inside the target, and a feature without privileges", async () => {
-    const feature = { id: "tools", version: "1.0.0", name: "Tools", mounts: [{ source: "tools-cache", target: "/opt/tools", type: "volume" }] };
-    const [target, dir] = await devTarget(
-      {
-        mounts: ["source=${localWorkspaceFolder}/cache,target=/cache,type=bind", "src=./fixtures,dst=/fixtures,type=bind", { source: "node-modules", target: "/app/node_modules", type: "volume" }],
-        securityOpt: ["no-new-privileges:true"],
-        features: { "./tools": {} },
-      },
-      { ".devcontainer/tools/devcontainer-feature.json": JSON.stringify(feature), ".devcontainer/tools/install.sh": "#!/bin/sh\n" },
-    );
-    expect(await checkDevContainer(target, dir, { web: await image("clean") })).toBeUndefined();
   });
 });

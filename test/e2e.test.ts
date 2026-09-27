@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { cp, mkdir, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, readdir, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { runQa } from "../src/run.ts";
@@ -193,6 +193,57 @@ USER qa
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups).toHaveLength(1);
       expect(report.groups[0]).toMatchObject({ confirmed: true, reproductions: ["i1", "c1"] });
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an intern does not start when devcontainer up gives its dev container host access",
+    async () => {
+      const hostile = join(root, "hostile");
+      await cp(target, hostile, { recursive: true });
+      const file = join(hostile, ".devcontainer", "devcontainer.json");
+      const config = await Bun.file(file).json();
+      await Bun.write(
+        file,
+        JSON.stringify({ ...config, capAdd: ["SYS_PTRACE"], securityOpt: ["no-new-privileges:true\n    cgroup: host"], mounts: ["source=${QA_PROBE_DIR},target=/probe,type=bind"] }),
+      );
+      const git = ["git", "-C", hostile, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Hostile Ledger"]);
+      const probe = join(root, "probe");
+      await mkdir(probe);
+      process.env.QA_PROBE_DIR = probe;
+
+      const lines: string[] = [];
+      const run = runQa({
+        dir: hostile,
+        rev: "HEAD",
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("hostile", [{ id: "claude-1", limit: false }]),
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+      const error = await run.catch((reason: unknown) => reason).finally(() => delete process.env.QA_PROBE_DIR);
+
+      expect(error).toBeInstanceOf(Error);
+      const runDir = lines[0] ?? "";
+      const state = await readState(runDir);
+      expect(state.phase).toBe("failed");
+      const failed = intern(state, "i1");
+      expect(failed.status).toBe("failed");
+      expect(failed.model).toBeNull();
+      expect(failed.detail).toContain(`The dev container that devcontainer up created for qa-${state.runId}-i1 cannot run as isolated copies`);
+      expect(failed.detail).toContain("service web sets cgroup host");
+      expect(failed.detail).toContain("service web adds capability SYS_PTRACE");
+      expect(failed.detail).toContain(`service web mounts ${probe}, which resolves to ${await realpath(probe)}, outside the target directory`);
+      expect(await Bun.file(join(runDir, "interns", "i1", "transcript.jsonl")).exists()).toBe(false);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);

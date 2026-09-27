@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
-import { homedir, tmpdir, userInfo } from "node:os";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { capture, escapes, execute, failure, isHttpUrl, type Target } from "./target.ts";
+import { capture, devContainerViolations, execute, failure, isHttpUrl, type Target } from "./target.ts";
 import type { GeneratedFile, Mount } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
@@ -252,68 +252,6 @@ function overrideConfig(target: Target, composeFile: string): Record<string, unk
   };
 }
 
-const mountSchema = z.union([z.string(), z.object({ source: z.string().optional(), external: z.union([z.boolean(), z.string()]).optional() })]);
-const mergedSchema = z.object({
-  mergedConfiguration: z.object({
-    privileged: z.boolean().optional(),
-    capAdd: z.array(z.string()).optional(),
-    securityOpt: z.array(z.string()).optional(),
-    mounts: z.array(mountSchema).optional(),
-    hostRequirements: z.object({ gpu: z.unknown().optional() }).optional(),
-  }),
-});
-
-function mountFields(mount: z.infer<typeof mountSchema>): { source?: string; external?: boolean | string } {
-  if (typeof mount !== "string") return mount;
-  const fields: Record<string, string | undefined> = Object.fromEntries(
-    mount.split(",").map((part) => {
-      const [key, value] = part.split("=");
-      return [key === "src" ? "source" : key, value];
-    }),
-  );
-  return { source: fields.source, external: fields.external };
-}
-
-export async function checkDevContainer(target: Target, sourceDir: string, images: Record<string, string>): Promise<void> {
-  const [first] = target.composeFiles;
-  if (first === undefined) throw new Error(`Target ${target.commit} names no Compose file`);
-  const projectDir = dirname(resolve(sourceDir, ".devcontainer", first));
-  const root = await realpath(sourceDir);
-  const dir = await mkdtemp(join(tmpdir(), "qa-interns-check-"));
-  const violations: string[] = [];
-  try {
-    const compose = join(dir, "images.yml");
-    const lines = Object.entries(images).flatMap(([name, image]) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(image)}`, "    build: !reset null"]);
-    await Bun.write(compose, lines.length === 0 ? "services: {}\n" : `services:\n${lines.join("\n")}\n`);
-    const config = join(dir, "devcontainer.json");
-    await Bun.write(config, JSON.stringify({ ...target.config, dockerComposeFile: [...target.composeFiles, compose] }));
-    const output = await execute(
-      [process.execPath, devcontainer, "read-configuration", "--workspace-folder", sourceDir, "--override-config", config, "--include-merged-configuration", "--log-format", "json"],
-      { env: { ...process.env, TMPDIR: dir }, timeout: 10 * minute },
-    );
-    const merged = mergedSchema.parse(JSON.parse(output)).mergedConfiguration;
-    if (merged.privileged === true) violations.push("sets privileged");
-    for (const capability of merged.capAdd ?? []) violations.push(`adds capability ${capability}`);
-    for (const option of merged.securityOpt ?? []) {
-      if (option.includes("unconfined")) violations.push(`sets securityOpt ${option}`);
-    }
-    for (const mount of merged.mounts ?? []) {
-      const { source, external } = mountFields(mount);
-      if (external) violations.push(`mounts external volume ${source}`);
-      else if (source !== undefined && [".", "/", "~"].some((prefix) => source.startsWith(prefix))) {
-        violations.push(...(await escapes(root, "mounts", source.startsWith("~") ? join(homedir(), source.slice(1)) : resolve(projectDir, source))));
-      }
-    }
-    if (merged.hostRequirements?.gpu) violations.push("requests a GPU");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-  if (violations.length > 0) {
-    const file = join(sourceDir, ".devcontainer", "devcontainer.json");
-    throw new Error(`The dev container configuration merged from ${file}, its features, and its image cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
-  }
-}
-
 const upSchema = z.object({ outcome: z.string(), containerId: z.string().optional(), message: z.string().optional(), description: z.string().optional() });
 
 async function waitReady(ready: string, runner: string, exec: string[], log: string): Promise<void> {
@@ -350,9 +288,10 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   await mkdir(tmp, { recursive: true });
   await Bun.write(config, `${JSON.stringify(overrideConfig(target, join(dir, "compose.qa.yml")), null, 2)}\n`);
 
+  const env = { ...process.env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp };
   const up = await capture(
     [process.execPath, devcontainer, "up", "--workspace-folder", workspace, "--override-config", config, "--user-data-folder", join(dir, "devcontainer-data"), "--id-label", `qa-interns.env=${project}`, "--log-format", "json"],
-    { env: { ...process.env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp }, log, timeout: 20 * minute },
+    { env, log, timeout: 20 * minute },
   );
   const last = up.stdout.trim().split("\n").at(-1) ?? "";
   const result = upSchema.safeParse(last.startsWith("{") ? JSON.parse(last) : null);
@@ -361,6 +300,11 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
     throw new Error(`devcontainer up for ${project} exited with ${up.code}: ${detail} (log: ${log})`);
   }
   const devContainer = result.data.containerId;
+  const configFiles = await execute(["docker", "inspect", "--format", '{{index .Config.Labels "com.docker.compose.project.config_files"}}', devContainer]);
+  const violations = await devContainerViolations(project, configFiles.trim().split(","), target.service, workspace, env);
+  if (violations.length > 0) {
+    throw new Error(`The dev container that devcontainer up created for ${project} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
+  }
 
   const runServices = target.config.runServices;
   const services = Array.isArray(runServices) ? [target.service, ...runServices, "qa-proxy", "qa-runner"] : [];

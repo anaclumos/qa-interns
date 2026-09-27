@@ -281,6 +281,14 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       "service debug sets privileged",
     ],
     ["uts host", "  web:\n    image: nginx:1.29-alpine\n    uts: host\n", "service web sets uts host"],
+    ["the pid namespace of a container outside the project", "  web:\n    image: nginx:1.29-alpine\n    pid: \"container:shop-db\"\n", "service web sets pid container:shop-db"],
+    ["the ipc namespace of a container outside the project", "  web:\n    image: nginx:1.29-alpine\n    ipc: \"container:shop-db\"\n", "service web sets ipc container:shop-db"],
+    ["a build on the host network", "  web:\n    build:\n      context: ..\n      network: host\n", "service web builds on network host"],
+    ["a privileged build", "  web:\n    build:\n      context: ..\n      privileged: true\n", "service web builds privileged"],
+    ["a build entitlement", "  web:\n    build:\n      context: ..\n      entitlements: [\"security.insecure\"]\n", "service web builds with entitlement security.insecure"],
+    ["SSH agent forwarding into a build", "  web:\n    build:\n      context: ..\n      ssh: [\"default\"]\n", "service web builds with SSH default"],
+    ["a build cache read from a host folder", "  web:\n    build:\n      context: ..\n      cache_from: [\"type=local,src=/srv/cache\"]\n", "service web builds with host cache type=local,src=/srv/cache"],
+    ["a build cache written to a host folder", "  web:\n    build:\n      context: ..\n      cache_to: [\"type=local,dest=/srv/cache\"]\n", "service web builds with host cache type=local,dest=/srv/cache"],
     ["cgroup host", "  web:\n    image: nginx:1.29-alpine\n    cgroup: host\n", "service web sets cgroup host"],
     [
       "a privileged lifecycle hook",
@@ -303,6 +311,11 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     ],
     ["a volume driver other than local", "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"uploads:/data\"]\nvolumes:\n  uploads:\n    driver: rclone\n", "volume uploads uses driver rclone"],
     ["an env_file outside the target", "  web:\n    image: nginx:1.29-alpine\n    env_file: /etc/hostname\n", "service web reads env_file /etc/hostname, which resolves to /etc/hostname, outside the target directory"],
+    [
+      "an env_file path that uses a variable",
+      "  web:\n    image: nginx:1.29-alpine\n    env_file:\n      - path: ${HOME}/.config/shop/app.env\n        required: false\n",
+      "/${HOME}/.config/shop/app.env, whose path uses a variable",
+    ],
     [
       "a secret file outside the target",
       "  web:\n    image: nginx:1.29-alpine\n    secrets: [\"hosts\"]\nsecrets:\n  hosts:\n    file: /etc/hosts\n",
@@ -393,6 +406,8 @@ networks:
       additional_contexts:
         base: docker-image://alpine:3.22
         docs: https://github.com/docker/buildx.git
+      network: none
+      cache_from: ["shop/web:buildcache"]
     env_file: ["../app.env"]
     secrets: ["token"]
     configs: ["nginx"]
@@ -437,6 +452,17 @@ volumes:
     git(root, "add", "-A");
     git(root, "commit", "-q", "-m", "link");
     await expect(load(root)).rejects.toThrow(`/shared/uploads, which resolves to ${await realpath(outside)}/uploads, outside the target directory`);
+  });
+
+  test("reject a bind mount through a dangling symbolic link that points outside the target", async () => {
+    const root = await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: [\"../results:/results\"]\n");
+    await symlink("../../../qa-interns-missing-results", join(root, "results"));
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "link");
+    const error = await load(root).catch((reason: unknown) => reason);
+    if (!(error instanceof Error)) throw new Error("loadTarget accepted a dangling link that leaves the target");
+    expect(error.message).toContain("/results, which resolves to ");
+    expect(error.message).toContain("/qa-interns-missing-results, outside the target directory");
   });
 
   test("reject a Compose file outside the target, by its path or through a symbolic link", async () => {

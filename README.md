@@ -81,13 +81,15 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - A service named `qa-proxy` or `qa-runner`.
 - A network alias that is the name of another service, `qa-proxy`, or `qa-runner`, or that two services declare.
 - Two services whose names differ only in case, since Docker's network names are case-insensitive and prebuilt image tags are lowercase.
-- `privileged: true`, `pid: host`, `ipc: host`, `uts: host`, `cgroup: host`, or `userns_mode: host`, or a `pre_start`, `post_start`, or `pre_stop` hook with `privileged: true`.
+- `privileged: true`, or a `pre_start`, `post_start`, or `pre_stop` hook with `privileged: true`.
+- A `pid`, `ipc`, `uts`, `cgroup`, or `userns_mode` of `host` or `container:<name>`.
 - A `devices` entry, a `device_cgroup_rules` entry, `gpus`, a device reservation under `deploy.resources.reservations`, a `cap_add` entry, or a `security_opt` entry that contains `unconfined`.
 - `use_api_socket: true`, which mounts the Docker socket.
 - A `volumes_from` entry with a `container:` source.
-- A bind mount, `env_file`, secret or config `file`, build context, Dockerfile, or additional build context whose path lies outside the target directory, and an additional build context from an `oci-layout://` directory. A path is checked after the symbolic links of its longest existing part are resolved, so a Docker socket is rejected whether it is mounted directly or through a symbolic link, and a missing path under a symbolic link that points outside the target is rejected too.
+- A build with a `network` other than `default` or `none`, `privileged: true`, an `entitlements` entry, an `ssh` entry, or a `cache_from` or `cache_to` entry of `type=local`.
+- A bind mount, `env_file`, secret or config `file`, build context, Dockerfile, or additional build context whose path lies outside the target directory, and an additional build context from an `oci-layout://` directory. `run` reads `env_file` paths before variable interpolation, so it also rejects an `env_file` path that contains a variable. A path is checked after its symbolic links are resolved, dangling ones included, so a Docker socket is rejected whether it is mounted directly or through a symbolic link, and so is a path under a symbolic link that points outside the target.
 
-After it builds the images, `run` reads the dev container configuration that the Dev Container CLI merges from `devcontainer.json`, its features, and the `devcontainer.metadata` label of the dev container image. It rejects the target when that configuration sets `privileged`, adds a `capAdd` entry, has a `securityOpt` entry that contains `unconfined`, has a `mounts` entry whose host path lies outside the target directory or that names an external volume, or requests a GPU in `hostRequirements`.
+`devcontainer up` adds settings from `devcontainer.json`, its features, and the `devcontainer.metadata` label of the dev container image to the dev container service. After `devcontainer up` creates an environment's dev container, `run` renders the Compose files that the dev container was created from, including the override the Dev Container CLI wrote, and applies the checks above to the dev container service and to the project's volumes, networks, secrets, and configs. When a check fails, the environment is torn down before its intern starts.
 
 Published ports are allowed; QA Interns removes them.
 
@@ -124,8 +126,8 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 ## What a run does
 
 1. Exports the target at the commit and checks its dev container and Compose files.
-2. Builds the target's images once and checks the merged dev container configuration.
-3. Starts one environment per intern, each as its own Compose project on its own isolated network, at most as many at once as free memory and login capacity allow, and at most four starting at a time.
+2. Builds the target's images once.
+3. Starts one environment per intern, each as its own Compose project on its own isolated network, at most as many at once as free memory and login capacity allow, and at most four starting at a time. Checks each dev container that `devcontainer up` created.
 4. Starts one agent per intern inside that intern's runner container, over the Agent Client Protocol.
 5. Gives each intern the rules, one charter, the application URLs, and the seeded accounts. The intern tests until its time box ends and writes each finding as JSON.
 6. Groups duplicate findings in one judge pass, then hands each group to a different intern in a fresh environment, on a different provider when one is free, which reproduces it from the written finding alone.
