@@ -79,7 +79,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - A `network_mode` other than `service:<name>`, including `host`.
 - A service named `qa-proxy` or `qa-runner`.
 - A network alias that is the name of another service, `qa-proxy`, or `qa-runner`, or that two services declare.
-- Two services with a `build` section whose names differ only in case, when both start. A service behind a Compose profile starts only when it is the dev container `service` or in `runServices`.
+- Two services whose names differ only in case, since Docker's network names are case-insensitive and prebuilt image tags are lowercase.
 - `privileged: true`, `pid: host`, `ipc: host`, or `userns_mode: host`.
 - A `devices` entry, a `cap_add` entry, or a `security_opt` entry that contains `unconfined`.
 - A bind mount whose source lies outside the target directory. A source that exists is checked after its symbolic links are resolved, so a Docker socket is rejected whether it is mounted directly or through a symbolic link.

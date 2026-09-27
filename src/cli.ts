@@ -123,7 +123,9 @@ async function main(args: string[]): Promise<number> {
         const deadline = Date.now() + 120_000;
         while (running(state.pid, state.pidStart) && Date.now() < deadline) await Bun.sleep(500);
         if (running(state.pid, state.pidStart)) {
-          throw new Error(`Process ${state.pid} of run ${state.runId} is still running after 120 seconds, so its environments were left alone. Run down again after it exits.`);
+          throw new Error(
+            `Process ${state.pid} of run ${state.runId} is still running after 120 seconds, so its environments were left alone. Stop it with kill -9 ${state.pid}, then run down again.`,
+          );
         }
         print(`Process ${state.pid} exited.`);
       }
