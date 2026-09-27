@@ -15,6 +15,7 @@ export type ProviderSpec = {
 };
 
 const authRequired = -32000;
+const rateLimited = -32003;
 const internalError = -32603;
 const claudeLoginKinds = [
   "rate_limit",
@@ -25,6 +26,7 @@ const claudeLoginKinds = [
   "verification_required",
 ];
 const codexLoginErrors = ["usageLimitExceeded", "unauthorized"];
+const grokLoginStatuses = [401, 402];
 
 const codexConfig = `[features]
 apps = false
@@ -90,8 +92,8 @@ export const providers: Record<Provider, ProviderSpec> = {
     },
   },
   cursor: {
-    adapter: ["agent", "acp"],
-    env: { XDG_CONFIG_HOME: "/home/qa/.config" },
+    adapter: ["cursor-agent", "--force", "acp"],
+    env: { XDG_CONFIG_HOME: "/home/qa/.config", CURSOR_CONFIG_DIR: "/home/qa/.cursor" },
     mounts: (store) => [{ source: storePath(store), target: "/home/qa/.config/cursor", readOnly: false }],
     files: [],
     tmpfs: ["/home/qa/.config"],
@@ -99,5 +101,27 @@ export const providers: Record<Provider, ProviderSpec> = {
     sessionMeta: null,
     modeId: null,
     isLoginFailure: (error) => error.code === authRequired,
+  },
+  grok: {
+    adapter: ["grok", "agent", "--always-approve", "stdio"],
+    env: { GROK_AUTH_PATH: "/home/qa/.grok-login/auth.json" },
+    mounts: (store) => [{ source: storePath(store), target: "/home/qa/.grok-login", readOnly: false }],
+    files: [],
+    tmpfs: [],
+    egress: ["cli-chat-proxy.grok.com", "auth.x.ai"],
+    sessionMeta: null,
+    modeId: null,
+    isLoginFailure: (error) => {
+      if (error.code === authRequired || error.code === rateLimited) return true;
+      const data = error.data;
+      return (
+        error.code === internalError &&
+        typeof data === "object" &&
+        data !== null &&
+        "http_status" in data &&
+        typeof data.http_status === "number" &&
+        grokLoginStatuses.includes(data.http_status)
+      );
+    },
   },
 };
