@@ -71,7 +71,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - `seed`: a shell command, run once in the dev container, that creates test accounts and data and prints them as one JSON document.
 - `focus` (optional): areas the project wants covered, added to the charter deck.
 - `offLimits` (optional): actions interns must not take.
-- `egress` (optional): outside hosts that the target services reach over HTTPS on port 443, for a service that has no local stand-in, such as a hosted model API. Each entry is an exact lowercase host name; a wildcard or an IP address is rejected. A target service reads the credential for such a host through Compose variable interpolation, for example `${AI_GATEWAY_API_KEY}`, which Compose fills from the environment that `qa-interns run` runs in.
+- `egress` (optional): outside hosts that the target services reach over HTTPS on port 443, for a service that has no local stand-in, such as a hosted model API. Each entry is an exact lowercase host name; a wildcard or an IP address is rejected.
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
 
