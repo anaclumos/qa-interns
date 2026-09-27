@@ -63,9 +63,9 @@ function intern(state: RunState, internId: string) {
 function internalSubnet(runDir: string, internId: string): string {
   const network = readFileSync(join(runDir, "envs", internId, "compose.qa.yml"), "utf8")
     .split("\n")
-    .find((entry) => entry.startsWith("  qa_internal: "));
+    .find((entry) => entry.startsWith("  qa_internal: !override "));
   if (network === undefined) throw new Error(`compose.qa.yml of ${internId} has no qa_internal network`);
-  return JSON.parse(network.slice("  qa_internal: ".length)).ipam.config[0].subnet;
+  return JSON.parse(network.slice("  qa_internal: !override ".length)).ipam.config[0].subnet;
 }
 
 describe.skipIf(!dockerAvailable)("runQa end to end with the fake agent", () => {
