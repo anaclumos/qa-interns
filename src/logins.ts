@@ -126,7 +126,10 @@ type Grant = { store: string; credential: string; mounted: string; where: string
 type Slot = { login: Login; active: number; exhausted: boolean; store: Grant | null };
 
 function mountedPath(provider: Provider, store: string): string {
-  return providers[provider].mounts(store).map((mount) => realpathSync(mount.source)).join("\n");
+  const mounts = providers[provider].mounts(store);
+  const [mount] = mounts;
+  if (mount === undefined || mounts.length > 1) throw new Error(`A lease locks one mount source, but a ${provider} store mounts ${mounts.length}`);
+  return realpathSync(mount.source);
 }
 
 const lockHeld = 75;
@@ -180,15 +183,14 @@ function lock(mounted: string, slots: number): (() => void) | null {
     if (fd === null) throw new Error(`${lockFile} is locked by a process that does not hold ${join(dir, "acquire.lock")}`);
     return fd;
   };
-  const sources = mounted.split("\n");
-  const above = sources.flatMap(ancestors);
+  const above = ancestors(mounted);
   const held: number[] = [];
   const release = () => {
     for (const fd of held) closeSync(fd);
   };
   const mutex = take(join(dir, "acquire.lock"), "--exclusive");
   try {
-    for (const test of [...sources.map((source) => file(source, "under")), ...above.map((path) => file(path, "at"))]) {
+    for (const test of [file(mounted, "under"), ...above.map((path) => file(path, "at"))]) {
       const fd = flock(test, "--exclusive", "--nonblock");
       if (fd === null) return null;
       closeSync(fd);
@@ -198,7 +200,7 @@ function lock(mounted: string, slots: number): (() => void) | null {
       if (fd !== null) held.push(fd);
     }
     if (held.length === 0) return null;
-    for (const share of [...sources.map((source) => file(source, "at")), ...above.map((path) => file(path, "under"))]) held.push(take(share, "--shared", "--nonblock"));
+    for (const share of [file(mounted, "at"), ...above.map((path) => file(path, "under"))]) held.push(take(share, "--shared", "--nonblock"));
   } catch (error) {
     release();
     throw error;

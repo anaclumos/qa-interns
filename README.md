@@ -164,7 +164,7 @@ A finding is confirmed when two or more interns reproduced it.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
 - An intern waits for a login only while its own run holds a lease. When other runs hold every login it could use, the intern ends as `limited`.
 - Credential locks and the store checks compare real paths, so two hard links to one credential file count as two credentials.
-- A Cursor or Grok runner can read and change every file in its store, including the credential of a store inside it that another logins file lists. The locks only keep the two stores from being leased at the same time.
+- A Cursor or Grok runner can read and change every file in its store, including the credential of a store inside it that another run uses. The locks only keep the two stores from being leased at the same time.
 - A Grok login whose token refresh fails during a turn ends the intern instead of moving it to another login, because Grok reports that failure as `-32603` with text data only.
 - A Grok login without a Grok subscription ends the intern instead of moving it to another login, because Grok reports it as `-32603` with `data.http_status` 403, the same shape as a content policy denial.
 - When a Grok token refresh fails for good, Grok deletes `auth.json` from the store, and the next run rejects the logins file until you log in to that store again.
