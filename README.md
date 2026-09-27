@@ -84,7 +84,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - A `devices` entry, a `cap_add` entry, or a `security_opt` entry that contains `unconfined`.
 - A bind mount whose source lies outside the target directory. A source that exists is checked after its symbolic links are resolved, so a Docker socket is rejected whether it is mounted directly or through a symbolic link.
 
-Published ports are allowed; QA Interns removes them.
+Published ports and build `tags` are allowed; QA Interns removes them.
 
 The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint. The target project owns that guarantee.
 
