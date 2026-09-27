@@ -2,6 +2,7 @@ import type { Subprocess } from "bun";
 import { appendFile, mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
+import { errorCode } from "./findings.ts";
 
 export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; hostEnv: string[] };
 export type TargetRef = { repo: string; path: string; commit: string };
@@ -218,7 +219,7 @@ async function resolveReal(path: string): Promise<string> {
   try {
     return await realpath(path);
   } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    if (errorCode(error) !== "ENOENT") throw error;
     return join(await resolveReal(dirname(path)), basename(path));
   }
 }
