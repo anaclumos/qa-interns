@@ -585,7 +585,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
   ])(
     "start exactly the services that loadTarget counts as active for %s",
     async (_, runServices, expected) => {
-      const runId = crypto.randomUUID().slice(0, 8);
+      const runId = `btest-${crypto.randomUUID().slice(0, 8)}`;
       const runDir = await scratch();
       const source = join(runDir, "source");
       const sleeper = `    image: busybox:1.37\n    command: ["sleep", "86400"]\n    init: true\n`;
