@@ -115,19 +115,16 @@ const composeSchema = z.object({
 const referencesSchema = z
   .object({
     include: z
-      .union([
-        z.array(
-          z.union([
-            z.string(),
-            z.object({
-              path: z.union([z.string(), z.tuple([z.string()], z.string())]),
-              project_directory: z.string().optional(),
-              env_file: z.union([z.string(), z.array(z.string())]).optional(),
-            }),
-          ]),
-        ),
-        z.string(),
-      ])
+      .array(
+        z.union([
+          z.string(),
+          z.object({
+            path: z.union([z.string(), z.tuple([z.string()], z.string())]),
+            project_directory: z.string().optional(),
+            env_file: z.union([z.string(), z.array(z.string())]).optional(),
+          }),
+        ]),
+      )
       .nullish(),
     services: z
       .record(z.string(), z.union([z.object({ extends: z.union([z.string(), z.object({ file: z.string().optional() })]).optional() }), z.string()]).nullable())
@@ -200,7 +197,7 @@ async function checkComposeReferences(root: string, composePaths: string[]): Pro
       const references = referencesSchema.safeParse(document);
       if (!references.success) throw new Error(`${file} is invalid:\n${z.prettifyError(references.error)}`);
       const { include, services } = references.data ?? {};
-      for (const entry of kind !== "extended" && Array.isArray(include) ? include : []) {
+      for (const entry of kind !== "extended" ? (include ?? []) : []) {
         const { path, project_directory, env_file } = typeof entry === "string" ? { path: entry } : entry;
         const [main, ...overrides] = typeof path === "string" ? ([path] as const) : path;
         const workingDir = kind === "top" ? dir : null;

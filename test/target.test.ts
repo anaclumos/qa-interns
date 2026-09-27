@@ -397,6 +397,10 @@ services:
       (outside) => [{ "compose.yml": `services:\n  web:\n    extends: { file: ${outside}/base.yml, service: base }\n` }, `compose.yml names ${outside}/base.yml in services.web.extends.file, which`],
     ],
     [
+      "a scalar include",
+      (outside) => [{ "compose.yml": `include: ${outside}/extra.yml\nservices:\n  web:\n    image: nginx:1.29-alpine\n` }, "compose.yml is invalid"],
+    ],
+    [
       "an include outside the target in an included file",
       (outside) => [
         { "compose.yml": "include: [inc/a.yml]\nservices:\n  web:\n    image: nginx:1.29-alpine\n", "inc/a.yml": `include: [${outside}/extra.yml]\n` },
