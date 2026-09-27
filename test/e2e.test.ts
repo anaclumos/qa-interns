@@ -54,6 +54,12 @@ async function workspaces(runDir: string, state: RunState): Promise<string[]> {
   return names.flat();
 }
 
+async function disks(runDir: string, state: RunState): Promise<string[]> {
+  const images = await Promise.all(state.interns.map(async (intern) => (await readdir(join(runDir, "interns", intern.id))).filter((entry) => entry.endsWith(".img"))));
+  const mounts = readFileSync("/proc/self/mountinfo", "utf8").split("\n").filter((line) => line.includes(runDir));
+  return [...images.flat(), ...mounts];
+}
+
 function intern(state: RunState, internId: string) {
   const found = state.interns.find((entry) => entry.id === internId);
   if (found === undefined) throw new Error(`state has no intern ${internId}`);
@@ -171,6 +177,7 @@ USER qa
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
     },
     timeout,
   );
@@ -249,12 +256,13 @@ USER qa
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
     },
     timeout,
   );
 
   test(
-    "a runner file stops at 1 GiB, and an intern whose /qa/out passes 1 GiB is stopped and keeps its findings",
+    "an intern that fills its 1 GiB disk, partly with a deleted file it keeps open, is stopped and keeps its findings",
     async () => {
       const lines: string[] = [];
       const run = runQa({
@@ -276,15 +284,19 @@ USER qa
       expect(intern(state, "i1")).toMatchObject({
         status: "failed",
         findings: 1,
-        detail: `${join(runDir, "interns", "i1", "out")} holds more than 1 GiB, so its runner was stopped`,
+        detail: `${join(runDir, "interns", "i1", "out")} filled its 1 GiB disk, so its runner was stopped`,
       });
-      expect(Bun.file(join(runDir, "interns", "i1", "out", "evidence", "big.bin")).size).toBe(1024 ** 3);
+      const big = Bun.file(join(runDir, "interns", "i1", "out", "evidence", "big.bin")).size;
+      expect(big).toBeGreaterThan(0);
+      expect(big).toBeLessThan(1024 ** 3 - 600 * 1024 ** 2);
+      expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "held.bin")).exists()).toBe(false);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups.map((group: { findings: { id: string }[] }) => group.findings.map((finding) => finding.id))).toEqual([["i1/fake-home"]]);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
     },
     timeout,
   );

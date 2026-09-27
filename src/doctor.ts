@@ -1,11 +1,12 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { arch, freemem, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { environmentMemory, freeSlot, slotSubnets } from "./environment.ts";
+import { createDisk, environmentMemory, freeSlot, saveDisk, slotSubnets } from "./environment.ts";
 import { loadLogins, Scheduler } from "./logins.ts";
 import { ensureRunnerImage } from "./runner.ts";
+import { runsDir } from "./state.ts";
 import { execute } from "./target.ts";
 
 const devcontainer = join(dirname(fileURLToPath(import.meta.resolve("@devcontainers/cli/package.json"))), "devcontainer.js");
@@ -60,6 +61,24 @@ async function checkCompose(): Promise<string> {
   }
 }
 
+async function checkDisk(image: string): Promise<string> {
+  const state = dirname(runsDir());
+  await mkdir(state, { recursive: true });
+  const dir = await mkdtemp(join(state, "doctor-"));
+  try {
+    const out = join(dir, "out");
+    await mkdir(out);
+    await createDisk(out, image);
+    await Bun.write(join(out, "check.txt"), "saved\n");
+    await saveDisk(out, image);
+    const saved = await Bun.file(join(out, "check.txt")).text();
+    if (saved !== "saved\n") throw new Error(`the saved disk holds ${JSON.stringify(saved)} instead of the file written to it`);
+    return `created, mounted, and saved an output disk in ${state}`;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 async function checkNetwork(): Promise<string> {
   const name = `qa-interns-doctor-${process.pid}`;
   const reserved = new Set<number>();
@@ -104,6 +123,10 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
       return firstLine(await execute(["docker", "run", "--rm", "--network", "none", image, ...argv]));
     });
   }
+  await check("output disk", async () => {
+    if (image === null) throw new Error("the runner image is not available");
+    return checkDisk(image);
+  });
   await check("logins", async () => {
     const logins = await loadLogins(loginsFile);
     const scheduler = new Scheduler(logins);

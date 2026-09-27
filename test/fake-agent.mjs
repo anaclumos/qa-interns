@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const sessionId = "fake-session-1";
@@ -75,13 +75,20 @@ const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, 
 
 const login = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8"));
 
-const fill = (file, mib) => {
-  const chunk = randomBytes(1024 ** 2);
+const chunk = randomBytes(1024 ** 2);
+
+const hold = (file, mib) => {
+  const fd = openSync(file, "w");
+  unlinkSync(file);
+  for (let index = 0; index < mib; index += 1) writeSync(fd, chunk);
+};
+
+const fill = (file) => {
   const fd = openSync(file, "w");
   try {
-    for (let index = 0; index < mib; index += 1) writeSync(fd, chunk);
+    for (;;) writeSync(fd, chunk);
   } catch (error) {
-    if (error.code !== "EFBIG") throw error;
+    if (error.code !== "ENOSPC") throw error;
   } finally {
     closeSync(fd);
   }
@@ -127,8 +134,8 @@ const charterTurn = async (text) => {
   update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" });
   say("Recorded one finding.");
   if (login().flood === true) {
-    fill("/qa/out/evidence/big.bin", 1100);
-    fill("/qa/out/evidence/more.bin", 16);
+    hold("/qa/out/evidence/held.bin", 600);
+    fill("/qa/out/evidence/big.bin");
     return slowTurn();
   }
   return endTurn;

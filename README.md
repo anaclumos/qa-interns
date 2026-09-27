@@ -7,7 +7,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 ## Requirements
 
 - Linux on x86-64. Chrome for Testing has no Linux ARM64 build.
-- Docker Engine with Compose v2 and the `isolated` bridge gateway mode. `qa-interns doctor` checks both.
+- Docker Engine with Compose v2, the `isolated` bridge gateway mode, and privileged containers that can use loop devices. QA Interns mounts each intern's output disk from such a container, so the state directory must be on a mount with shared propagation, which is the systemd default. `qa-interns doctor` checks all of these.
 - Bun 1.4 or later, and Git.
 - At least one agent login: Claude Code, Codex, Cursor, or Grok (see [Logins](#logins)).
 - Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, and each service's `mem_limit` (1 GiB when the service sets none).
@@ -41,7 +41,7 @@ qa-interns doctor
 | `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
 | `qa-interns report [<run>]` | Prints `report.md`. |
-| `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when that process, matched by its pid and start time, is still running. Then tears down every environment the run still has and deletes the run's leftover workspace copies with a container of the current runner image. When copies are left and that image does not exist, it fails; build the image with `qa-interns doctor` and run `down` again. |
+| `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when that process, matched by its pid and start time, is still running. Then tears down every environment the run still has, saves each output disk the run left into its folder, and deletes the run's leftover workspace copies, with containers of the current runner image. When disks or copies are left and that image does not exist, it fails; build the image with `qa-interns doctor` and run `down` again. |
 
 `<run>` is a run id or a run directory. Without it, the command uses the most recent run.
 
@@ -146,7 +146,7 @@ A finding is confirmed when two or more interns reproduced it.
 
 - Every environment is its own Compose project with three networks in its own `/23` block of `10.213.0.0/16`. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. Only the proxy joins the third network, which reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
 - The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential it was given, which is the credential file for Claude and Codex and the whole store directory for Cursor and Grok, and that write reaches the store on the host.
-- `/qa/out` is the intern's `interns/<id>/out` directory on the host. The runner cannot write a file larger than 1 GiB anywhere. While the agent runs, the orchestrator walks `/qa/out` once a second and stops the runner when it holds more than 1 GiB. The intern then ends as failed, and the findings it wrote stay in the report.
+- `/qa/out` is a 1 GiB ext4 disk of its own for each attempt, mounted on that attempt's folder under `interns/<id>/`. The kernel stops every write past the disk's size or its inode count, including writes to files deleted while still open and space reserved without writing. A privileged helper container from the runner image, with the host `/dev`, creates and mounts the disk before the environment starts. At teardown, the helper copies the disk into the folder and deletes the disk image. The runner cannot write a file larger than 1 GiB anywhere. While the agent runs, the orchestrator checks the disk once a second and stops the runner when the disk is full. The intern then ends as failed, and the findings it wrote stay in the report.
 - The runner reaches the internet only through a proxy container that allows HTTPS to the model provider hosts and nothing else.
 - Target services have no internet access and cannot reach the proxy. Lifecycle commands that run in a target container, and application code, fail when they need the network.
 - Every agent session starts with no MCP servers. Claude and Codex have their MCP sources blocked in `src/providers.ts`. Grok has them blocked by the root-owned `/etc/grok/requirements.toml` in the runner image. A Cursor runner has no MCP source, because its home directory is an empty tmpfs and `CURSOR_CONFIG_DIR` keeps Cursor's settings and sessions in that home, out of the store.
@@ -162,7 +162,8 @@ A finding is confirmed when two or more interns reproduced it.
 - A Grok login without a Grok subscription ends the intern instead of moving it to another login, because Grok reports it as `-32603` with `data.http_status` 403, the same shape as a content policy denial.
 - When a Grok token refresh fails for good, Grok deletes `auth.json` from the store, and the next run rejects the logins file until you log in to that store again.
 - Compose and the Dev Container CLI get only the variables the [target environment contract](#target-environment-contract) lists. A Docker credential helper that needs another variable, such as `DBUS_SESSION_BUS_ADDRESS`, fails the image pull with `error getting credentials`, and the Dev Container CLI downloads features without the proxy variables. A target that needs one of them lists it in `hostEnv`.
-- The 1 GiB total of `/qa/out` comes from a directory walk, not a quota. A runner can write past it in files of up to 1 GiB each: before the next walk finishes, after the agent's session ends, and in files it deletes while they are still open ([#22](https://github.com/anaclumos/qa-interns/issues/22)).
+- The login store of a Cursor or Grok intern is a host directory outside the output disk. The runner can write any number of files there, each up to 1 GiB. The Claude and Codex credential files and the generated Codex configuration file are single host files, each capped at 1 GiB.
+- `interns/<id>/adapter.log` and `interns/<id>/transcript.jsonl` are host files outside the output disk and have no size limit ([#31](https://github.com/anaclumos/qa-interns/issues/31)).
 
 ## Evaluation target
 
