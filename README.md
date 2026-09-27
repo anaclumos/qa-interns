@@ -10,7 +10,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 - Docker Engine with Compose v2 and the `isolated` bridge gateway mode. `qa-interns doctor` checks both.
 - Bun 1.4 or later, Git, and `flock` from util-linux.
 - At least one agent login: Claude Code, Codex, Cursor, or Grok (see [Logins](#logins)).
-- Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, and each service's `mem_limit` (1 GiB when the service sets none).
+- Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, 128 MiB for its relay when the target lists `egress` hosts, and each service's `mem_limit` (1 GiB when the service sets none).
 
 ## Install
 
@@ -59,7 +59,8 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
       "ready": "http://web:3000/health",
       "seed": "bun run src/seed.ts",
       "focus": ["How invoices calculate and show money."],
-      "offLimits": ["Do not change the password of a seeded account."]
+      "offLimits": ["Do not change the password of a seeded account."],
+      "egress": ["api.pwnedpasswords.com"]
     }
   }
 }
@@ -71,6 +72,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - `focus` (optional): areas the project wants covered, dealt to interns before the built-in charters. A run with no more interns than focus entries deals no built-in charter; list fewer focus entries or raise `--interns` to get both.
 - `offLimits` (optional): actions interns must not take.
 - `hostEnv` (optional): names of variables the target takes from the environment that runs `qa-interns`. `run` fails when one of them is not set.
+- `egress` (optional): outside hosts that the target services reach over TLS on port 443, such as HTTPS, for a service that has no local stand-in, such as a hosted model API. Each entry is an exact lowercase host name; a wildcard or an IP address is rejected. When such a host needs a credential, a target service takes it from a variable that `hostEnv` names.
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
 
@@ -79,8 +81,9 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - A `container_name`.
 - An external volume or network, or a volume or network with an explicit `name:`.
 - A `network_mode` other than `service:<name>`, including `host`.
-- A service named `qa-proxy` or `qa-runner`.
-- A network alias that is the name of another service, `qa-proxy`, or `qa-runner`, or that two services declare.
+- A service named `qa-proxy`, `qa-relay`, or `qa-runner`, in any letter case.
+- A network alias that is the name of another service, `qa-proxy`, `qa-relay`, or `qa-runner`, or that two services declare.
+- An `egress` host that is the name or a network alias of a service.
 - Two services whose names differ only in case, since Docker's network names are case-insensitive and prebuilt image tags are lowercase.
 - `privileged: true`, `pid: host`, `ipc: host`, or `userns_mode: host`.
 - A `devices` entry, a `cap_add` entry, or a `security_opt` entry that contains `unconfined`.
@@ -90,7 +93,7 @@ Published ports and build `tags` are allowed; QA Interns removes them.
 
 A service without `build` whose `image` names the `image` or a build `tags` entry of a service with `build` that the run starts runs the image QA Interns builds for that service, as it does in the target's own dev container. Names match as Docker resolves them, so `app` and `docker.io/library/app:latest` name the same image.
 
-The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint. The target project owns that guarantee.
+The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint beyond the `egress` hosts. The target project owns that guarantee.
 
 Compose and the Dev Container CLI run with the variables that `hostEnv` names and the ones they need to reach Docker: `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS`, `DOCKER_TLS_VERIFY`, and `DOCKER_API_VERSION`. QA Interns removes every other variable of its own environment before it runs them. Compose interpolation, an `environment` entry without a value, `${localEnv:...}` in `devcontainer.json`, and `initializeCommand` read from what remains.
 
@@ -150,13 +153,13 @@ A finding is confirmed when two or more interns reproduced it.
 
 ## Isolation
 
-- Every environment is its own Compose project with three networks in its own `/23` block of `10.213.0.0/16`. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. Only the proxy joins the third network, which reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
+- Every environment is its own Compose project with its networks in its own `/23` block of `10.213.0.0/16`. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. When the target lists `egress` hosts, the target services and the relay share a third internal network. Only the proxy and the relay join the network that reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
 - The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential it was given, which is the credential file for Claude and Codex and the whole store directory for Cursor and Grok, and that write reaches the store on the host.
 - `/qa/out` is the intern's `interns/<id>/out` directory on the host. The runner cannot write a file larger than 1 GiB anywhere. While the agent runs, the orchestrator walks `/qa/out` once a second and stops the runner when it holds more than 1 GiB. The intern then ends as failed, and the findings it wrote stay in the report.
 - The orchestrator keeps an agent's output in memory until a newline arrives. An intern fails when its agent prints more than 64 MiB without a newline, or when the orchestrator's messages to the agent pass 64 MiB in total.
 - The runner reaches the internet only through a proxy container that allows HTTPS to the model provider hosts and nothing else.
-- Docker keeps the log of the runner and the log of the proxy with the `local` log driver, whatever log driver and options the Docker daemon sets. Each log is a current file and the previous file. Docker starts a new current file once the current file holds 10 MB, and then compresses the previous file. A log of data that does not compress takes up to about 20 MB, and up to about 30 MB while that compression runs.
-- Target services have no internet access and cannot reach the proxy. Lifecycle commands that run in a target container, and application code, fail when they need the network.
+- Docker keeps the logs of the runner, the proxy, and the relay with the `local` log driver, whatever log driver and options the Docker daemon sets. Each log is a current file and the previous file. Docker starts a new current file once the current file holds 10 MB, and then compresses the previous file. A log of data that does not compress takes up to about 20 MB, and up to about 30 MB while that compression runs.
+- Target services cannot reach the proxy. They reach the internet only through a relay container, and only the `egress` hosts over TLS on port 443. Each target service resolves those hosts to the relay through its hosts file and starts after the relay accepts connections. The relay reads the host name from the TLS handshake, refuses any other host and any connection that does not start with a TLS handshake, and passes the encrypted connection through unchanged, so the application needs no proxy setting and checks the real server's certificate. The relay does not check which protocol runs inside TLS. Lifecycle commands that run in a target container, and application code, fail when they need any other host.
 - Every agent session starts with no MCP servers. Claude and Codex have their MCP sources blocked in `src/providers.ts`. Grok has them blocked by the root-owned `/etc/grok/requirements.toml` in the runner image. A Cursor runner has no MCP source, because its home directory is an empty tmpfs and `CURSOR_CONFIG_DIR` keeps Cursor's settings and sessions in that home, out of the store.
 - Chrome runs with `--no-sandbox`, because Docker's default seccomp profile blocks its sandbox, so the container is the boundary. A compromised renderer can read what the runner user can read, including that intern's login.
 
