@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { closeSync, linkSync, openSync, writeSync } from "node:fs";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { z } from "zod";
 import {
   buildImages,
@@ -344,6 +344,47 @@ networks:
     expect(db).toMatchObject({ mem_limit: "268435456", cpus: 2, pids_limit: 300 });
     expect(metrics).toMatchObject({ network_mode: "service:db", mem_limit: "1073741824", cpus: 2, pids_limit: 1024 });
     expect(metrics?.networks).toBeUndefined();
+  });
+
+  test("replace the log settings of every service with the local driver and two files of 10 MB, whatever the target sets", async () => {
+    const source = await scratch();
+    await Bun.write(
+      join(source, ".devcontainer", "devcontainer.json"),
+      JSON.stringify({
+        dockerComposeFile: "compose.yml",
+        service: "api",
+        customizations: { "qa-interns": { urls: { app: "http://api:8080" }, ready: "http://api:8080/ready", seed: "node seed.mjs" } },
+      }),
+    );
+    await Bun.write(
+      join(source, ".devcontainer", "compose.yml"),
+      `services:
+  api:
+    build: ..
+    logging:
+      driver: json-file
+      options:
+        max-size: 1g
+  db:
+    image: postgres:17-alpine
+    logging:
+      options:
+        tag: db
+  cache:
+    image: redis:8-alpine
+`,
+    );
+    const target = await loadTarget(ref, source);
+    const runDir = await scratch();
+    const config = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target), 1000, 1000));
+    const capped = { driver: "local", options: { "max-size": "10m", "max-file": "2" } };
+    expect(Object.fromEntries(Object.entries(config.services).map(([name, service]) => [name, service.logging]))).toEqual({
+      api: capped,
+      db: capped,
+      cache: capped,
+      "qa-proxy": capped,
+      "qa-runner": capped,
+    });
   });
 
   test("carry a service's network aliases onto the internal network when a URL host is an alias", async () => {
@@ -765,6 +806,40 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       }
     },
     5 * 60_000,
+  );
+
+  test(
+    "keep two log files of 10 MB for each Ledger service, whatever the service writes",
+    async () => {
+      const file = 10_000_000;
+      const runId = `btest-${crypto.randomUUID().slice(0, 8)}`;
+      const runDir = await scratch();
+      const source = join(runDir, "source");
+      await cp(ledgerSource, source, { recursive: true, filter: (path) => basename(path) !== "node_modules" });
+      const image = await ensureRunnerImage();
+      const flood = 'yes "$(head -c 8000 /dev/zero | tr "\\0" x)" | head -c 67108864 > /proc/1/fd/1';
+      try {
+        const target = await loadTarget(ref, source);
+        const images = await buildImages(runId, target, source);
+        await writeChromePolicy(runDir, target.settings.urls);
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
+        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), images, runner }));
+        expect(Object.keys(target.services).sort()).toEqual(["db", "web"]);
+        for (const service of Object.keys(target.services)) {
+          const container = (await execute(["docker", "compose", "-p", environment.project, "ps", "-q", service])).trim();
+          await execute(["docker", "exec", "--privileged", "--user", "0", container, "sh", "-c", flood]);
+          const logs = await capture(["docker", "logs", container]);
+          expect(logs.code).toBe(0);
+          const kept = logs.stdout.length + logs.stderr.length;
+          expect(kept).toBeGreaterThan(file);
+          expect(kept).toBeLessThanOrEqual(2 * file);
+        }
+      } finally {
+        await stopRun(runId);
+        await removeCopies(runDir, runId, image);
+      }
+    },
+    20 * 60_000,
   );
 
   test.each([
