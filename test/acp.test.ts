@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { AgentError, openSession, type Session } from "../src/acp.ts";
@@ -83,8 +83,8 @@ const findAdapter = [
   "  .find((entry) => readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\\0')[1] === '/opt/qa/fake-agent.mjs');",
 ];
 
-function printAsAdapter(pieces: string): Promise<string> {
-  const script = [...findAdapter, "const fd = openSync(`/proc/${pid}/fd/1`, 'w');", `for (const piece of ${pieces}) writeSync(fd, piece);`];
+function printAsAdapter(pieces: string, stream: 1 | 2 = 1): Promise<string> {
+  const script = [...findAdapter, `const fd = openSync(\`/proc/\${pid}/fd/${stream}\`, 'w');`, `for (const piece of ${pieces}) writeSync(fd, piece);`];
   return docker("exec", agent, "node", "-e", script.join("\n"));
 }
 
@@ -224,6 +224,41 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
       { code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } },
       { stopReason: "cancelled" },
     ]);
+  });
+
+  test("another process in the runner cannot grow the adapter log or the transcript past 64 MiB", async () => {
+    const limit = 64 * 1024 ** 2;
+    const floodLog = path.join(internDir, "flood-adapter.log");
+    const floodTranscript = path.join(internDir, "flood-transcript.jsonl");
+    const flooded = await fakeSession("flood");
+    try {
+      await printAsAdapter("['x'.repeat(80 * 2 ** 20)]", 2);
+      await printAsAdapter("Array.from({ length: 80 }, () => JSON.stringify({ jsonrpc: '2.0', method: 'flood', params: { pad: 'x'.repeat(2 ** 20) } }) + '\\n')");
+      await until(() => statSync(floodLog).size > limit - 2 ** 20 && statSync(floodTranscript).size > limit - 2 ** 21, "the flood to fill both files");
+      const result = await flooded.prompt("You have 10 minutes left. Keep testing your charter.");
+      expect(result).toEqual({ stopReason: "end_turn", toolCalls: 0, lastMessage: "Nothing more to test." });
+    } finally {
+      await flooded.close();
+    }
+    expect(statSync(floodLog).size).toBeLessThanOrEqual(limit);
+    expect(statSync(floodTranscript).size).toBeLessThanOrEqual(limit);
+    const lines = readFileSync(floodTranscript, "utf8").split("\n");
+    expect(lines.pop()).toBe("");
+    for (const line of lines) expect(JSON.parse(line).message.jsonrpc).toBe("2.0");
+  }, 60_000);
+
+  test("a failed adapter log write fails the session's pending prompt", async () => {
+    const lockedLog = path.join(internDir, "locked-adapter.log");
+    const locked = await fakeSession("locked");
+    try {
+      const turn = locked.prompt("SLOW: keep working until you are stopped.").catch((error: unknown) => error);
+      rmSync(lockedLog);
+      mkdirSync(lockedLog);
+      await printAsAdapter("['adapter error output\\n']", 2);
+      expect(await turn).toBeInstanceOf(Error);
+    } finally {
+      await locked.close();
+    }
   });
 
   test("updates the agent prints between turns do not reach the next turn", async () => {
