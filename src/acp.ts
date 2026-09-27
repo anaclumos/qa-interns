@@ -57,9 +57,14 @@ export async function openSession(opts: { container: string; provider: ProviderS
   let unterminated = 0;
   const lines = new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
-      const newline = chunk.lastIndexOf(0x0a);
-      unterminated = newline === -1 ? unterminated + chunk.byteLength : chunk.byteLength - newline - 1;
-      if (unterminated > lineLimit) throw overlong;
+      for (let start = 0; ; ) {
+        const newline = chunk.indexOf(0x0a, start);
+        unterminated += (newline === -1 ? chunk.byteLength : newline) - start;
+        if (unterminated > lineLimit) throw overlong;
+        if (newline === -1) break;
+        unterminated = 0;
+        start = newline + 1;
+      }
       controller.enqueue(chunk);
     },
   });

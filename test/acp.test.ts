@@ -263,7 +263,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
         () => readFileSync(path.join(internDir, "overlong-transcript.jsonl"), "utf8").includes("Slow turn started."),
         "the slow turn to start",
       );
-      const flood = printAsAdapter("'x'.repeat(65 * 2 ** 20)");
+      const flood = printAsAdapter("'x'.repeat(64 * 2 ** 20 + 1)");
       await expect(turn).rejects.toThrow(`docker exec -i -w /qa/out ${agent} node /opt/qa/fake-agent.mjs printed more than 64 MiB without a newline`);
       await flood;
     } finally {
