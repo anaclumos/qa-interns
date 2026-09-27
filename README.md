@@ -146,6 +146,7 @@ A finding is confirmed when two or more interns reproduced it.
 
 - Every environment is its own Compose project with three networks in its own `/23` block of `10.213.0.0/16`. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. Only the proxy joins the third network, which reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
 - The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential it was given, which is the credential file for Claude and Codex and the whole store directory for Cursor and Grok, and that write reaches the store on the host.
+- `/qa/out` is the intern's `interns/<id>/out` directory on the host. The runner cannot write a file larger than 1 GiB anywhere. While the agent runs, the orchestrator walks `/qa/out` once a second and stops the runner when it holds more than 1 GiB. The intern then ends as failed, and the findings it wrote stay in the report.
 - The runner reaches the internet only through a proxy container that allows HTTPS to the model provider hosts and nothing else.
 - Docker keeps the log of the runner and the log of the proxy with the `local` log driver, whatever log driver and options the Docker daemon sets. Each log is a current file of up to 10 MB and the previous file of 10 MB, compressed.
 - Target services have no internet access and cannot reach the proxy. Lifecycle commands that run in a target container, and application code, fail when they need the network.
@@ -162,6 +163,7 @@ A finding is confirmed when two or more interns reproduced it.
 - A Grok login without a Grok subscription ends the intern instead of moving it to another login, because Grok reports it as `-32603` with `data.http_status` 403, the same shape as a content policy denial.
 - When a Grok token refresh fails for good, Grok deletes `auth.json` from the store, and the next run rejects the logins file until you log in to that store again.
 - Compose and the Dev Container CLI get only the variables the [target environment contract](#target-environment-contract) lists. A Docker credential helper that needs another variable, such as `DBUS_SESSION_BUS_ADDRESS`, fails the image pull with `error getting credentials`, and the Dev Container CLI downloads features without the proxy variables. A target that needs one of them lists it in `hostEnv`.
+- The 1 GiB total of `/qa/out` comes from a directory walk, not a quota. A runner can write past it in files of up to 1 GiB each: before the next walk finishes, after the agent's session ends, and in files it deletes while they are still open ([#22](https://github.com/anaclumos/qa-interns/issues/22)).
 
 ## Evaluation target
 
