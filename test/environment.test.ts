@@ -458,7 +458,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
     "keep two log files of 10 MB for the runner and for the proxy, whatever a process in the runner writes",
     async () => {
       const file = 10_000_000;
-      const runId = crypto.randomUUID().slice(0, 8);
+      const runId = `btest-${crypto.randomUUID().slice(0, 8)}`;
       const runDir = await scratch();
       const image = await ensureRunnerImage();
       await writeChromePolicy(runDir, {});
