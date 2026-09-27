@@ -156,7 +156,7 @@ A finding is confirmed when two or more interns reproduced it.
 - The runner image is x86-64 only.
 - Two runs started at the same moment can pick the same subnet; the second fails to start that environment.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
-- Compose and the Dev Container CLI get only the variables the [target environment contract](#target-environment-contract) lists, and a Docker client configuration without `proxies`. A Docker credential helper that needs another variable, such as `DBUS_SESSION_BUS_ADDRESS`, fails the image pull with `error getting credentials`, the Dev Container CLI downloads features without the proxy variables, and an image build runs without a proxy. A target that needs one of them lists it in `hostEnv`, and a build that needs a proxy also passes the proxy variables as build arguments.
+- Compose and the Dev Container CLI get only the variables the [target environment contract](#target-environment-contract) lists, and a Docker client configuration without `proxies`. A Docker credential helper that needs another variable, such as `DBUS_SESSION_BUS_ADDRESS`, fails the image pull with `error getting credentials`, the Dev Container CLI downloads features without the proxy variables, and a target image build runs without a proxy. A target that needs one of them lists it in `hostEnv`, and a build that needs a proxy also passes the proxy variables as build arguments.
 
 ## Evaluation target
 

@@ -403,7 +403,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
   );
 
   test(
-    "keep the proxies of the Docker client configuration out of every container and image build",
+    "keep the proxies of the Docker client configuration, under any key spelling Docker reads, out of every container and image build",
     async () => {
       const runId = crypto.randomUUID().slice(0, 8);
       const runDir = await scratch();
@@ -411,7 +411,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       const dockerConfig = join(runDir, "docker");
       await Bun.write(
         join(dockerConfig, "config.json"),
-        JSON.stringify({ Proxies: { default: { httpProxy: "http://qa:secret@corp-proxy.test:3128", allProxy: "socks5://qa:secret@corp-proxy.test:1080" } } }),
+        JSON.stringify({ Proxieſ: { default: { httpProxy: "http://qa:secret@corp-proxy.test:3128", allProxy: "socks5://qa:secret@corp-proxy.test:1080" } } }),
       );
       await Bun.write(join(source, "Dockerfile"), `FROM busybox:1.37\nRUN printf %s "$HTTP_PROXY$ALL_PROXY" > /build-proxy-${runId}\n`);
       await Bun.write(join(source, ".devcontainer", "compose.yml"), 'services:\n  web:\n    build: ..\n    command: ["sleep", "86400"]\n    init: true\n');

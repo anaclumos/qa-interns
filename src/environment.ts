@@ -207,9 +207,16 @@ function sourceComposeArgs(target: Target, root: string): string[] {
 }
 
 async function withoutProxies(file: string): Promise<string> {
-  const config = z.record(z.string(), z.unknown()).safeParse(JSON.parse(await readFile(file, "utf8")));
+  const text = await readFile(file, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${file} is not valid JSON (${String(error)})`);
+  }
+  const config = z.record(z.string(), z.unknown()).safeParse(parsed);
   if (!config.success) throw new Error(`${file} is not a JSON object`);
-  return JSON.stringify(Object.fromEntries(Object.entries(config.data).filter(([key]) => key.toLowerCase() !== "proxies")));
+  return JSON.stringify(Object.fromEntries(Object.entries(config.data).filter(([key]) => key.toUpperCase() !== "PROXIES")));
 }
 
 async function composeEnv(hostEnv: string[], dir: string): Promise<Record<string, string | undefined>> {
