@@ -187,7 +187,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.active]))).toEqual({ web: true, worker: true, mailer: false });
   });
 
-  test("treat a required dependency behind a profile as active and an optional one as inactive", async () => {
+  test("treat dependencies behind the profile of a service in runServices as active and an optional one behind another profile as inactive", async () => {
     const compose = `services:
   web:
     image: nginx:1.29-alpine
@@ -201,8 +201,14 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     depends_on:
       queue:
         condition: service_started
+      scheduler:
+        condition: service_started
+        required: false
   queue:
     image: redis:8.2-alpine
+    profiles: ["jobs"]
+  scheduler:
+    image: busybox:1.37
     profiles: ["jobs"]
   tracing:
     image: jaegertracing/jaeger:2.9.0
@@ -216,6 +222,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       web: true,
       worker: true,
       queue: true,
+      scheduler: true,
       tracing: false,
       mailer: false,
     });
