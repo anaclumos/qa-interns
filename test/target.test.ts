@@ -294,6 +294,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       "service debug sets privileged",
     ],
     ["uts host", "  web:\n    image: nginx:1.29-alpine\n    uts: host\n", "service web sets uts host"],
+    ["a seccomp profile from a file", "  web:\n    image: nginx:1.29-alpine\n    security_opt: [\"seccomp=../allow.json\"]\n", "service web sets security_opt seccomp=../allow.json"],
     ["the pid namespace of a container outside the project", "  web:\n    image: nginx:1.29-alpine\n    pid: \"container:shop-db\"\n", "service web sets pid container:shop-db"],
     ["the ipc namespace of a container outside the project", "  web:\n    image: nginx:1.29-alpine\n    ipc: \"container:shop-db\"\n", "service web sets ipc container:shop-db"],
     ["a build on the host network", "  web:\n    build:\n      context: ..\n      network: host\n", "service web builds on network host"],
@@ -452,6 +453,16 @@ volumes:
     git(root, "add", "-A");
     git(root, "commit", "-q", "-m", "link");
     await expect(load(root)).rejects.toThrow("/host, which resolves to /etc, outside the target directory");
+  });
+
+  test("reject a project .env file that is a symbolic link to a host file", async () => {
+    const outside = await scratch("qa-interns-outside-");
+    await Bun.write(join(outside, "host.env"), "TAG=from-host\n");
+    const root = await fixture("services:\n  web:\n    image: busybox:${TAG:-1.37}\n");
+    await symlink(join(outside, "host.env"), join(root, ".devcontainer", ".env"));
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "link");
+    await expect(load(root)).rejects.toThrow(`/.devcontainer/.env, which resolves to ${await realpath(outside)}/host.env, outside the target directory`);
   });
 
   test("reject a missing bind source under a symbolic link in the target that points outside it", async () => {

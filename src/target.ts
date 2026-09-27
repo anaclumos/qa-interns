@@ -163,6 +163,7 @@ const reservedServices = ["qa-proxy", "qa-runner"];
 const namespaces = ["pid", "ipc", "uts", "cgroup", "userns_mode"] as const;
 const hooks = ["pre_start", "post_start", "pre_stop"] as const;
 const buildNetworks = ["default", "none"];
+const confinedOptions = ["no-new-privileges", "no-new-privileges:true", "no-new-privileges=true"];
 const devContainerKeys = ["image", "build", "entrypoint", "command", "init", "user", "environment", "labels", "privileged", "cap_add", "security_opt", "volumes"];
 
 export async function composeVersion(): Promise<string> {
@@ -245,7 +246,7 @@ async function serviceViolations(name: string, entry: ComposeProject["services"]
   if ((entry.deploy?.resources?.reservations?.devices ?? []).length > 0) violations.push(`service ${name} reserves devices`);
   for (const capability of entry.cap_add ?? []) violations.push(`service ${name} adds capability ${capability}`);
   for (const option of entry.security_opt ?? []) {
-    if (option.includes("unconfined")) violations.push(`service ${name} sets security_opt ${option}`);
+    if (!confinedOptions.includes(option)) violations.push(`service ${name} sets security_opt ${option}`);
   }
   if (entry.use_api_socket === true) violations.push(`service ${name} sets use_api_socket`);
   for (const source of entry.volumes_from ?? []) {
@@ -278,6 +279,12 @@ async function buildViolations(name: string, build: z.infer<typeof buildSchema>,
   }
   for (const cache of build.cache_to ?? []) violations.push(`service ${name} builds with cache_to ${cache}`);
   return violations;
+}
+
+async function projectEnvViolations(root: string, files: string[]): Promise<string[]> {
+  const [first] = files;
+  if (first === undefined) throw new Error("A Compose project needs at least one Compose file");
+  return escapes(root, "Compose reads the project .env file", join(dirname(first), ".env"));
 }
 
 async function resourceViolations(project: ComposeProject, projectName: string, root: string): Promise<string[]> {
@@ -337,6 +344,7 @@ export async function devContainerViolations(
     }
   }
   const root = await realpath(workspace);
+  violations.push(...(await projectEnvViolations(root, baseFiles)));
   for (const [name, entry] of Object.entries(project.services)) {
     if (!reservedServices.includes(name)) violations.push(...(await serviceViolations(name, entry, root)));
   }
@@ -357,14 +365,15 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const env = targetEnv(customizations["qa-interns"].hostEnv);
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
   const root = await realpath(sourceDir);
-  for (const entry of composeFiles) {
-    if (!within(root, await resolveReal(resolve(sourceDir, ".devcontainer", entry)))) {
-      throw new Error(`${file} names the Compose file ${entry}, which resolves outside the target directory`);
+  const paths = composeFiles.map((entry) => resolve(sourceDir, ".devcontainer", entry));
+  for (const [index, path] of paths.entries()) {
+    if (!within(root, await resolveReal(path))) {
+      throw new Error(`${file} names the Compose file ${composeFiles[index]}, which resolves outside the target directory`);
     }
   }
   await composeVersion();
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
-  const project = composeSchema.parse(await render(checkProject, composeFiles.map((entry) => resolve(sourceDir, ".devcontainer", entry)), env));
+  const project = composeSchema.parse(await render(checkProject, paths, env));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
 
   const started =
@@ -382,7 +391,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     }
   };
   started.forEach(start);
-  const violations: string[] = [];
+  const violations = await projectEnvViolations(root, paths);
   const services: Record<string, ComposeService> = {};
   const tags = new Map<string, string>();
   const aliasOwners = new Map<string, string>();
