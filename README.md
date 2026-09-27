@@ -70,6 +70,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - `seed`: a shell command, run once in the dev container, that creates test accounts and data and prints them as one JSON document.
 - `focus` (optional): areas the project wants covered, added to the charter deck.
 - `offLimits` (optional): actions interns must not take.
+- `hostEnv` (optional): names of variables the target takes from the environment that runs `qa-interns`. `run` fails when one of them is not set.
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
 
@@ -87,6 +88,8 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 Published ports are allowed; QA Interns removes them.
 
 The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint. The target project owns that guarantee.
+
+Compose and the Dev Container CLI run with the variables that `hostEnv` names and the ones they need to reach Docker: `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS`, `DOCKER_TLS_VERIFY`, and `DOCKER_API_VERSION`. QA Interns removes every other variable of its own environment before it runs them. Compose interpolation, an `environment` entry without a value, `${localEnv:...}` in `devcontainer.json`, and `initializeCommand` read from what remains.
 
 QA Interns runs the target's lifecycle commands, including `initializeCommand`, which runs on the host. Run it only against repositories you trust.
 
@@ -115,7 +118,7 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 - Each running intern holds one lease on one login. A Codex store has `concurrency` 1, because OpenAI states that one `auth.json` copy serves one machine or one serialized job stream ([Codex CI/CD auth](https://learn.chatgpt.com/docs/auth/ci-cd-auth)).
 - A lease locks the real path of its login's credential file until the lease ends. The locks live in `~/.local/state/qa-interns/locks/` (`$XDG_STATE_HOME` when set). Runs that share that directory hold, all together, no more leases on one credential than the highest `concurrency` any of them sets for it.
 - A seat command is an external program that hands out a store for one intern. It runs with `QA_INTERNS_INTERN` and `QA_INTERNS_LEASE_PID` in its environment and prints an absolute store path as its last line. `QA_INTERNS_LEASE_PID` is a process that lives exactly as long as the intern holds the store, and ends when the orchestrator ends, so a pool manager can hold the store until that process exits. A nonzero exit means the seat command has no store now. The printed store is checked like a configured store, against every configured store and every store an intern holds, and a store that fails a check counts as no store.
-- When an agent reports a usage limit or a failed login, the intern moves to another login with spare capacity and restarts its charter. Claude reports a usage limit as JSON-RPC error `-32603` with `data.errorKind` `rate_limit` or `billing_error`, and Codex as `-32603` with `data.codexErrorInfo` `usageLimitExceeded`. Cursor ends the turn with a chat message instead of an error, so a Cursor intern at its limit stops early and the report quotes its last message.
+- When an agent reports a usage limit or a failed login, the intern moves to another login with spare capacity and restarts its charter in a fresh environment with an empty `/qa/out`. The findings of the earlier attempt stay in the report, and `findings.json` records the provider and model of the attempt that wrote each one. A confirming intern that moves answers with the `confirmation.json` of its latest attempt that wrote a valid one, under that attempt's provider. Claude reports a usage limit as JSON-RPC error `-32603` with `data.errorKind` `rate_limit` or `billing_error`, and Codex as `-32603` with `data.codexErrorInfo` `usageLimitExceeded`. Cursor ends the turn with a chat message instead of an error, so a Cursor intern at its limit stops early and the report quotes its last message.
 
 ## What a run does
 
@@ -133,7 +136,7 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 
 - `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the interns.
 - `findings.json`: the same data as JSON.
-- `interns/<id>/out/`: each intern's findings and evidence (screenshots, recordings, HAR files, console logs).
+- `interns/<id>/out/`: each intern's findings and evidence (screenshots, recordings, HAR files, console logs). After a move to another login, the next attempt writes to `interns/<id>/out-2/`, the one after it to `out-3/`, and so on. The id of a finding from such an attempt names its folder, as in `i1/out-2/<slug>`.
 - `interns/<id>/transcript.jsonl`: the agent traffic of each intern.
 - `state.json`: the run's phase and every intern's status.
 
@@ -156,6 +159,7 @@ A finding is confirmed when two or more interns reproduced it.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
 - An intern waits for a login only while its own run holds a lease. When other runs hold every login it could use, the intern ends as `limited`.
 - Credential locks and the store checks compare real paths, so two hard links to one credential file count as two credentials.
+- Compose and the Dev Container CLI get only the variables the [target environment contract](#target-environment-contract) lists. A Docker credential helper that needs another variable, such as `DBUS_SESSION_BUS_ADDRESS`, fails the image pull with `error getting credentials`, and the Dev Container CLI downloads features without the proxy variables. A target that needs one of them lists it in `hostEnv`.
 
 ## Evaluation target
 
