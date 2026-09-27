@@ -1,10 +1,11 @@
 import type { Subprocess } from "bun";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, realpath } from "node:fs/promises";
+import { isIP } from "node:net";
 import { join, relative, resolve } from "node:path";
 import { z } from "zod";
 
-export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[] };
+export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; egress: string[] };
 export type TargetRef = { repo: string; path: string; commit: string };
 export type ComposeService = {
   build: boolean;
@@ -65,6 +66,13 @@ export function isHttpUrl(value: string): boolean {
   return URL.canParse(value) && ["http:", "https:"].includes(new URL(value).protocol);
 }
 
+const hostCharacters = new Set("abcdefghijklmnopqrstuvwxyz0123456789-.");
+
+function isHostName(value: string): boolean {
+  const labels = value.split(".");
+  return labels.length > 1 && labels.every((label) => label !== "") && [...value].every((character) => hostCharacters.has(character)) && isIP(value) === 0;
+}
+
 const settingsSchema = z.strictObject({
   urls: z
     .record(z.string(), z.string().refine(isHttpUrl, "must be an http: or https: URL"))
@@ -73,6 +81,7 @@ const settingsSchema = z.strictObject({
   seed: z.string().min(1),
   focus: z.array(z.string().min(1)).default([]),
   offLimits: z.array(z.string().min(1)).default([]),
+  egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
 });
 
 const configSchema = z.object({
@@ -112,7 +121,7 @@ const composeSchema = z.object({
   networks: z.record(z.string(), z.object({ name: z.string(), external: z.boolean().optional() })).optional(),
 });
 
-const reservedServices = ["qa-proxy", "qa-runner"];
+const reservedServices = ["qa-proxy", "qa-relay", "qa-runner"];
 
 export async function resolveTarget(dir: string, rev: string): Promise<TargetRef> {
   const git = ["git", "-C", dir, "rev-parse"];

@@ -129,6 +129,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
         "What owners, editors, and viewers can see and change, in the pages and in the API.",
       ],
       offLimits: ["Do not change the password of a seeded account."],
+      egress: [],
     });
     expect(target.composeFiles).toEqual(["compose.yml"]);
     expect(target.service).toBe("web");
@@ -265,6 +266,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       "  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"qa-proxy\"]\n",
       "service web declares network alias qa-proxy, a name QA Interns reserves",
     ],
+    ["a service named qa-relay", "  web:\n    image: nginx:1.29-alpine\n  qa-relay:\n    image: nginx:1.29-alpine\n", "service qa-relay uses a name QA Interns reserves"],
     [
       "a network alias two services declare",
       "  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"shop\"]\n  api:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"shop\"]\n",
@@ -388,7 +390,14 @@ networks:
       seed: "node seed.mjs",
       focus: [],
       offLimits: [],
+      egress: [],
     });
+  });
+
+  test("accept egress host names", async () => {
+    const qa = { ...settings, egress: ["api.pwnedpasswords.com", "ai-gateway.vercel.sh", "xn--bcher-kva.example"] };
+    const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n", devcontainer({}, qa)));
+    expect(target.settings.egress).toEqual(["api.pwnedpasswords.com", "ai-gateway.vercel.sh", "xn--bcher-kva.example"]);
   });
 
   const invalid: [string, Record<string, unknown>, string][] = [
@@ -396,6 +405,11 @@ networks:
     ["no URLs", { ...settings, urls: {} }, "must name at least one URL"],
     ["a missing seed", { urls: settings.urls, ready: settings.ready }, "seed"],
     ["a misspelled key", { ...settings, offlimits: ["Do not delete teams."] }, "offlimits"],
+    ["a wildcard egress host", { ...settings, egress: ["*.vercel.sh"] }, "must be a lowercase host name"],
+    ["an egress IP address", { ...settings, egress: ["203.0.113.7"] }, "must be a lowercase host name"],
+    ["an egress URL", { ...settings, egress: ["https://api.pwnedpasswords.com"] }, "must be a lowercase host name"],
+    ["an uppercase egress host", { ...settings, egress: ["API.pwnedpasswords.com"] }, "must be a lowercase host name"],
+    ["a single-label egress host", { ...settings, egress: ["localhost"] }, "must be a lowercase host name"],
   ];
 
   test.each(invalid)("reject settings with %s", async (_, qa, message) => {
