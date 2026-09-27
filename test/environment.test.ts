@@ -263,7 +263,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
     expect(metrics?.networks).toBeUndefined();
   });
 
-  test("replace the log settings of every service with the local driver and two files of 10 MiB, whatever the target sets", async () => {
+  test("replace the log settings of every service with the local driver and two files of 10 MB, whatever the target sets", async () => {
     const source = await scratch();
     await Bun.write(
       join(source, ".devcontainer", "devcontainer.json"),
@@ -496,9 +496,9 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
   );
 
   test(
-    "keep at most 20 MiB of Docker log for each Ledger service, whatever the service writes",
+    "keep two log files of 10 MB for each Ledger service, whatever the service writes",
     async () => {
-      const mib = 1024 ** 2;
+      const file = 10_000_000;
       const runId = crypto.randomUUID().slice(0, 8);
       const runDir = await scratch();
       const source = join(runDir, "source");
@@ -518,8 +518,8 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
           const logs = await capture(["docker", "logs", container]);
           expect(logs.code).toBe(0);
           const kept = logs.stdout.length + logs.stderr.length;
-          expect(kept).toBeGreaterThan(0);
-          expect(kept).toBeLessThanOrEqual(20 * mib);
+          expect(kept).toBeGreaterThan(file);
+          expect(kept).toBeLessThanOrEqual(2 * file);
         }
       } finally {
         await stopRun(runId);
