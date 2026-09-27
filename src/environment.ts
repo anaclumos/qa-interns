@@ -33,6 +33,7 @@ const outCheckMs = 1000;
 const fullBelow = 16 * mib;
 const diskSuffix = ".img";
 const diskLabel = "qa-interns.disk";
+const helperTimeout = 10 * minute;
 const createDiskScript =
   'if [ -e "$2" ] || mountpoint -q "$1"; then echo "$1 already has an output disk" >&2; exit 1; fi; { truncate -s "$4" "$2.new" && mkfs.ext4 -q -F -m 0 -E root_owner="$3" "$2.new" && mount -o loop "$2.new" /mnt && rmdir /mnt/lost+found && umount /mnt && mv "$2.new" "$2" && mount -o loop,nosuid,nodev "$2" "$1"; } || { rm -f "$2.new"; exit 1; }';
 const saveDiskScript =
@@ -506,12 +507,12 @@ async function diskHelpers(runId: string, state: "created" | "running"): Promise
 }
 
 async function settleDiskHelpers(runId: string): Promise<void> {
-  for (;;) {
-    const created = await diskHelpers(runId, "created");
-    const running = await diskHelpers(runId, "running");
-    if (created.length === 0 && running.length === 0) return;
-    if (created.length > 0) await capture(["docker", "rm", "-f", ...created]);
-    if (running.length > 0) await capture(["docker", "wait", ...running]);
+  const created = await diskHelpers(runId, "created");
+  if (created.length > 0) await execute(["docker", "rm", "-f", ...created]);
+  const deadline = Date.now() + helperTimeout;
+  for (let running = await diskHelpers(runId, "running"); running.length > 0; running = await diskHelpers(runId, "running")) {
+    if (Date.now() >= deadline) throw new Error(`The disk helpers ${running.join(", ")} of run ${runId} still run after ${helperTimeout / minute} minutes`);
+    await Bun.sleep(1000);
   }
 }
 
