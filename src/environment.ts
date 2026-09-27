@@ -77,16 +77,23 @@ export function slotSubnets(slot: number): { internal: string; agent: string; eg
   return { internal: `10.213.${slot * 2}.0/25`, agent: `10.213.${slot * 2}.128/25`, egress: `10.213.${slot * 2 + 1}.0/24` };
 }
 
-export async function freeSlot(reserved: Set<number>): Promise<number> {
-  const used = await usedBlocks();
-  for (let slot = 0; slot < 128; slot++) {
-    if (reserved.has(slot)) continue;
+function openSlots(used: Cidr[], reserved: Set<number>): number[] {
+  return Array.from({ length: 128 }, (_, slot) => slot).filter((slot) => {
+    if (reserved.has(slot)) return false;
     const blocks = Object.values(slotSubnets(slot)).map(parseCidr);
-    if (used.some((block) => blocks.some((own) => overlaps(block, own)))) continue;
-    reserved.add(slot);
-    return slot;
-  }
-  throw new Error("No free network slot: every 10.213.x.0/23 block overlaps a Docker network, a host route, or a slot this run holds");
+    return !used.some((block) => blocks.some((own) => overlaps(block, own)));
+  });
+}
+
+export async function freeSlots(reserved: Set<number>): Promise<number> {
+  return openSlots(await usedBlocks(), reserved).length;
+}
+
+export async function freeSlot(reserved: Set<number>): Promise<number> {
+  const [slot] = openSlots(await usedBlocks(), reserved);
+  if (slot === undefined) throw new Error("No free network slot: every 10.213.x.0/23 block overlaps a Docker network, a host route, or a slot this run holds");
+  reserved.add(slot);
+  return slot;
 }
 
 function projectName(runId: string, name: string): string {

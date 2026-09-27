@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { buildImages, environmentMemory, freeSlot, renderOverride, runnerEnv, slotSubnets, writeChromePolicy, type EnvironmentSpec } from "../src/environment.ts";
+import { buildImages, environmentMemory, freeSlot, freeSlots, renderOverride, runnerEnv, slotSubnets, writeChromePolicy, type EnvironmentSpec } from "../src/environment.ts";
 import { loadTarget, type Target } from "../src/target.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
@@ -99,6 +99,15 @@ describe.skipIf(!dockerAvailable)("slots", () => {
     await withNetwork(subnet, async () => {
       const reserved = new Set(Array.from({ length: 127 }, (_, slot) => slot));
       await expect(freeSlot(reserved)).rejects.toThrow("No free network slot");
+    });
+  });
+
+  test("count the slots that no Docker network, host route, or reservation holds", async () => {
+    await withNetwork("10.213.254.0/24", async () => {
+      const reserved = new Set(Array.from({ length: 126 }, (_, slot) => slot));
+      expect(await freeSlots(reserved)).toBe(1);
+      expect(await freeSlot(reserved)).toBe(126);
+      expect(await freeSlots(reserved)).toBe(0);
     });
   });
 });
