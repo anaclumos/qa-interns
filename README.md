@@ -79,7 +79,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - A `container_name`.
 - An external volume or network, or a volume or network with an explicit `name:`.
 - A `network_mode` other than `service:<name>`, including `host`.
-- A service named `qa-proxy`, `qa-relay`, or `qa-runner`.
+- A service named `qa-proxy`, `qa-relay`, or `qa-runner`, in any letter case.
 - A network alias that is the name of another service, `qa-proxy`, `qa-relay`, or `qa-runner`, or that two services declare.
 - An `egress` host that is the name or a network alias of a service.
 - Two services whose names differ only in case, since Docker's network names are case-insensitive and prebuilt image tags are lowercase.
