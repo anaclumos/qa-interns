@@ -57,7 +57,7 @@ async function finding(intern: string, name: string, value: unknown) {
 }
 
 async function reasonOf(name: string) {
-  const { rejected } = await readFindings(runDir, "i2", environment);
+  const { rejected } = await readFindings(runDir, "i2", 1, environment);
   const entry = rejected.find((item) => item.file === `interns/i2/out/findings/${name}.json`);
   if (entry === undefined) throw new Error(`${name}.json was not rejected`);
   return entry.reason;
@@ -95,7 +95,7 @@ afterAll(async () => {
 
 describe("readFindings", () => {
   test("a missing findings folder gives zero findings", async () => {
-    expect(await readFindings(runDir, "i9", environment)).toEqual({ findings: [], rejected: [] });
+    expect(await readFindings(runDir, "i9", 1, environment)).toEqual({ findings: [], rejected: [] });
   });
 
   test("accepts valid findings, adds id, intern, and environment, and rewrites evidence to run-relative paths", async () => {
@@ -103,7 +103,7 @@ describe("readFindings", () => {
     await finding("i1", "export-total", exportTotal);
     await write("i1", "findings/notes.txt", "not a finding");
     await write("i1", "findings/draft.json.tmp", "{");
-    const { findings, rejected } = await readFindings(runDir, "i1", environment);
+    const { findings, rejected } = await readFindings(runDir, "i1", 1, environment);
     expect(rejected).toEqual([]);
     expect(findings.map((item) => item.id)).toEqual(["i1/export-total", "i1/pagination-overlap"]);
     const overlap = findings.find((item) => item.id === "i1/pagination-overlap");
@@ -125,7 +125,7 @@ describe("readFindings", () => {
 
   test("rejects a file that is not valid JSON with the parse error", async () => {
     await write("i2", "findings/broken.json", '{"title": "Save button does nothing",');
-    const { rejected } = await readFindings(runDir, "i2", environment);
+    const { rejected } = await readFindings(runDir, "i2", 1, environment);
     const entry = rejected.find((item) => item.file === "interns/i2/out/findings/broken.json");
     expect(entry?.intern).toBe("i2");
     expect(entry?.reason.startsWith("not valid JSON: ")).toBe(true);
@@ -190,7 +190,7 @@ describe("readFindings", () => {
 
   test("rejects a findings folder that is a file", async () => {
     await write("f1", "findings", "not a folder");
-    expect(await readFindings(runDir, "f1", environment)).toEqual({
+    expect(await readFindings(runDir, "f1", 1, environment)).toEqual({
       findings: [],
       rejected: [{ intern: "f1", file: "interns/f1/out/findings", reason: "the findings folder is a symbolic link or not a directory" }],
     });
@@ -206,7 +206,7 @@ describe("readFindings", () => {
     const dir = path.join(runDir, "interns", intern, locked);
     await chmod(dir, 0o000);
     try {
-      expect(await readFindings(runDir, intern, environment)).toEqual({
+      expect(await readFindings(runDir, intern, 1, environment)).toEqual({
         findings: [],
         rejected: [{ intern, file: `interns/${intern}/out/findings`, reason: "the findings folder is not readable" }],
       });
@@ -219,7 +219,7 @@ describe("readFindings", () => {
     await Bun.write(path.join(outside, "findings", "planted.json"), JSON.stringify({ ...pagination, evidence: [] }));
     await mkdir(path.join(runDir, "interns", "f2", "out"), { recursive: true });
     await symlink(path.join(outside, "findings"), path.join(runDir, "interns", "f2", "out", "findings"));
-    expect(await readFindings(runDir, "f2", environment)).toEqual({
+    expect(await readFindings(runDir, "f2", 1, environment)).toEqual({
       findings: [],
       rejected: [{ intern: "f2", file: "interns/f2/out/findings", reason: "the findings folder is a symbolic link or not a directory" }],
     });
@@ -227,12 +227,12 @@ describe("readFindings", () => {
 
   test("rejects the findings folder when it is swapped for a symlink between two reads", async () => {
     await finding("s1", "pagination-overlap", { ...pagination, evidence: [] });
-    expect((await readFindings(runDir, "s1", environment)).findings.map((item) => item.id)).toEqual(["s1/pagination-overlap"]);
+    expect((await readFindings(runDir, "s1", 1, environment)).findings.map((item) => item.id)).toEqual(["s1/pagination-overlap"]);
     const out = path.join(runDir, "interns", "s1", "out");
     await Bun.write(path.join(outside, "swapped", "planted.json"), JSON.stringify({ ...pagination, evidence: [] }));
     await rename(path.join(out, "findings"), path.join(out, "findings-before"));
     await symlink(path.join(outside, "swapped"), path.join(out, "findings"));
-    expect(await readFindings(runDir, "s1", environment)).toEqual({
+    expect(await readFindings(runDir, "s1", 1, environment)).toEqual({
       findings: [],
       rejected: [{ intern: "s1", file: "interns/s1/out/findings", reason: "the findings folder is a symbolic link or not a directory" }],
     });
@@ -241,7 +241,7 @@ describe("readFindings", () => {
   test("strips control characters before validating, keeps zero-width joiners, and rejects a title of only control characters", async () => {
     await finding("b1", "control-title", { ...pagination, title: "\u0007\u{202e}\u0000", evidence: [] });
     await finding("b1", "bidi-title", { ...pagination, title: "Totals \u{202e}disagree\u{2069} for \u{1f469}\u{200d}\u{1f4bb}", evidence: [] });
-    const { findings, rejected } = await readFindings(runDir, "b1", environment);
+    const { findings, rejected } = await readFindings(runDir, "b1", 1, environment);
     expect(findings.map((item) => [item.id, item.title])).toEqual([["b1/bidi-title", "Totals disagree for \u{1f469}\u{200d}\u{1f4bb}"]]);
     expect(rejected).toEqual([{ intern: "b1", file: "interns/b1/out/findings/control-title.json", reason: "title must be a non-empty string" }]);
   });
@@ -273,9 +273,20 @@ describe("readFindings", () => {
     expect(await reasonOf("huge")).toBe("the file is above the limit of 1 MiB");
   });
 
+  test("reads a later attempt from its own folder, with ids and evidence paths that name that folder", async () => {
+    await finding("a1", "pagination-overlap", { ...pagination, evidence: [] });
+    await Bun.write(path.join(runDir, "interns", "a1", "out-2", "evidence", "page-1.png"), "png bytes");
+    await Bun.write(path.join(runDir, "interns", "a1", "out-2", "findings", "pagination-overlap.json"), JSON.stringify({ ...pagination, evidence: ["/qa/out/evidence/page-1.png"] }));
+    await Bun.write(path.join(runDir, "interns", "a1", "out-2", "findings", "broken.json"), "{");
+    const later = await readFindings(runDir, "a1", 2, environment);
+    expect(later.findings.map((item) => [item.id, item.intern, item.evidence])).toEqual([["a1/out-2/pagination-overlap", "a1", ["interns/a1/out-2/evidence/page-1.png"]]]);
+    expect(later.rejected.map((item) => item.file)).toEqual(["interns/a1/out-2/findings/broken.json"]);
+    expect((await readFindings(runDir, "a1", 1, environment)).findings.map((item) => item.id)).toEqual(["a1/pagination-overlap"]);
+  });
+
   test("accepts null contradicts for a kind other than inconsistency", async () => {
     await finding("i1", "null-contradicts", { ...pagination, contradicts: null, evidence: [] });
-    const { findings } = await readFindings(runDir, "i1", environment);
+    const { findings } = await readFindings(runDir, "i1", 1, environment);
     const item = findings.find((entry) => entry.id === "i1/null-contradicts");
     expect(item?.contradicts).toBeNull();
     expect(item?.evidence).toEqual([]);
@@ -327,34 +338,41 @@ describe("readConfirmation", () => {
       "confirmation.json",
       JSON.stringify({ reproduced: true, observed: "Page 2 starts with \"INV-0014 Stark Industries\", the last row of page 1.", evidence: ["/qa/out/evidence/repeat.png"] }),
     );
-    expect(await readConfirmation(runDir, "c1")).toEqual({
+    expect(await readConfirmation(runDir, "c1", 1)).toEqual({
       reproduced: true,
       observed: "Page 2 starts with \"INV-0014 Stark Industries\", the last row of page 1.",
       evidence: ["interns/c1/out/evidence/repeat.png"],
     });
   });
 
+  test("reads a later attempt from its own folder", async () => {
+    await Bun.write(path.join(runDir, "interns", "c7", "out-2", "evidence", "repeat.png"), "png bytes");
+    await Bun.write(path.join(runDir, "interns", "c7", "out-2", "confirmation.json"), JSON.stringify({ reproduced: false, observed: "Page 2 starts with INV-0013.", evidence: ["evidence/repeat.png"] }));
+    expect(await readConfirmation(runDir, "c7", 2)).toEqual({ reproduced: false, observed: "Page 2 starts with INV-0013.", evidence: ["interns/c7/out-2/evidence/repeat.png"] });
+    await expect(readConfirmation(runDir, "c7", 1)).rejects.toThrow("the file does not exist");
+  });
+
   test("throws when the file does not exist", async () => {
-    await expect(readConfirmation(runDir, "c2")).rejects.toThrow("the file does not exist");
+    await expect(readConfirmation(runDir, "c2", 1)).rejects.toThrow("the file does not exist");
   });
 
   test("throws when reproduced is not a boolean", async () => {
     await write("c3", "confirmation.json", JSON.stringify({ reproduced: "yes", observed: "The row repeats.", evidence: [] }));
-    await expect(readConfirmation(runDir, "c3")).rejects.toThrow("reproduced must be true or false");
+    await expect(readConfirmation(runDir, "c3", 1)).rejects.toThrow("reproduced must be true or false");
   });
 
   test("throws when confirmation.json is a symlink or a FIFO", async () => {
     await Bun.write(path.join(outside, "confirmation.json"), JSON.stringify({ reproduced: true, observed: "Planted outside the out dir.", evidence: [] }));
     await mkdir(path.join(runDir, "interns", "c5", "out"), { recursive: true });
     await symlink(path.join(outside, "confirmation.json"), path.join(runDir, "interns", "c5", "out", "confirmation.json"));
-    await expect(readConfirmation(runDir, "c5")).rejects.toThrow("the file is a symbolic link");
+    await expect(readConfirmation(runDir, "c5", 1)).rejects.toThrow("the file is a symbolic link");
     await mkdir(path.join(runDir, "interns", "c6", "out"), { recursive: true });
     mkfifo(path.join(runDir, "interns", "c6", "out", "confirmation.json"));
-    await expect(readConfirmation(runDir, "c6")).rejects.toThrow("the file is not a regular file");
+    await expect(readConfirmation(runDir, "c6", 1)).rejects.toThrow("the file is not a regular file");
   });
 
   test("throws when an evidence file does not exist", async () => {
     await write("c4", "confirmation.json", JSON.stringify({ reproduced: false, observed: "Page 2 starts with INV-0013.", evidence: ["evidence/none.png"] }));
-    await expect(readConfirmation(runDir, "c4")).rejects.toThrow("evidence path evidence/none.png does not exist");
+    await expect(readConfirmation(runDir, "c4", 1)).rejects.toThrow("evidence path evidence/none.png does not exist");
   });
 });
