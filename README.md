@@ -162,7 +162,7 @@ A finding is confirmed when two or more interns reproduced it.
 
 - Single-container dev containers are not supported yet.
 - The runner image is x86-64 only.
-- Two runs started at the same moment can pick the same subnet; the second fails to start that environment.
+- Two runs that start an environment at the same moment can pick the same subnet; the second fails to start that environment.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
 - A Grok login whose token refresh fails during a turn ends the intern instead of moving it to another login, because Grok reports that failure as `-32603` with text data only.
 - A Grok login without a Grok subscription ends the intern instead of moving it to another login, because Grok reports it as `-32603` with `data.http_status` 403, the same shape as a content policy denial.
