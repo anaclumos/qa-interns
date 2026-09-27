@@ -6,7 +6,7 @@ import { runQa } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { readState } from "../src/state.ts";
 import { execute } from "../src/target.ts";
-import type { RunState } from "../src/types.ts";
+import type { Finding, RunState } from "../src/types.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -19,13 +19,15 @@ const timeout = 20 * 60_000;
 const title = "Home page shows the fake defect";
 let built = false;
 
-async function logins(name: string, entries: { id: string; limit: boolean }[]): Promise<string> {
+type FakeLogin = { id: string; limit?: "charter" | "confirmation"; model?: string; confirms?: false };
+
+async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
-  for (const entry of entries) {
-    const store = join(root, "stores", name, entry.id);
+  for (const { id: login, ...credentials } of entries) {
+    const store = join(root, "stores", name, login);
     await mkdir(store, { recursive: true });
-    await Bun.write(join(store, ".credentials.json"), JSON.stringify({ limit: entry.limit }));
-    list.push({ id: entry.id, provider: "claude", store });
+    await Bun.write(join(store, ".credentials.json"), JSON.stringify(credentials));
+    list.push({ id: login, provider: "claude", store });
   }
   const file = join(root, `${name}-logins.json`);
   await Bun.write(file, JSON.stringify({ logins: list }));
@@ -112,10 +114,7 @@ USER qa
         interns: 2,
         minutes: 0.5,
         confirmMinutes: 0.5,
-        loginsFile: await logins("pair", [
-          { id: "claude-1", limit: false },
-          { id: "claude-2", limit: false },
-        ]),
+        loginsFile: await logins("pair", [{ id: "claude-1" }, { id: "claude-2" }]),
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
@@ -140,7 +139,12 @@ USER qa
         id: "g1",
         confirmed: true,
         reproductions: ["i1", "i2", "c1"],
-        confirmation: { intern: "c1", provider: "claude", result: { reproduced: true, observed: "fake reproduction", evidence: [] }, error: null },
+        confirmation: {
+          intern: "c1",
+          provider: "claude",
+          result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
+          error: null,
+        },
       });
       expect(report.groups[0].findings.map((finding: { id: string }) => finding.id)).toEqual(["i1/fake-home", "i2/fake-home"]);
       expect(report.groups[0].findings[0]).toMatchObject({
@@ -162,7 +166,7 @@ USER qa
   );
 
   test(
-    "an intern at a usage limit moves to another login and restarts its charter",
+    "an intern at a usage limit moves to another login and restarts its charter, and each attempt keeps its own output",
     async () => {
       const lines: string[] = [];
       const runDir = await runQa({
@@ -172,21 +176,27 @@ USER qa
         minutes: 0.5,
         confirmMinutes: 0.5,
         loginsFile: await logins("limit", [
-          { id: "claude-limited", limit: true },
-          { id: "claude-spare", limit: false },
+          { id: "claude-charter-limit", limit: "charter", model: "fake-model-a" },
+          { id: "claude-confirm-limit", limit: "confirmation", model: "fake-model-b" },
+          { id: "claude-no-confirm", confirms: false, model: "fake-model-c" },
         ]),
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
 
-      expect(lines).toContain("i1 starting on claude-limited (claude)");
-      expect(lines).toContain("i1 starting on claude-spare (claude)");
+      expect(lines).toContain("i1 starting on claude-charter-limit (claude)");
+      expect(lines).toContain("i1 starting on claude-confirm-limit (claude)");
+      expect(lines).toContain("c1 starting on claude-confirm-limit (claude)");
+      expect(lines).toContain("c1 starting on claude-no-confirm (claude)");
       const state = await readState(runDir);
       expect(state.phase).toBe("done");
       const moved = intern(state, "i1");
-      expect(moved).toMatchObject({ login: "claude-spare", status: "done", findings: 1 });
-      expect(moved.detail).toStartWith("moved from claude-limited to claude-spare after a login failure (-32603: ");
-      expect(intern(state, "c1")).toMatchObject({ login: "claude-spare", status: "done", detail: "reproduced" });
+      expect(moved).toMatchObject({ login: "claude-confirm-limit", model: "fake-model-b", status: "done", findings: 2 });
+      expect(moved.detail).toStartWith("moved from claude-charter-limit to claude-confirm-limit after a login failure (-32603: ");
+      const confirmer = intern(state, "c1");
+      expect(confirmer).toMatchObject({ login: "claude-no-confirm", model: "fake-model-c", status: "done" });
+      expect(confirmer.detail).toStartWith("moved from claude-confirm-limit to claude-no-confirm after a login failure (-32603: ");
+      expect(confirmer.detail).toEndWith("; confirmation failed: no confirmation.json written");
 
       const transcript = (await Bun.file(join(runDir, "interns", "i1", "transcript.jsonl")).text())
         .split("\n")
@@ -198,7 +208,22 @@ USER qa
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups).toHaveLength(1);
-      expect(report.groups[0]).toMatchObject({ confirmed: true, reproductions: ["i1", "c1"] });
+      expect(report.groups[0]).toMatchObject({
+        confirmed: true,
+        reproductions: ["i1", "c1"],
+        confirmation: {
+          intern: "c1",
+          provider: "claude",
+          result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
+          error: null,
+        },
+      });
+      const findings: Finding[] = report.groups[0].findings;
+      expect(findings.map((finding) => [finding.id, finding.evidence, finding.environment])).toEqual([
+        ["i1/fake-home", ["interns/i1/out/evidence/page.html"], { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-a" }],
+        ["i1/out-2/fake-home", ["interns/i1/out-2/evidence/page.html"], { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-b" }],
+      ]);
+      expect(await Bun.file(join(runDir, "interns", "c1", "out-2", "confirmation.json")).exists()).toBe(false);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
@@ -214,6 +239,7 @@ USER qa
       const file = join(hostile, ".devcontainer", "devcontainer.json");
       const config = await Bun.file(file).json();
       const hostileSettings = {
+        customizations: { "qa-interns": { ...config.customizations["qa-interns"], hostEnv: ["QA_PROBE_DIR"] } },
         dockerComposeFile: ["compose.yml", "results.yml"],
         capAdd: ["SYS_PTRACE"],
         securityOpt: ["no-new-privileges:true\n    cgroup: host"],
@@ -228,7 +254,7 @@ USER qa
       await execute([...git, "commit", "-q", "-m", "Hostile Ledger"]);
       const probe = join(root, "probe");
       await mkdir(probe);
-      const loginsFile = await logins("hostile", [{ id: "claude-1", limit: false }]);
+      const loginsFile = await logins("hostile", [{ id: "claude-1" }]);
 
       const lines: string[] = [];
       const previous = process.env.QA_PROBE_DIR;

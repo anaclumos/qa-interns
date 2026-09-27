@@ -4,7 +4,7 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { capture, devContainerViolations, execute, failure, isHttpUrl, type Target } from "./target.ts";
+import { capture, devContainerViolations, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
 import type { GeneratedFile, Mount } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
@@ -217,7 +217,10 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
     const tags = join(dir, "tags.yml");
     const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(images[name])}`]);
     await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
-    await execute(["docker", "compose", "-p", projectName(runId, "build"), ...sourceComposeArgs(target, sourceDir), "-f", tags, "build", ...services], { timeout: 30 * minute });
+    await execute(["docker", "compose", "-p", projectName(runId, "build"), ...sourceComposeArgs(target, sourceDir), "-f", tags, "build", ...services], {
+      env: targetEnv(target.settings.hostEnv),
+      timeout: 30 * minute,
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -259,14 +262,14 @@ function overrideConfig(target: Target, composeFile: string): Record<string, unk
 
 const upSchema = z.object({ outcome: z.string(), containerId: z.string().optional(), message: z.string().optional(), description: z.string().optional() });
 
-async function waitReady(ready: string, runner: string, exec: string[], log: string): Promise<void> {
+async function waitReady(ready: string, runner: string, exec: string[], env: Record<string, string | undefined>, log: string): Promise<void> {
   const url = isHttpUrl(ready);
   const probe = url
     ? ["docker", "exec", runner, "curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "10", "--noproxy", "*", ready]
     : [...exec, "sh", "-c", ready];
   const deadline = Date.now() + readyTimeout;
   while (true) {
-    const result = await capture(probe, { log, timeout: url ? undefined : Math.max(1000, deadline - Date.now()) });
+    const result = await capture(probe, { env, log, timeout: url ? undefined : Math.max(1000, deadline - Date.now()) });
     const status = Number(result.stdout.trim());
     if (result.code === 0 && (!url || (status >= 200 && status < 300))) return;
     if (Date.now() >= deadline) {
@@ -286,6 +289,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
     return { project, runner: await runnerId(project), devContainer: null, seed: null };
   }
   const target = spec.target;
+  const env = targetEnv(target.settings.hostEnv);
   const workspace = join(dir, project);
   const config = join(dir, "devcontainer.json");
   const tmp = join(dir, "tmp");
@@ -293,10 +297,10 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   await mkdir(tmp, { recursive: true });
   await Bun.write(config, `${JSON.stringify(overrideConfig(target, join(dir, "compose.qa.yml")), null, 2)}\n`);
 
-  const env = { ...process.env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp };
+  const upEnv = { ...env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp };
   const up = await capture(
     [process.execPath, devcontainer, "up", "--workspace-folder", workspace, "--override-config", config, "--user-data-folder", join(dir, "devcontainer-data"), "--id-label", `qa-interns.env=${project}`, "--log-format", "json"],
-    { env, log, timeout: 20 * minute },
+    { env: upEnv, log, timeout: 20 * minute },
   );
   const last = up.stdout.trim().split("\n").at(-1) ?? "";
   const result = upSchema.safeParse(last.startsWith("{") ? JSON.parse(last) : null);
@@ -306,7 +310,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   }
   const devContainer = result.data.containerId;
   const configFiles = await execute(["docker", "inspect", "--format", '{{index .Config.Labels "com.docker.compose.project.config_files"}}', devContainer]);
-  const violations = await devContainerViolations(project, composeFiles(spec), configFiles.trim().split(","), target.service, workspace, env);
+  const violations = await devContainerViolations(project, composeFiles(spec), configFiles.trim().split(","), target.service, workspace, upEnv);
   if (violations.length > 0) {
     throw new Error(`The dev container that devcontainer up created for ${project} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
   }
@@ -315,12 +319,12 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const services = Array.isArray(runServices) ? [target.service, ...runServices, "qa-proxy", "qa-runner"] : [];
   await execute(
     ["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds, "--no-recreate", ...services],
-    { env, log },
+    { env: upEnv, log },
   );
   const runner = await runnerId(project);
   const exec = [process.execPath, devcontainer, "exec", "--container-id", devContainer, "--workspace-folder", workspace, "--override-config", config];
-  await waitReady(target.settings.ready, runner, exec, log);
-  const output = await execute([...exec, "sh", "-c", target.settings.seed], { log, timeout: 10 * minute });
+  await waitReady(target.settings.ready, runner, exec, env, log);
+  const output = await execute([...exec, "sh", "-c", target.settings.seed], { env, log, timeout: 10 * minute });
   let seed: unknown;
   try {
     seed = JSON.parse(output);
