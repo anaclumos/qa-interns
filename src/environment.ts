@@ -135,7 +135,13 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     const image = spec.images[name];
     if (image !== undefined) lines.push(`    image: ${y(image)}`, "    build: !reset null", `    pull_policy: ${y("never")}`);
   }
-  const hardening = ["    init: true", "    read_only: true", `    cap_drop: ${y(["ALL"])}`, `    security_opt: ${y(["no-new-privileges:true"])}`, logging];
+  const hardening = [
+    "    init: true",
+    "    read_only: true",
+    `    cap_drop: ${y(["ALL"])}`,
+    `    security_opt: ${y(["no-new-privileges:true"])}`,
+    logging,
+  ];
   const volumes = [
     bind(spec.runner.out, "/qa/out", false),
     bind(join(spec.runDir, "chrome-policy.json"), "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json", true),
