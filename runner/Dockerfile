@@ -36,7 +36,7 @@ RUN curl -fsSLo /usr/local/bin/grok https://x.ai/cli/grok-1.0.41-linux-x86_64 \
  && echo "9ce03ed23e16ea01072b4496263d6213a27899e1e3e107f008d36edf82e70407  /usr/local/bin/grok" | sha256sum -c \
  && chmod 0755 /usr/local/bin/grok \
  && mkdir /etc/grok \
- && printf '%s\n' 'allowed_mcp_servers = []' '[managed_mcps]' 'enabled = false' 'gateway_tools_enabled = false' > /etc/grok/requirements.toml
+ && printf '%s\n' 'allowed_mcp_servers = []' '[managed_mcps]' 'enabled = false' 'gateway_tools_enabled = false' '[features]' 'telemetry = false' '[telemetry]' 'trace_upload = false' > /etc/grok/requirements.toml
 
 ARG QA_UID
 ARG QA_GID
