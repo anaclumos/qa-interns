@@ -125,8 +125,6 @@ const composeSchema = z.object({
           resources: z.object({ limits: limitsSchema.optional(), reservations: z.object({ devices: z.array(z.unknown()).optional() }).optional() }).optional(),
         })
         .optional(),
-      profiles: z.array(z.string()).optional(),
-      depends_on: z.record(z.string(), z.object({ required: z.boolean().optional() })).optional(),
       privileged: z.boolean().optional(),
       pid: z.string().optional(),
       ipc: z.string().optional(),
@@ -456,22 +454,12 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
   const project = composeSchema.parse(await render(checkProject, paths, env));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
-
-  const started =
-    runServices === undefined
-      ? Object.entries(project.services)
-          .filter(([name, entry]) => (entry.profiles ?? []).length === 0 || name === service)
-          .map(([name]) => name)
-      : [service, ...runServices];
-  const starts = new Set<string>();
-  const start = (name: string) => {
-    if (starts.has(name)) return;
-    starts.add(name);
-    for (const [dependency, condition] of Object.entries(project.services[name]?.depends_on ?? {})) {
-      if (condition.required !== false || (project.services[dependency]?.profiles ?? []).length === 0) start(dependency);
-    }
-  };
-  started.forEach(start);
+  const files = paths.flatMap((path) => ["-f", path]);
+  const selection = await execute(
+    ["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", "--no-env-resolution", ...(runServices === undefined ? [] : [service, ...runServices])],
+    { env },
+  );
+  const started = composeSchema.parse(JSON.parse(selection)).services;
   const violations = await projectEnvViolations(root, paths);
   const services: Record<string, ComposeService> = {};
   const tags = new Map<string, string>();
@@ -494,7 +482,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     const other = tags.get(name.toLowerCase());
     if (other === undefined) tags.set(name.toLowerCase(), name);
     else violations.push(`services ${other} and ${name} differ only by case, so their names and prebuilt image tags collide`);
-    const active = starts.has(name);
+    const active = Object.hasOwn(started, name);
     const limits = entry.deploy?.resources?.limits;
     const memory = entry.mem_limit ?? limits?.memory;
     services[name] = {
