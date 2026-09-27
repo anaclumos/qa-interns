@@ -1,10 +1,12 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import type { Subprocess } from "bun";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, realpath, rename, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadLogins, Scheduler, type Lease } from "../src/logins.ts";
 import type { Login } from "../src/types.ts";
 
+const holders = new Set<Subprocess>();
 let dir: string;
 let claudeStore: string;
 let codexStore: string;
@@ -116,9 +118,18 @@ async function holder(logins: Login[], count: number) {
     stdout: "pipe",
     stderr: "inherit",
   });
+  holders.add(child);
   const { value } = await child.stdout.getReader().read();
   return { count: Number(new TextDecoder().decode(value).trim()), child };
 }
+
+afterEach(async () => {
+  for (const child of holders) {
+    child.kill("SIGKILL");
+    await child.exited;
+  }
+  holders.clear();
+});
 
 describe("loadLogins", () => {
   test("loads mixed providers with stores and a seat pool", async () => {
@@ -429,6 +440,17 @@ describe("Scheduler", () => {
       expect(await scheduler.acquire("s2", [])).toBeNull();
       lease.release();
     }
+  });
+
+  test("a configured store that moves away during a run does not stop seat leases", async () => {
+    const moving = join(dir, "moving", "claude-m");
+    await mkdir(moving, { recursive: true });
+    await Bun.write(join(moving, ".credentials.json"), "{}");
+    const scheduler = new Scheduler([{ id: "claude-m", provider: "claude", store: moving, seat: null, concurrency: 1 }, login("codex-pool", "codex", 1, ["sh", join(dir, "seat.sh")])]);
+    await rename(join(dir, "moving"), join(dir, "moved"));
+    const lease = held(await scheduler.acquire("v1", ["claude"]));
+    expect(lease.store).toBe(join(pool, "v1"));
+    lease.release();
   });
 
   test("two seat stores whose credential files are one file are not leased at once", async () => {

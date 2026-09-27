@@ -120,7 +120,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
 
 export type Lease = { login: Login; store: string; release(): void };
 
-type Slot = { login: Login; active: number; exhausted: boolean };
+type Slot = { login: Login; active: number; exhausted: boolean; store: { store: string; credential: string; where: string } | null };
 
 const lockHeld = 75;
 
@@ -168,7 +168,12 @@ export class Scheduler {
   private readonly live = new Set<Held>();
 
   constructor(logins: Login[]) {
-    this.slots = logins.map((login) => ({ login, active: 0, exhausted: false }));
+    this.slots = logins.map((login) => {
+      if (login.store === null) return { login, active: 0, exhausted: false, store: null };
+      const found = resolveStore(login.provider, login.store);
+      if (found.credential === null) throw new Error(`${login.provider} store ${login.store} has no ${credentialName(login.provider)}`);
+      return { login, active: 0, exhausted: false, store: { store: found.store, credential: found.credential, where: `login ${login.id}` } };
+    });
   }
 
   capacity(): number {
@@ -205,11 +210,7 @@ export class Scheduler {
 
   private async lease(slot: Slot, intern: string): Promise<Lease | null> {
     const { login } = slot;
-    if (login.store !== null) {
-      const found = resolveStore(login.provider, login.store);
-      if (found.credential === null) throw new Error(`${login.provider} store ${login.store} has no ${credentialName(login.provider)}`);
-      return this.grant(slot, found.store, found.credential, login.concurrency, null);
-    }
+    if (slot.store !== null) return this.grant(slot, slot.store.store, slot.store.credential, login.concurrency, null);
     if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
     const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
     let lease: Lease | null = null;
@@ -217,7 +218,7 @@ export class Scheduler {
       const path = await seatStore(login.seat, keeper.pid, intern);
       if (path !== null) {
         const found = resolveStore(login.provider, path);
-        const known = [...this.configured(), ...this.live];
+        const known = [...this.slots.flatMap((other) => other.store ?? []), ...this.live];
         if (found.credential !== null && !this.exhaustedStores.has(found.store) && storeProblems(login.provider, path, found, known).length === 0) {
           lease = this.grant(slot, found.store, found.credential, 1, keeper);
         }
@@ -247,10 +248,6 @@ export class Scheduler {
         unlock();
       },
     };
-  }
-
-  private configured(): Held[] {
-    return this.slots.flatMap(({ login }) => (login.store === null ? [] : [{ ...resolveStore(login.provider, login.store), where: `login ${login.id}` }]));
   }
 
   private next(avoid: Provider[], tried: Set<Slot>): Slot | undefined {
