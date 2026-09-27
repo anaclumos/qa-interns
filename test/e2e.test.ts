@@ -261,7 +261,7 @@ USER qa
       await execute([...git, "commit", "-q", "-m", "Hostile Ledger"]);
       const probe = join(root, "probe");
       await mkdir(probe);
-      const loginsFile = await logins("hostile", [{ id: "claude-1" }]);
+      const loginsFile = await logins("hostile", [{ id: "claude-1", provider: "claude" }]);
 
       const lines: string[] = [];
       const previous = process.env.QA_PROBE_DIR;
