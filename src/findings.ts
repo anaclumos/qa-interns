@@ -132,15 +132,19 @@ function inside(dir: string, file: string) {
   return relative !== "" && relative !== ".." && !relative.startsWith("../") && !path.isAbsolute(relative);
 }
 
-async function evidence(runDir: string, intern: string, list: string[]) {
-  const out = path.join(runDir, "interns", intern, "out");
-  const realOut = await realpath(out);
+export function outDir(intern: string, attempt: number): string {
+  return path.join("interns", intern, attempt === 1 ? "out" : `out-${attempt}`);
+}
+
+async function evidence(runDir: string, out: string, list: string[]) {
+  const dir = path.join(runDir, out);
+  const realOut = await realpath(dir);
   const problems: string[] = [];
   const resolved: string[] = [];
   for (const entry of list) {
     const relative = path.isAbsolute(entry) ? (entry.startsWith("/qa/out/") ? entry.slice("/qa/out/".length) : null) : entry;
-    const file = relative === null ? null : path.resolve(out, relative);
-    if (file === null || !inside(out, file)) {
+    const file = relative === null ? null : path.resolve(dir, relative);
+    if (file === null || !inside(dir, file)) {
       problems.push(`evidence path ${entry} is outside /qa/out`);
       continue;
     }
@@ -157,7 +161,7 @@ async function evidence(runDir: string, intern: string, list: string[]) {
       problems.push(`evidence path ${entry} is not a file`);
       continue;
     }
-    resolved.push(path.join("interns", intern, "out", path.relative(realOut, real)));
+    resolved.push(path.join(out, path.relative(realOut, real)));
   }
   if (problems.length > 0) throw new Invalid(problems.join("; "));
   return resolved;
@@ -166,9 +170,12 @@ async function evidence(runDir: string, intern: string, list: string[]) {
 export async function readFindings(
   runDir: string,
   intern: string,
+  attempt: number,
   environment: FindingEnvironment,
 ): Promise<{ findings: Finding[]; rejected: Rejected[] }> {
-  const folder = path.join("interns", intern, "out", "findings");
+  const out = outDir(intern, attempt);
+  const folder = path.join(out, "findings");
+  const prefix = attempt === 1 ? intern : path.relative("interns", out);
   const findings: Finding[] = [];
   const rejected: Rejected[] = [];
   let handle: FileHandle | null = null;
@@ -193,7 +200,7 @@ export async function readFindings(
         const contradicts = data.contradicts ?? null;
         if (data.kind === "inconsistency" && contradicts === null) throw new Invalid("contradicts is required when kind is inconsistency");
         findings.push({
-          id: `${intern}/${name.slice(0, -".json".length)}`,
+          id: `${prefix}/${name.slice(0, -".json".length)}`,
           intern,
           title: data.title,
           kind: data.kind,
@@ -201,7 +208,7 @@ export async function readFindings(
           steps: data.steps,
           observed: data.observed,
           contradicts,
-          evidence: (await evidence(runDir, intern, data.evidence)).map(stripControl),
+          evidence: (await evidence(runDir, out, data.evidence)).map(stripControl),
           environment,
         });
       } catch (err) {
@@ -229,7 +236,8 @@ export function parseGroups(raw: string, ids: string[]): string[][] {
   return groups;
 }
 
-export async function readConfirmation(runDir: string, intern: string): Promise<Confirmation> {
-  const data = parse(confirmationSchema, await readAgentFile(path.join(runDir, "interns", intern, "out", "confirmation.json")));
-  return { reproduced: data.reproduced, observed: data.observed, evidence: (await evidence(runDir, intern, data.evidence)).map(stripControl) };
+export async function readConfirmation(runDir: string, intern: string, attempt: number): Promise<Confirmation> {
+  const out = outDir(intern, attempt);
+  const data = parse(confirmationSchema, await readAgentFile(path.join(runDir, out, "confirmation.json")));
+  return { reproduced: data.reproduced, observed: data.observed, evidence: (await evidence(runDir, out, data.evidence)).map(stripControl) };
 }
