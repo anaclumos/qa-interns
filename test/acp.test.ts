@@ -113,7 +113,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
       "--user",
       `${process.getuid?.()}:${process.getgid?.()}`,
       "-e",
-      "CLAUDE_CONFIG_DIR=/qa/login",
+      "FAKE_CREDENTIAL=/qa/login/.credentials.json",
       "-v",
       `${path.join(import.meta.dir, "fake-agent.mjs")}:/opt/qa/fake-agent.mjs:ro`,
       "-v",
