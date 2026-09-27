@@ -259,7 +259,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"], { env });
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
-  const selection = await execute(["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", ...(runServices === undefined ? [] : [service, ...runServices])], { env });
+  const selection = await execute(["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", ...(runServices?.length ? [service, ...runServices] : [])], { env });
   const started = composeSchema.parse(JSON.parse(selection)).services;
   const violations: string[] = [];
   const services: Record<string, ComposeService> = {};
