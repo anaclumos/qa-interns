@@ -1,11 +1,12 @@
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError, type AnyMessage, type NewSessionResponse } from "@agentclientprotocol/sdk";
 import { spawn } from "node:child_process";
-import { appendFileSync, closeSync, openSync } from "node:fs";
+import { appendFileSync, statSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { version } from "../package.json";
 import type { ProviderSpec } from "./providers.ts";
 
 const startupMs = 5 * 60_000;
+const logLimit = 64 * 1024 ** 2;
 
 export class AgentError extends Error {
   code: number;
@@ -36,20 +37,37 @@ function modelOf(response: NewSessionResponse): string | null {
     : null;
 }
 
+function appender(path: string): (data: string | Uint8Array) => void {
+  appendFileSync(path, "");
+  let room = logLimit - statSync(path).size;
+  return (data) => {
+    const size = Buffer.byteLength(data);
+    if (size > room) {
+      room = 0;
+      return;
+    }
+    appendFileSync(path, data);
+    room -= size;
+  };
+}
+
 export async function openSession(opts: { container: string; provider: ProviderSpec; transcript: string; adapterLog: string }): Promise<Session> {
   const argv = ["docker", "exec", "-i", "-w", "/qa/out", opts.container, ...opts.provider.adapter];
-  const log = openSync(opts.adapterLog, "a");
-  const child = spawn("docker", argv.slice(1), { stdio: ["pipe", "pipe", log] });
-  closeSync(log);
-  const { stdin, stdout } = child;
-  if (stdin === null || stdout === null) throw new Error(`${argv.join(" ")} started without stdio pipes`);
-  const exited = new Promise<void>((resolve) => {
-    child.once("exit", () => resolve());
-    child.once("close", () => resolve());
-  });
+  const child = spawn("docker", argv.slice(1), { stdio: "pipe" });
+  const { stdin, stdout, stderr } = child;
+  if (stdin === null || stdout === null || stderr === null) throw new Error(`${argv.join(" ")} started without stdio pipes`);
+  stderr.on("data", appender(opts.adapterLog));
+  const exited = Promise.all([
+    new Promise<void>((resolve) => {
+      child.once("exit", () => resolve());
+      child.once("close", () => resolve());
+    }),
+    new Promise<void>((resolve) => stderr.once("close", () => resolve())),
+  ]);
 
+  const transcript = appender(opts.transcript);
   const record = (from: "client" | "agent", message: AnyMessage) =>
-    appendFileSync(opts.transcript, `${JSON.stringify({ t: new Date().toISOString(), from, message })}\n`);
+    transcript(`${JSON.stringify({ t: new Date().toISOString(), from, message })}\n`);
   const wire = ndJsonStream(Writable.toWeb(stdin), Readable.toWeb(stdout) as ReadableStream<Uint8Array>);
   const writer = wire.writable.getWriter();
   const stream = {

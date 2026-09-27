@@ -134,6 +134,8 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 - `findings.json`: the same data as JSON.
 - `interns/<id>/out/`: each intern's findings and evidence (screenshots, recordings, HAR files, console logs).
 - `interns/<id>/transcript.jsonl`: the agent traffic of each intern.
+- `interns/<id>/adapter.log`: the error output of each intern's agent.
+- Each transcript and error log stops growing at 64 MiB. Later traffic and output are not recorded.
 - `state.json`: the run's phase and every intern's status.
 
 A finding is confirmed when two or more interns reproduced it.
