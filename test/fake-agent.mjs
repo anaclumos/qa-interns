@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -116,6 +117,12 @@ const charterTurn = async (text) => {
   if (!response.ok) throw new Error(`GET ${url} answered ${response.status}`);
   mkdirSync("/qa/out/evidence", { recursive: true });
   writeFileSync("/qa/out/evidence/page.html", await response.text());
+  if (text.includes("agent-browser")) {
+    const browser = (...args) => execFileSync("agent-browser", args, { encoding: "utf8", env: { ...process.env, AGENT_BROWSER_SESSION: "fake" } });
+    browser("open", url);
+    writeFileSync("/qa/out/evidence/browser.json", browser("eval", "({ isSecureContext, randomUUID: typeof crypto.randomUUID, subtle: typeof crypto.subtle, clipboard: typeof navigator.clipboard })"));
+    browser("close");
+  }
   mkdirSync("/qa/out/findings", { recursive: true });
   writeJson("/qa/out/findings/fake-home.json", {
     title: "Home page shows the fake defect",

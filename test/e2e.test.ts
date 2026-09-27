@@ -69,9 +69,9 @@ function intern(state: RunState, internId: string) {
 function internalSubnet(runDir: string, internId: string): string {
   const network = readFileSync(join(runDir, "envs", internId, "compose.qa.yml"), "utf8")
     .split("\n")
-    .find((entry) => entry.startsWith("  qa_internal: "));
+    .find((entry) => entry.startsWith("  qa_internal: !override "));
   if (network === undefined) throw new Error(`compose.qa.yml of ${internId} has no qa_internal network`);
-  return JSON.parse(network.slice("  qa_internal: ".length)).ipam.config[0].subnet;
+  return JSON.parse(network.slice("  qa_internal: !override ".length)).ipam.config[0].subnet;
 }
 
 describe.skipIf(!dockerAvailable)("runQa end to end with the fake agent", () => {
@@ -173,6 +173,12 @@ USER qa
         environment: { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: intern(state, "i1").provider, model: "fake-model-1" },
       });
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "page.html")).text()).toContain("<form");
+      expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "browser.json")).json()).toEqual({
+        isSecureContext: true,
+        randomUUID: "function",
+        subtle: "object",
+        clipboard: "object",
+      });
 
       const markdown = await Bun.file(join(runDir, "report.md")).text();
       const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Seen once"));
