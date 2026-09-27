@@ -261,7 +261,7 @@ function overrideConfig(target: Target, composeFile: string): Record<string, unk
   return {
     ...target.config,
     dockerComposeFile: [...target.composeFiles, composeFile],
-    ...(Array.isArray(runServices) && runServices.length > 0 ? { runServices: [...runServices, "qa-proxy", "qa-runner"] } : {}),
+    ...(Array.isArray(runServices) ? { runServices: [...runServices, "qa-proxy", "qa-runner"] } : {}),
   };
 }
 
@@ -315,7 +315,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const devContainer = result.data.containerId;
 
   const runServices = target.config.runServices;
-  const services = Array.isArray(runServices) && runServices.length > 0 ? [target.service, ...runServices, "qa-proxy", "qa-runner"] : [];
+  const services = Array.isArray(runServices) ? [target.service, ...runServices, "qa-proxy", "qa-runner"] : [];
   await execute(
     ["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds, "--no-recreate", ...services],
     { env, log },
