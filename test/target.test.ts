@@ -407,6 +407,8 @@ networks:
     ["a misspelled key", { ...settings, offlimits: ["Do not delete teams."] }, "offlimits"],
     ["a wildcard egress host", { ...settings, egress: ["*.vercel.sh"] }, "must be a lowercase host name"],
     ["an egress IP address", { ...settings, egress: ["203.0.113.7"] }, "must be a lowercase host name"],
+    ["an egress IP address in short form", { ...settings, egress: ["169.16689662"] }, "must be a lowercase host name"],
+    ["an egress IP address in hexadecimal", { ...settings, egress: ["0x7f.1"] }, "must be a lowercase host name"],
     ["an egress URL", { ...settings, egress: ["https://api.pwnedpasswords.com"] }, "must be a lowercase host name"],
     ["an uppercase egress host", { ...settings, egress: ["API.pwnedpasswords.com"] }, "must be a lowercase host name"],
     ["a single-label egress host", { ...settings, egress: ["localhost"] }, "must be a lowercase host name"],

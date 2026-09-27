@@ -70,7 +70,14 @@ const hostCharacters = new Set("abcdefghijklmnopqrstuvwxyz0123456789-.");
 
 function isHostName(value: string): boolean {
   const labels = value.split(".");
-  return labels.length > 1 && labels.every((label) => label !== "") && [...value].every((character) => hostCharacters.has(character)) && isIP(value) === 0;
+  return (
+    labels.length > 1 &&
+    labels.every((label) => label !== "") &&
+    [...value].every((character) => hostCharacters.has(character)) &&
+    isIP(value) === 0 &&
+    URL.canParse(`https://${value}`) &&
+    new URL(`https://${value}`).hostname === value
+  );
 }
 
 const settingsSchema = z.strictObject({
