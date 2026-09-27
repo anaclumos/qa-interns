@@ -370,6 +370,155 @@ networks:
     await expect(load(linked)).rejects.toThrow("names the Compose file linked.yml, which resolves outside the target directory");
   });
 
+  test("accept include and extends files inside the target, resolved the way Compose resolves them", async () => {
+    const root = await repo({
+      ".devcontainer/devcontainer.json": devcontainer({ dockerComposeFile: ["compose.yml", "extra/second.yml"] }),
+      ".devcontainer/compose.yml": `include:
+  - inc/worker.yml
+  - path: inc/cron.yml
+    project_directory: ..
+    env_file: ../cron.env
+  - path: inc/job/job.yml
+    project_directory: ""
+    env_file: /dev/null
+services:
+  web:
+    extends: { file: base.yml, service: base }
+`,
+      ".devcontainer/extra/second.yml": "include:\nservices:\n  extra:\n    extends: { file: base.yml, service: base }\n  gone: !reset null\n",
+      ".devcontainer/base.yml": "services:\n  base:\n    image: nginx:1.29-alpine\n",
+      ".devcontainer/inc/worker.yml": "include: [queue.yml]\nservices:\n  worker:\n    extends: { file: ../chain/mid.yml, service: mid }\n",
+      ".devcontainer/inc/queue.yml": "services:\n  queue:\n    image: redis:8.2-alpine\n",
+      ".devcontainer/inc/cron.yml": "services:\n  cron:\n    extends: { file: .devcontainer/base.yml, service: base }\n    image: busybox:${CRON_TAG}\n",
+      ".devcontainer/inc/job/job.yml": "services:\n  job:\n    extends: { file: jobbase.yml, service: base }\n",
+      ".devcontainer/inc/job/jobbase.yml": "services:\n  base:\n    image: busybox:1.37\n",
+      ".devcontainer/chain/mid.yml": "include: [missing.yml]\nservices:\n  mid:\n    extends: { file: leaf.yml, service: leaf }\n",
+      ".devcontainer/chain/leaf.yml": "services:\n  leaf:\n    image: nginx:1.29-alpine\n",
+      "cron.env": "CRON_TAG=1.37\n",
+    });
+    const target = await load(root);
+    expect(Object.keys(target.services).sort()).toEqual(["cron", "extra", "job", "queue", "web", "worker"]);
+  });
+
+  const outsideReferences: [string, (outside: string) => [Record<string, string>, string]][] = [
+    [
+      "an include outside the target",
+      (outside) => [{ "compose.yml": `include: [${outside}/extra.yml]\nservices:\n  web:\n    image: nginx:1.29-alpine\n` }, `compose.yml names ${outside}/extra.yml in include, which does not resolve`],
+    ],
+    [
+      "an extends file outside the target",
+      (outside) => [{ "compose.yml": `services:\n  web:\n    extends: { file: ${outside}/base.yml, service: base }\n` }, `compose.yml names ${outside}/base.yml in services.web.extends.file, which`],
+    ],
+    [
+      "a scalar include",
+      (outside) => [{ "compose.yml": `include: ${outside}/extra.yml\nservices:\n  web:\n    image: nginx:1.29-alpine\n` }, "compose.yml is invalid"],
+    ],
+    [
+      "an include outside the target in an included file",
+      (outside) => [
+        { "compose.yml": "include: [inc/a.yml]\nservices:\n  web:\n    image: nginx:1.29-alpine\n", "inc/a.yml": `include: [${outside}/extra.yml]\n` },
+        `inc/a.yml names ${outside}/extra.yml in include, which`,
+      ],
+    ],
+    [
+      "an extends file outside the target in an extended file",
+      (outside) => [
+        { "compose.yml": "services:\n  web:\n    extends: { file: inc/b.yml, service: b }\n", "inc/b.yml": `services:\n  b:\n    extends: { file: ${outside}/base.yml, service: base }\n` },
+        `inc/b.yml names ${outside}/base.yml in services.b.extends.file, which`,
+      ],
+    ],
+    [
+      "an include project directory outside the target",
+      (outside) => [
+        { "compose.yml": `include: [{ path: inc/a.yml, project_directory: ${outside} }]\nservices:\n  web:\n    image: nginx:1.29-alpine\n`, "inc/a.yml": "services: {}\n" },
+        `compose.yml names ${outside} in include.project_directory, which`,
+      ],
+    ],
+    [
+      "an include env file outside the target",
+      (outside) => [
+        { "compose.yml": `include: [{ path: inc/a.yml, env_file: ${outside}/extra.env }]\nservices:\n  web:\n    image: nginx:1.29-alpine\n`, "inc/a.yml": "services: {}\n" },
+        `compose.yml names ${outside}/extra.env in include.env_file, which`,
+      ],
+    ],
+    [
+      "a relative project directory on an include in an included file",
+      () => [
+        { "compose.yml": "include: [inc/a.yml]\nservices:\n  web:\n    image: nginx:1.29-alpine\n", "inc/a.yml": "include: [{ path: c.yml, project_directory: . }]\n", "inc/c.yml": "services: {}\n" },
+        "inc/a.yml names . in include.project_directory, a relative path that Compose resolves against the directory it runs in",
+      ],
+    ],
+    [
+      "an OCI include",
+      () => [
+        { "compose.yml": "include: [oci://qa-interns.invalid/compose:1]\nservices:\n  web:\n    image: nginx:1.29-alpine\n" },
+        "compose.yml names oci://qa-interns.invalid/compose:1 in include, which Compose may expand or load from a remote source",
+      ],
+    ],
+    [
+      "a Git include in SCP form, even when that literal path is committed",
+      () => [
+        { "compose.yml": "include: [\"git@qa-interns.invalid:compose.git\"]\nservices:\n  web:\n    image: nginx:1.29-alpine\n", "git@qa-interns.invalid:compose.git": "services: {}\n" },
+        "compose.yml names git@qa-interns.invalid:compose.git in include, which Compose may expand or load from a remote source",
+      ],
+    ],
+    [
+      "a GitHub include, even when that literal path is committed",
+      () => [
+        { "compose.yml": "include: [github.com/qa-interns/compose]\nservices:\n  web:\n    image: nginx:1.29-alpine\n", "github.com/qa-interns/compose": "services: {}\n" },
+        "compose.yml names github.com/qa-interns/compose in include, which Compose may expand or load from a remote source",
+      ],
+    ],
+    [
+      "an extends file with a variable, even when that literal path is committed",
+      () => [
+        { "compose.yml": "services:\n  web:\n    extends: { file: \"${QA_INTERNS_DIR}/base.yml\", service: base }\n", "${QA_INTERNS_DIR}/base.yml": "services:\n  base:\n    image: nginx:1.29-alpine\n" },
+        "compose.yml names ${QA_INTERNS_DIR}/base.yml in services.web.extends.file, which Compose may expand or load from a remote source",
+      ],
+    ],
+    [
+      "an extends file under the home directory, even when that literal path is committed",
+      () => [
+        { "compose.yml": "services:\n  web:\n    extends: { file: \"~/base.yml\", service: base }\n", "~/base.yml": "services:\n  base:\n    image: nginx:1.29-alpine\n" },
+        "compose.yml names ~/base.yml in services.web.extends.file, which Compose may expand or load from a remote source",
+      ],
+    ],
+  ];
+
+  test.each(outsideReferences)("reject %s", async (_, cases) => {
+    const outside = await scratch("qa-interns-outside-");
+    await Bun.write(join(outside, "extra.yml"), "services:\n  worker:\n    image: busybox:1.37\n");
+    await Bun.write(join(outside, "base.yml"), "services:\n  base:\n    image: busybox:1.37\n");
+    await Bun.write(join(outside, "extra.env"), "TAG=1.37\n");
+    const [files, message] = cases(outside);
+    const root = await repo({ ".devcontainer/devcontainer.json": devcontainer(), ...Object.fromEntries(Object.entries(files).map(([path, content]) => [`.devcontainer/${path}`, content])) });
+    await expect(load(root)).rejects.toThrow(message);
+  });
+
+  test("reject an include through a symbolic link in the target that points outside it", async () => {
+    const outside = await scratch("qa-interns-outside-");
+    await Bun.write(join(outside, "extra.yml"), "services:\n  worker:\n    image: busybox:1.37\n");
+    const root = await fixture("include: [linked.yml]\nservices:\n  web:\n    image: nginx:1.29-alpine\n");
+    await symlink(join(outside, "extra.yml"), join(root, ".devcontainer", "linked.yml"));
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "link");
+    await expect(load(root)).rejects.toThrow("compose.yml names linked.yml in include, which does not resolve to an existing path inside the target directory");
+  });
+
+  test("reject an included project whose .env file is a symbolic link that points outside the target", async () => {
+    const outside = await scratch("qa-interns-outside-");
+    await Bun.write(join(outside, "host.env"), "TAG=1.37\n");
+    const root = await repo({
+      ".devcontainer/devcontainer.json": devcontainer(),
+      ".devcontainer/compose.yml": "include: [inc/a.yml]\nservices:\n  web:\n    image: nginx:1.29-alpine\n",
+      ".devcontainer/inc/a.yml": "services:\n  worker:\n    image: busybox:${TAG}\n",
+    });
+    await symlink(join(outside, "host.env"), join(root, ".devcontainer", "inc", ".env"));
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "link");
+    await expect(load(root)).rejects.toThrow("compose.yml includes inc/a.yml, whose project directory has a .env file that resolves outside the target directory");
+  });
+
   test("reject a single-container dev container", async () => {
     const config = JSON.stringify({ name: "Image", image: "mcr.microsoft.com/devcontainers/typescript-node:22", customizations: { "qa-interns": settings } });
     const root = await repo({ ".devcontainer/devcontainer.json": config });
