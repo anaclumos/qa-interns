@@ -216,10 +216,13 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     }
     const aliases = [...new Set(Object.values(entry.networks ?? {}).flatMap((network) => network?.aliases ?? []))];
     for (const alias of aliases) {
-      if (reservedServices.includes(alias)) violations.push(`service ${name} declares network alias ${alias}, a name QA Interns reserves`);
-      else if (alias !== name && Object.hasOwn(project.services, alias)) violations.push(`service ${name} declares network alias ${alias}, the name of another service`);
-      const owner = aliasOwners.get(alias);
-      if (owner === undefined) aliasOwners.set(alias, name);
+      const key = alias.toLowerCase();
+      if (reservedServices.includes(key)) violations.push(`service ${name} declares network alias ${alias}, a name QA Interns reserves`);
+      else if (key !== name.toLowerCase() && Object.keys(project.services).some((other) => other.toLowerCase() === key)) {
+        violations.push(`service ${name} declares network alias ${alias}, the name of another service`);
+      }
+      const owner = aliasOwners.get(key);
+      if (owner === undefined) aliasOwners.set(key, name);
       else violations.push(`services ${owner} and ${name} both declare network alias ${alias}`);
     }
     const other = tags.get(name.toLowerCase());
@@ -233,7 +236,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       memLimit: memory === undefined ? null : bytes(memory, `The memory limit of service ${name}`),
       networkMode: entry.network_mode ?? null,
       aliases,
-      hasCpus: entry.cpus !== undefined || limits?.cpus !== undefined,
+      hasCpus: (entry.cpus ?? 0) > 0 || (limits?.cpus ?? 0) > 0,
       hasPidsLimit: (entry.pids_limit ?? 0) > 0 || (limits?.pids ?? 0) > 0,
       deployLimits: limits !== undefined,
       replicas: entry.deploy?.replicas ?? 1,

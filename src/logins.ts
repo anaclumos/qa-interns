@@ -47,6 +47,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
   const logins: Login[] = [];
   const firstIndex = new Map<string, number>();
   const storeIndex = new Map<string, number>();
+  const credentialIndex = new Map<string, number>();
   for (const [index, value] of top.data.logins.entries()) {
     const id = rawId(value);
     const where = id === null ? `logins[${index}]` : `logins[${index}] "${id}"`;
@@ -64,6 +65,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
     }
     const entry = parsed.data;
     if ((entry.store === undefined) === (entry.seat === undefined)) problems.push(`${where}: set exactly one of "store" or "seat"`);
+    const sameStore = entry.store !== undefined && storeIndex.has(realpathSync(entry.store));
     if (entry.store !== undefined) {
       const store = realpathSync(entry.store);
       if (store === "/") problems.push(`${where}: store ${entry.store} is the root of the file system`);
@@ -75,16 +77,18 @@ export async function loadLogins(file: string): Promise<Login[]> {
       }
       if (!storeIndex.has(store)) storeIndex.set(store, index);
     }
-    if (entry.provider === "claude" && entry.store !== undefined && statSync(join(entry.store, ".credentials.json"), { throwIfNoEntry: false })?.isFile() !== true) {
-      problems.push(`${where}: claude store ${entry.store} has no .credentials.json`);
-    }
-    if (entry.provider === "cursor" && entry.store !== undefined && statSync(join(entry.store, "auth.json"), { throwIfNoEntry: false })?.isFile() !== true) {
-      problems.push(`${where}: cursor store ${entry.store} has no auth.json`);
+    if (entry.store !== undefined) {
+      const name = entry.provider === "claude" ? ".credentials.json" : "auth.json";
+      const credential = join(entry.store, name);
+      if (statSync(credential, { throwIfNoEntry: false })?.isFile() !== true) problems.push(`${where}: ${entry.provider} store ${entry.store} has no ${name}`);
+      else if (!sameStore) {
+        const real = realpathSync(credential);
+        const first = credentialIndex.get(real);
+        if (first === undefined) credentialIndex.set(real, index);
+        else problems.push(`${where}: ${credential} is the same file as the credential of logins[${first}]; one credential serves one process at a time`);
+      }
     }
     if (entry.provider === "codex" && entry.store !== undefined) {
-      if (statSync(join(entry.store, "auth.json"), { throwIfNoEntry: false })?.isFile() !== true) {
-        problems.push(`${where}: codex store ${entry.store} has no auth.json`);
-      }
       if (entry.concurrency !== 1) {
         problems.push(
           `${where}: a codex store must have concurrency 1, because one auth.json copy serves one machine or one serialized job stream (https://learn.chatgpt.com/docs/auth/ci-cd-auth). Use a seat command to share a pool.`,
@@ -192,7 +196,8 @@ export class Scheduler {
   }
 
   private held(login: Login, store: string): boolean {
-    return [...this.live].some((lease) => lease.store === store && (lease.login !== login || login.store === null));
+    const nested = (a: string, b: string) => a === "/" || b === "/" || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+    return [...this.live].some((lease) => (lease.store === store ? lease.login !== login || login.store === null : nested(lease.store, store)));
   }
 
   private next(avoid: Provider[], tried: Set<Slot>): Slot | undefined {

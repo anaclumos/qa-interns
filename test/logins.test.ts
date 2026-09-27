@@ -197,6 +197,19 @@ describe("loadLogins", () => {
     expect(message).toContain(`logins[1] "codex-inner": store ${inner} contains or is inside the store of logins[0]`);
   });
 
+  test("rejects two stores whose credential files are the same file", async () => {
+    const second = join(dir, "stores", "codex-linked");
+    await mkdir(second, { recursive: true });
+    await symlink(join(codexStore, "auth.json"), join(second, "auth.json"));
+    const message = await failure("shared-credential.json", {
+      logins: [
+        { id: "codex-1", provider: "codex", store: codexStore },
+        { id: "codex-2", provider: "codex", store: second },
+      ],
+    });
+    expect(message).toContain(`logins[1] "codex-2": ${join(second, "auth.json")} is the same file as the credential of logins[0]`);
+  });
+
   test("rejects duplicate ids and reports every problem at once", async () => {
     const message = await failure("many.json", {
       logins: [
