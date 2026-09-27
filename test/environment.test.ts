@@ -17,7 +17,7 @@ import {
   type EnvironmentSpec,
 } from "../src/environment.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
-import { loadTarget, type Target } from "../src/target.ts";
+import { execute, loadTarget, type Target } from "../src/target.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -315,6 +315,37 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     };
     expect(environmentMemory(profiled)).toBe(2 * gib + 128 * mib);
     expect(await buildImages("3f9a1c2e", profiled, ledgerSource)).toEqual({});
+  });
+
+  test("tag a built image only with the run's name, whatever build tags the target sets", async () => {
+    const source = await scratch();
+    const runId = crypto.randomUUID().slice(0, 8);
+    const scope = `qair-t-tags-${runId}/`;
+    await Bun.write(join(source, "Dockerfile"), "FROM scratch\nCOPY Dockerfile /Dockerfile\n");
+    await Bun.write(
+      join(source, ".devcontainer", "devcontainer.json"),
+      JSON.stringify({
+        dockerComposeFile: "compose.yml",
+        service: "web",
+        customizations: { "qa-interns": { urls: { app: "http://web:3000" }, ready: "http://web:3000/health", seed: "node seed.mjs" } },
+      }),
+    );
+    await Bun.write(
+      join(source, ".devcontainer", "compose.yml"),
+      `services:
+  web:
+    image: ${scope}web:latest
+    build:
+      context: ..
+      tags: ["${scope}extra:latest"]
+`,
+    );
+    const images = await buildImages(runId, await loadTarget(ref, source), source);
+    const listed = (await execute(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])).split("\n");
+    const created = listed.filter((image) => [`qa-${runId}-`, scope].some((prefix) => image.startsWith(prefix)));
+    if (created.length > 0) await execute(["docker", "image", "rm", ...created]);
+    expect(images).toEqual({ web: `qa-${runId}-web:latest` });
+    expect(created).toEqual([`qa-${runId}-web:latest`]);
   });
 
   test("route every environment host around the proxy and allow only those hosts in the browser", () => {
