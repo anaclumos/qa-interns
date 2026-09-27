@@ -98,6 +98,8 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 
 Published ports and build `tags` are allowed; QA Interns removes them.
 
+A service without `build` whose `image` names the `image` or a build `tags` entry of a service with `build` that the run starts runs the image QA Interns builds for that service, as it does in the target's own dev container. Names match as Docker resolves them, so `app` and `docker.io/library/app:latest` name the same image.
+
 The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint beyond the `egress` hosts. The target project owns that guarantee.
 
 Compose and the Dev Container CLI run with the variables that `hostEnv` names and the ones they need to reach Docker: `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS`, `DOCKER_TLS_VERIFY`, and `DOCKER_API_VERSION`. QA Interns removes every other variable of its own environment before it runs them. Compose interpolation, an `environment` entry without a value, `${localEnv:...}` in `devcontainer.json`, and `initializeCommand` read from what remains.
