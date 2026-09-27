@@ -35,7 +35,7 @@ const diskSuffix = ".img";
 const createDiskScript =
   'if [ -e "$2" ] || mountpoint -q "$1"; then echo "$1 already has an output disk" >&2; exit 1; fi; { truncate -s "$4" "$2.new" && mkfs.ext4 -q -F -m 0 -E root_owner="$3" "$2.new" && mount -o loop "$2.new" /mnt && rmdir /mnt/lost+found && umount /mnt && mv "$2.new" "$2" && mount -o loop,nosuid,nodev "$2" "$1"; } || { rm -f "$2.new"; exit 1; }';
 const saveDiskScript =
-  '[ -e "$2" ] || exit 0; if mountpoint -q "$1"; then umount "$1"; fi && mount -o loop "$2" /mnt && find "$1" -mindepth 1 -delete && cp -a /mnt/. "$1" && umount /mnt && rm "$2"';
+  'rm -f "$2.new"; [ -e "$2" ] || exit 0; if mountpoint -q "$1"; then umount "$1"; fi && mount -o loop "$2" /mnt && find "$1" -mindepth 1 -delete && cp -a /mnt/. "$1" && umount /mnt && rm "$2"';
 
 type Cidr = { address: number; bits: number };
 
@@ -339,7 +339,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const dir = envDir(spec);
   const log = join(dir, "env.log");
   await writeFiles(spec);
-  await createDisk(spec.runner.out, spec.runner.image);
+  await createDisk(spec.runner.out, spec.runner.image, project);
   if (spec.target === null) {
     await execute(["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds], { log });
     return { project, runner: await runnerId(project), out: spec.runner.out, devContainer: null, seed: null };
@@ -390,27 +390,29 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   return { project, runner, out: spec.runner.out, devContainer, seed };
 }
 
-async function diskHelper(out: string, image: string, script: string, args: string[]): Promise<void> {
+async function diskHelper(out: string, image: string, owner: string, script: string, args: string[]): Promise<void> {
   const dir = dirname(out);
+  const name = `${owner}-disk-${crypto.randomUUID().slice(0, 8)}`;
   const mounts = ["-v", "/dev:/dev", "-v", `${dir}:${dir}:rshared`];
-  await execute(["docker", "run", "--rm", "--privileged", "--network", "none", "--user", "0:0", ...mounts, image, "flock", dir, "sh", "-c", script, "sh", out, `${out}${diskSuffix}`, ...args]);
+  await execute(["docker", "run", "--rm", "--name", name, "--privileged", "--network", "none", "--user", "0:0", ...mounts, image, "flock", dir, "sh", "-c", script, "sh", out, `${out}${diskSuffix}`, ...args]);
 }
 
-export async function createDisk(out: string, image: string): Promise<void> {
+export async function createDisk(out: string, image: string, owner: string): Promise<void> {
   const { uid, gid } = userInfo();
-  await diskHelper(out, image, createDiskScript, [`${uid}:${gid}`, String(outLimit)]);
+  await diskHelper(out, image, owner, createDiskScript, [`${uid}:${gid}`, String(outLimit)]);
   if ((await stat(out)).dev === (await stat(dirname(out))).dev) {
     throw new Error(`The output disk of ${out} is mounted where Docker runs but not where QA Interns runs. Put the state directory on a mount with shared propagation.`);
   }
 }
 
-export async function saveDisk(out: string, image: string): Promise<void> {
-  await diskHelper(out, image, saveDiskScript, []);
+export async function saveDisk(out: string, image: string, owner: string): Promise<void> {
+  await diskHelper(out, image, owner, saveDiskScript, []);
 }
 
 async function diskOuts(dir: string): Promise<string[]> {
   const names = existsSync(dir) ? await readdir(dir) : [];
-  return names.filter((name) => name.endsWith(diskSuffix)).map((name) => join(dir, name.slice(0, -diskSuffix.length)));
+  const suffixes = [diskSuffix, `${diskSuffix}.new`];
+  return [...new Set(names.flatMap((name) => suffixes.filter((suffix) => name.endsWith(suffix)).map((suffix) => join(dir, name.slice(0, -suffix.length)))))];
 }
 
 export async function watchOut(dir: string, signal: AbortSignal): Promise<string> {
@@ -448,24 +450,24 @@ export async function stopEnvironment(runDir: string, name: string, project: str
   await down(project);
   await removeImages([`vsc-${project}-`]);
   await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
-  for (const out of await diskOuts(join(runDir, "interns", name))) await saveDisk(out, image);
+  for (const out of await diskOuts(join(runDir, "interns", name))) await saveDisk(out, image, project);
 }
 
 export async function removeCopies(runDir: string, runId: string, image: string): Promise<void> {
   const envs = join(runDir, "envs");
   const names = existsSync(envs) ? await readdir(envs) : [];
   const paths = names.flatMap((name) => [join(name, projectName(runId, name)), join(name, "tmp")]).filter((path) => existsSync(join(envs, path)));
-  const outs = (await Promise.all(names.map((name) => diskOuts(join(runDir, "interns", name))))).flat();
-  if (paths.length === 0 && outs.length === 0) return;
+  const disks = (await Promise.all(names.map(async (name) => (await diskOuts(join(runDir, "interns", name))).map((out) => ({ out, owner: projectName(runId, name) }))))).flat();
+  if (paths.length === 0 && disks.length === 0) return;
   if ((await capture(["docker", "image", "inspect", image])).code !== 0) {
-    const left = [...paths.map((path) => join(envs, path)), ...outs.map((out) => `${out}${diskSuffix}`)];
+    const left = [...paths.map((path) => join(envs, path)), ...disks.map((disk) => `the output disk of ${disk.out}`)];
     throw new Error(`${runDir} still holds ${left.join(", ")}, which only a container of the runner image can save or remove, and the runner image ${image} does not exist. Build it with qa-interns doctor, then run qa-interns down again.`);
   }
   if (paths.length > 0) await removeAsRoot(envs, image, paths);
   const errors: string[] = [];
-  for (const out of outs) {
+  for (const { out, owner } of disks) {
     try {
-      await saveDisk(out, image);
+      await saveDisk(out, image, owner);
     } catch (error) {
       errors.push(String(error));
     }

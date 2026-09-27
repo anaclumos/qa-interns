@@ -64,14 +64,15 @@ async function checkDisk(image: string): Promise<string> {
   const state = dirname(runsDir());
   await mkdir(state, { recursive: true });
   const dir = await mkdtemp(join(state, "doctor-"));
+  const owner = `qa-interns-doctor-${process.pid}`;
   try {
     const out = join(dir, "out");
     await mkdir(out);
     try {
-      await createDisk(out, image);
+      await createDisk(out, image, owner);
       await Bun.write(join(out, "check.txt"), "saved\n");
     } finally {
-      await saveDisk(out, image);
+      await saveDisk(out, image, owner);
     }
     const saved = await Bun.file(join(out, "check.txt")).text();
     if (saved !== "saved\n") throw new Error(`the saved disk holds ${JSON.stringify(saved)} instead of the file written to it`);
