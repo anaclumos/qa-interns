@@ -70,6 +70,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - `seed`: a shell command, run once in the dev container, that creates test accounts and data and prints them as one JSON document.
 - `focus` (optional): areas the project wants covered, added to the charter deck.
 - `offLimits` (optional): actions interns must not take.
+- `hostEnv` (optional): names of variables the target takes from the environment that runs `qa-interns`. `run` fails when one of them is not set.
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
 
@@ -87,6 +88,8 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 Published ports are allowed; QA Interns removes them.
 
 The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint. The target project owns that guarantee.
+
+Compose and the Dev Container CLI run with the variables that `hostEnv` names and the ones they need to reach Docker: `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS`, `DOCKER_TLS_VERIFY`, and `DOCKER_API_VERSION`. QA Interns removes every other variable of its own environment before it runs them. Compose interpolation, an `environment` entry without a value, `${localEnv:...}` in `devcontainer.json`, and `initializeCommand` read from what remains.
 
 QA Interns runs the target's lifecycle commands, including `initializeCommand`, which runs on the host. Run it only against repositories you trust.
 
