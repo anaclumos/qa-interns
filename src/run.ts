@@ -11,6 +11,7 @@ import {
   startEnvironment,
   stopEnvironment,
   stopRun,
+  watchOut,
   writeChromePolicy,
   type Environment,
   type EnvironmentSpec,
@@ -21,7 +22,7 @@ import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, ju
 import { providers } from "./providers.ts";
 import { renderReport } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
-import { exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
+import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
 import type { Confirmation, Finding, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
@@ -194,6 +195,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
 async function attempt<T>(ctx: Context, id: string, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<{ value: T } | AgentError> {
   const provider = providers[lease.login.provider];
   let session: Session | undefined;
+  const done = new AbortController();
   try {
     session = await openSession({
       container: env.runner,
@@ -204,11 +206,16 @@ async function attempt<T>(ctx: Context, id: string, env: Environment, lease: Lea
     ctx.sessions.add(session);
     checkStopping(ctx);
     await ctx.update(id, { status: "testing", model: session.model });
-    return { value: await work(session, env, lease.login.provider, note) };
+    const out = join(ctx.runDir, "interns", id, "out");
+    const result = await Promise.race([work(session, env, lease.login.provider, note).then((value) => ({ value })), watchOut(out, done.signal)]);
+    if (typeof result !== "string") return result;
+    await execute(["docker", "kill", env.runner]);
+    throw new Error(`${result}, so its runner was stopped`);
   } catch (error) {
     if (error instanceof AgentError && provider.isLoginFailure(error)) return error;
     throw error;
   } finally {
+    done.abort();
     if (session !== undefined) {
       ctx.sessions.delete(session);
       await session.close();

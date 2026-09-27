@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const sessionId = "fake-session-1";
@@ -72,6 +72,15 @@ const listedFindings = (text) => {
 
 const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 
+const credentials = () => JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8"));
+
+const flood = (file, mib) => {
+  const chunk = Buffer.alloc(1024 ** 2, 1);
+  const fd = openSync(file, "w");
+  for (let index = 0; index < mib; index += 1) writeSync(fd, chunk);
+  closeSync(fd);
+};
+
 const endTurn = { result: { stopReason: "end_turn" } };
 
 const charterTurn = async (text) => {
@@ -111,6 +120,10 @@ const charterTurn = async (text) => {
   });
   update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" });
   say("Recorded one finding.");
+  if (credentials().flood === true) {
+    flood("/qa/out/evidence/flood.bin", 1100);
+    return slowTurn();
+  }
   return endTurn;
 };
 
@@ -144,7 +157,7 @@ const prompt = (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  if (JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).limit === true) {
+  if (credentials().limit === true) {
     return { error: { code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } } };
   }
   if (text.includes("/qa/out/groups.json")) return groupsTurn(text);

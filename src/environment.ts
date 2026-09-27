@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { errorCode } from "./findings.ts";
 import { capture, execute, failure, isHttpUrl, type Target } from "./target.ts";
 import type { GeneratedFile, Mount } from "./types.ts";
 
@@ -27,6 +28,8 @@ const minute = 60_000;
 const readyTimeout = 5 * minute;
 const waitTimeoutSeconds = "600";
 const proxyUrl = "http://qa-proxy:3128";
+const outLimit = gib;
+const outCheckMs = 1000;
 
 type Cidr = { address: number; bits: number };
 
@@ -317,6 +320,38 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
     throw new Error(`The seed command ${target.settings.seed} did not print one JSON document (${String(error)}); it printed: ${output.slice(0, 500)}`);
   }
   return { project, runner, devContainer, seed };
+}
+
+function vanished<T>(value: T): (error: unknown) => T {
+  return (error) => {
+    const code = errorCode(error);
+    if (code === "ENOENT" || code === "ENOTDIR") return value;
+    throw error;
+  };
+}
+
+async function overLimit(dir: string): Promise<boolean> {
+  let total = 0;
+  const dirs = [dir];
+  for (let next = dirs.pop(); next !== undefined; next = dirs.pop()) {
+    for (const name of await readdir(next).catch(vanished([]))) {
+      const path = join(next, name);
+      const stats = await lstat(path).catch(vanished(null));
+      if (stats === null) continue;
+      total += stats.blocks * 512;
+      if (total > outLimit) return true;
+      if (stats.isDirectory()) dirs.push(path);
+    }
+  }
+  return false;
+}
+
+export async function watchOut(dir: string, signal: AbortSignal): Promise<string> {
+  for (;;) {
+    await Bun.sleep(outCheckMs);
+    signal.throwIfAborted();
+    if (await overLimit(dir)) return `${dir} holds more than ${outLimit / gib} GiB`;
+  }
 }
 
 async function down(project: string): Promise<void> {

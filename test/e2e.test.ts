@@ -19,12 +19,12 @@ const timeout = 20 * 60_000;
 const title = "Home page shows the fake defect";
 let built = false;
 
-async function logins(name: string, entries: { id: string; limit: boolean }[]): Promise<string> {
+async function logins(name: string, entries: { id: string; limit: boolean; flood?: boolean }[]): Promise<string> {
   const list = [];
   for (const entry of entries) {
     const store = join(root, "stores", name, entry.id);
     await mkdir(store, { recursive: true });
-    await Bun.write(join(store, ".credentials.json"), JSON.stringify({ limit: entry.limit }));
+    await Bun.write(join(store, ".credentials.json"), JSON.stringify({ limit: entry.limit, flood: entry.flood === true }));
     list.push({ id: entry.id, provider: "claude", store });
   }
   const file = join(root, `${name}-logins.json`);
@@ -193,6 +193,41 @@ USER qa
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups).toHaveLength(1);
       expect(report.groups[0]).toMatchObject({ confirmed: true, reproductions: ["i1", "c1"] });
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an intern whose /qa/out passes 1 GiB is stopped and keeps the findings it wrote",
+    async () => {
+      const lines: string[] = [];
+      const run = runQa({
+        dir: target,
+        rev: "HEAD",
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("flood", [{ id: "claude-flood", limit: false, flood: true }]),
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      await expect(run).rejects.toThrow("No testing intern completed");
+      const runDir = lines[0];
+      if (runDir === undefined) throw new Error("runQa printed no run directory");
+      const state = await readState(runDir);
+      expect(state.phase).toBe("failed");
+      expect(intern(state, "i1")).toMatchObject({
+        status: "failed",
+        findings: 1,
+        detail: `${join(runDir, "interns", "i1", "out")} holds more than 1 GiB, so its runner was stopped`,
+      });
+
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.groups.map((group: { findings: { id: string }[] }) => group.findings.map((finding) => finding.id))).toEqual([["i1/fake-home"]]);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);

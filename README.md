@@ -142,6 +142,7 @@ A finding is confirmed when two or more interns reproduced it.
 
 - Every environment is its own Compose project with three networks in its own `/23` block of `10.213.0.0/16`. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. Only the proxy joins the third network, which reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
 - The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential file it was given, and that write reaches the store on the host.
+- `/qa/out` is the intern's `interns/<id>/out` directory on the host. While the agent runs, the orchestrator checks that directory once a second and stops the runner when it holds more than 1 GiB. The intern then ends as failed, and the findings it wrote stay in the report.
 - The runner reaches the internet only through a proxy container that allows HTTPS to the model provider hosts and nothing else.
 - Target services have no internet access and cannot reach the proxy. Lifecycle commands that run in a target container, and application code, fail when they need the network.
 - Every agent session starts with no MCP servers. Claude and Codex have their MCP sources blocked in `src/providers.ts`. A Cursor runner has no MCP source, because its home directory is an empty tmpfs and the Cursor store holds credentials only.
@@ -153,6 +154,7 @@ A finding is confirmed when two or more interns reproduced it.
 - The runner image is x86-64 only.
 - Two runs started at the same moment can pick the same subnet; the second fails to start that environment.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
+- The 1 GiB limit of `/qa/out` is checked once a second, so an intern can write past it for up to a second before its runner stops.
 
 ## Evaluation target
 
