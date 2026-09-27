@@ -227,7 +227,7 @@ USER qa
         expect(await ask(await askOptions(runId, "score"))).toEqual({ groups: [] });
         expect((await capture(["docker", "network", "inspect", other])).code).toBe(0);
       } finally {
-        await execute(["docker", "network", "rm", other]);
+        if ((await capture(["docker", "network", "inspect", other])).code === 0) await execute(["docker", "network", "rm", other]);
       }
       expect(await leftovers(runId)).toEqual([]);
     },
