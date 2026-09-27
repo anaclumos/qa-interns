@@ -182,7 +182,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"], { env });
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
-  const enabled = (await execute(["docker", "compose", "-p", checkProject, ...files, "config", "--services"])).split("\n").filter((name) => name !== "");
+  const enabled = (await execute(["docker", "compose", "-p", checkProject, ...files, "config", "--services"], { env })).split("\n").filter((name) => name !== "");
 
   const started = [service, ...(runServices ?? enabled)];
   const starts = new Set<string>();
