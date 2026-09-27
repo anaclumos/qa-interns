@@ -35,11 +35,9 @@ function parse(data) {
 const server = createServer((socket) => {
   let data = Buffer.alloc(0);
   let upstream = null;
-  socket.setTimeout(10_000, () => {
-    socket.destroy();
-    upstream?.destroy();
-  });
-  socket.on("error", () => upstream?.destroy());
+  socket.setTimeout(10_000, () => socket.destroy());
+  socket.on("error", () => socket.destroy());
+  socket.on("close", () => upstream?.destroy());
   const read = (chunk) => {
     data = Buffer.concat([data, chunk]);
     if (data[0] === 22 && (data.length < 5 || data.length < 5 + data.readUInt16BE(3))) return;
