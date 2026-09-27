@@ -72,7 +72,7 @@ const listedFindings = (text) => {
 
 const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 
-const credentials = () => JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8"));
+const login = () => JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8"));
 
 const fill = (file, mib) => {
   const chunk = Buffer.alloc(1024 ** 2, 1);
@@ -125,7 +125,7 @@ const charterTurn = async (text) => {
   });
   update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" });
   say("Recorded one finding.");
-  if (credentials().flood === true) {
+  if (login().flood === true) {
     fill("/qa/out/evidence/big.bin", 1100);
     fill("/qa/out/evidence/more.bin", 16);
     return slowTurn();
@@ -144,7 +144,13 @@ const groupsTurn = (text) => {
 };
 
 const confirmationTurn = () => {
-  writeJson("/qa/out/confirmation.json", { reproduced: true, observed: "fake reproduction", evidence: [] });
+  if (login().confirms === false) {
+    say("The confirmation did not finish.");
+    return endTurn;
+  }
+  mkdirSync("/qa/out/evidence", { recursive: true });
+  writeFileSync("/qa/out/evidence/reproduction.txt", "fake reproduction\n");
+  writeJson("/qa/out/confirmation.json", { reproduced: true, observed: "fake reproduction", evidence: ["evidence/reproduction.txt"] });
   say("Wrote the confirmation.");
   return endTurn;
 };
@@ -158,17 +164,24 @@ const slowTurn = async () => {
   return { result: { stopReason: "cancelled" } };
 };
 
-const prompt = (params) => {
+const limited = { error: { code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } } };
+
+const prompt = async (params) => {
   const text = params.prompt
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  if (credentials().limit === true) {
-    return { error: { code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } } };
-  }
+  const { limit } = login();
+  if (limit === true) return limited;
   if (text.includes("/qa/out/groups.json")) return groupsTurn(text);
-  if (text.includes("/qa/out/confirmation.json")) return confirmationTurn();
-  if (text.includes("Charter:")) return charterTurn(text);
+  if (text.includes("/qa/out/confirmation.json")) {
+    const result = confirmationTurn();
+    return limit === "confirmation" ? limited : result;
+  }
+  if (text.includes("Charter:")) {
+    const result = await charterTurn(text);
+    return limit === "charter" ? limited : result;
+  }
   if (text.includes("SLOW")) return slowTurn();
   say("Nothing more to test.");
   return endTurn;
@@ -180,6 +193,7 @@ const handlers = {
   }),
   "session/new": (params) => {
     writeJson("/qa/out/fake-agent-session.json", { mcpServers: params.mcpServers, _meta: params._meta ?? null });
+    const model = login().model ?? "fake-model-1";
     return {
       result: {
         sessionId,
@@ -189,8 +203,8 @@ const handlers = {
             name: "Model",
             category: "model",
             type: "select",
-            currentValue: "fake-model-1",
-            options: [{ value: "fake-model-1", name: "Fake model 1" }],
+            currentValue: model,
+            options: [{ value: model, name: model }],
           },
         ],
       },

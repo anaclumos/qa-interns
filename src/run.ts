@@ -16,14 +16,14 @@ import {
   type Environment,
   type EnvironmentSpec,
 } from "./environment.ts";
-import { parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
+import { outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
 import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
 import { renderReport } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
-import type { Confirmation, Finding, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
+import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
   dir: string;
@@ -50,7 +50,7 @@ export type AskOptions = {
 type Turn = Awaited<ReturnType<Session["prompt"]>>;
 type Limit = <T>(task: () => Promise<T>) => Promise<T>;
 type Note = (text: string) => Promise<void>;
-type Work<T> = (session: Session, env: Environment, provider: Provider, note: Note) => Promise<T>;
+type Work<T> = (session: Session, attempt: number, env: Environment, provider: Provider, note: Note) => Promise<T>;
 type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "failed"; error: unknown };
 
 type Context = {
@@ -171,7 +171,7 @@ async function acquire(ctx: Context, id: string, avoid: Provider[]): Promise<Lea
   }
 }
 
-function environmentSpec(ctx: Context, name: string, slot: number, target: Target | null, lease: Lease): EnvironmentSpec {
+function environmentSpec(ctx: Context, name: string, slot: number, target: Target | null, lease: Lease, attempt: number): EnvironmentSpec {
   const provider = providers[lease.login.provider];
   return {
     runId: ctx.runId,
@@ -182,7 +182,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
     images: target === null ? {} : ctx.images,
     runner: {
       image: ctx.runnerImage,
-      out: join(ctx.runDir, "interns", name, "out"),
+      out: join(ctx.runDir, outDir(name, attempt)),
       env: { ...runnerEnv(target === null ? {} : target.settings.urls), ...provider.env },
       mounts: provider.mounts(lease.store),
       files: provider.files,
@@ -192,7 +192,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
   };
 }
 
-async function attempt<T>(ctx: Context, id: string, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<{ value: T } | AgentError> {
+async function attempt<T>(ctx: Context, id: string, count: number, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<{ value: T } | AgentError> {
   const provider = providers[lease.login.provider];
   let session: Session | undefined;
   const done = new AbortController();
@@ -210,7 +210,7 @@ async function attempt<T>(ctx: Context, id: string, env: Environment, lease: Lea
     const live: Note = async (text) => {
       if (!stopped) await note(text);
     };
-    const result = await Promise.race([work(session, env, lease.login.provider, live).then((value) => ({ value })), watchOut(env.out, done.signal)]);
+    const result = await Promise.race([work(session, count, env, lease.login.provider, live).then((value) => ({ value })), watchOut(env.out, done.signal)]);
     if (typeof result !== "string") return result;
     stopped = true;
     await execute(["docker", "kill", env.runner]);
@@ -237,14 +237,14 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
   try {
     await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, project, startedAt: now() });
     slot = await freeSlot(ctx.reserved);
-    for (;;) {
-      const spec = environmentSpec(ctx, id, slot, target, lease);
+    for (let count = 1; ; count += 1) {
+      const spec = environmentSpec(ctx, id, slot, target, lease, count);
       const env = await ctx.startups(async () => {
         checkStopping(ctx);
         started = true;
         return startEnvironment(spec);
       });
-      const outcome = await attempt(ctx, id, env, lease, work, note);
+      const outcome = await attempt(ctx, id, count, env, lease, work, note);
       if (!(outcome instanceof AgentError)) return outcome;
       ctx.scheduler.exhaust(lease);
       await teardown();
@@ -328,8 +328,8 @@ function promptEnvironment(target: Target, env: Environment, minutes: number): P
 }
 
 async function askWith<T>(ctx: Context, id: string, prompt: string, file: string, parse: (raw: string) => T): Promise<T> {
-  const outcome = await agentTask(ctx, id, null, [], async (session) => {
-    const path = join(ctx.runDir, "interns", id, "out", file);
+  const outcome = await agentTask(ctx, id, null, [], async (session, attempt) => {
+    const path = join(ctx.runDir, outDir(id, attempt), file);
     await rm(path, { force: true });
     let parsed = null as { value: T } | null;
     let corrected = false;
@@ -359,8 +359,10 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
 }
 
 async function explore(ctx: Context, intern: InternState, target: Target, minutes: number): Promise<{ outcome: Outcome<void>; findings: Finding[]; rejected: Rejected[] }> {
-  const outcome = await agentTask(ctx, intern.id, target, [], async (session, env, provider, note) => {
+  const attempts: { attempt: number; environment: FindingEnvironment }[] = [];
+  const outcome = await agentTask(ctx, intern.id, target, [], async (session, attempt, env, provider, note) => {
     const environment = { commit: target.commit, environment: env.project, provider, model: session.model };
+    attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
     await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes)), deadline, async (turn, idle) => {
@@ -368,15 +370,15 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
         await note(`stopped at minute ${Math.floor((Date.now() - start) / minute)}: "${turn.lastMessage.slice(0, 300)}"`);
         return null;
       }
-      const { rejected } = await readFindings(ctx.runDir, intern.id, environment);
-      return continuePrompt(minutesLeft(deadline), rejected);
+      const { rejected } = await readFindings(ctx.runDir, intern.id, attempt, environment);
+      return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id, attempt));
     });
   });
-  if (intern.provider === null || intern.project === null) return { outcome, findings: [], rejected: [] };
-  const environment = { commit: target.commit, environment: intern.project, provider: intern.provider, model: intern.model };
-  const result = await readFindings(ctx.runDir, intern.id, environment);
-  await ctx.update(intern.id, { findings: result.findings.length, rejected: result.rejected.length });
-  return { outcome, ...result };
+  const results = await Promise.all(attempts.map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
+  const findings = results.flatMap((result) => result.findings);
+  const rejected = results.flatMap((result) => result.rejected);
+  await ctx.update(intern.id, { findings: findings.length, rejected: rejected.length });
+  return { outcome, findings, rejected };
 }
 
 function lead(group: Group): Finding {
@@ -388,31 +390,40 @@ function lead(group: Group): Finding {
 async function reproduce(ctx: Context, intern: InternState, group: Group, target: Target, minutes: number): Promise<void> {
   const finding = lead(group);
   const avoid = [...new Set(group.findings.map((entry) => entry.environment.provider))];
-  const file = join(ctx.runDir, "interns", intern.id, "out", "confirmation.json");
-  const check = async (): Promise<{ result: Confirmation | null; error: string | null }> => {
+  const check = async (attempt: number): Promise<{ result: Confirmation | null; error: string | null }> => {
     try {
-      return { result: await readConfirmation(ctx.runDir, intern.id), error: null };
+      return { result: await readConfirmation(ctx.runDir, intern.id, attempt), error: null };
     } catch (error) {
       return { result: null, error: message(error) };
     }
   };
-  const outcome = await agentTask(ctx, intern.id, target, avoid, async (session, env, _provider, note) => {
+  const attempts: { attempt: number; provider: Provider }[] = [];
+  const outcome = await agentTask(ctx, intern.id, target, avoid, async (session, attempt, env, provider, note) => {
+    attempts.push({ attempt, provider });
+    const out = outDir(intern.id, attempt);
+    const file = join(ctx.runDir, out, "confirmation.json");
     const deadline = Date.now() + minutes * minute;
     let answer: { result: Confirmation | null; error: string | null } = { result: null, error: "no confirmation.json written" };
     let corrected = false;
     await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
-      if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), []);
-      answer = await check();
+      if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
+      answer = await check(attempt);
       if (answer.error === null || corrected) return null;
       corrected = true;
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
-    if (answer.result === null && (await Bun.file(file).exists())) answer = await check();
+    if (answer.result === null && (await Bun.file(file).exists())) answer = await check(attempt);
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : answer.result.reproduced ? "reproduced" : "did not reproduce");
     return answer;
   });
   const answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };
-  group.confirmation = { intern: intern.id, provider: intern.provider, ...answer };
+  let confirmation = { intern: intern.id, provider: intern.provider, ...answer };
+  for (const entry of attempts.toReversed()) {
+    if (confirmation.result !== null) break;
+    const earlier = await check(entry.attempt);
+    if (earlier.result !== null) confirmation = { intern: intern.id, provider: entry.provider, ...earlier };
+  }
+  group.confirmation = confirmation;
 }
 
 function internState(id: string, role: InternState["role"], charter: string, group: string | null): InternState {
