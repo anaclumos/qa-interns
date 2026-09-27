@@ -130,6 +130,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       ],
       offLimits: ["Do not change the password of a seeded account."],
       hostEnv: [],
+      egress: [],
     });
     expect(target.composeFiles).toEqual(["compose.yml"]);
     expect(target.service).toBe("web");
@@ -335,6 +336,8 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       "  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"qa-proxy\"]\n",
       "service web declares network alias qa-proxy, a name QA Interns reserves",
     ],
+    ["a service named qa-relay", "  web:\n    image: nginx:1.29-alpine\n  qa-relay:\n    image: nginx:1.29-alpine\n", "service qa-relay uses a name QA Interns reserves"],
+    ["a service named QA-Proxy", "  web:\n    image: nginx:1.29-alpine\n  QA-Proxy:\n    image: nginx:1.29-alpine\n", "service QA-Proxy uses a name QA Interns reserves"],
     [
       "a network alias two services declare",
       "  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"shop\"]\n  api:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"shop\"]\n",
@@ -608,7 +611,25 @@ services:
       focus: [],
       offLimits: [],
       hostEnv: [],
+      egress: [],
     });
+  });
+
+  test("reject an egress host that is the name or a network alias of a service", async () => {
+    const compose = 'services:\n  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: ["shop.example.test"]\n  api.example.test:\n    image: nginx:1.29-alpine\n';
+    const qa = { ...settings, egress: ["shop.example.test", "api.example.test", "api.pwnedpasswords.com"] };
+    const error = await load(await fixture(compose, devcontainer({}, qa))).catch((reason: unknown) => reason);
+    if (!(error instanceof Error)) throw new Error("loadTarget accepted an egress host that names a service");
+    expect(error.message.split("\n").filter((line) => line.startsWith("- "))).toEqual([
+      "- egress host shop.example.test is the name or a network alias of a service",
+      "- egress host api.example.test is the name or a network alias of a service",
+    ]);
+  });
+
+  test("accept egress host names", async () => {
+    const qa = { ...settings, egress: ["api.pwnedpasswords.com", "ai-gateway.vercel.sh", "xn--bcher-kva.example"] };
+    const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n", devcontainer({}, qa)));
+    expect(target.settings.egress).toEqual(["api.pwnedpasswords.com", "ai-gateway.vercel.sh", "xn--bcher-kva.example"]);
   });
 
   const invalid: [string, Record<string, unknown>, string][] = [
@@ -617,6 +638,18 @@ services:
     ["a missing seed", { urls: settings.urls, ready: settings.ready }, "seed"],
     ["a misspelled key", { ...settings, offlimits: ["Do not delete teams."] }, "offlimits"],
     ["a hostEnv name the host does not set", { ...settings, hostEnv: ["QA_INTERNS_TEST_UNSET"] }, "hostEnv names QA_INTERNS_TEST_UNSET, which the environment of qa-interns does not set"],
+    ["a wildcard egress host", { ...settings, egress: ["*.vercel.sh"] }, "must be a lowercase host name"],
+    ["an egress IP address", { ...settings, egress: ["203.0.113.7"] }, "must be a lowercase host name"],
+    ["an egress IP address in short form", { ...settings, egress: ["169.16689662"] }, "must be a lowercase host name"],
+    ["an egress IP address in hexadecimal", { ...settings, egress: ["0x7f.1"] }, "must be a lowercase host name"],
+    ["an egress URL", { ...settings, egress: ["https://api.pwnedpasswords.com"] }, "must be a lowercase host name"],
+    ["an uppercase egress host", { ...settings, egress: ["API.pwnedpasswords.com"] }, "must be a lowercase host name"],
+    ["a single-label egress host", { ...settings, egress: ["localhost"] }, "must be a lowercase host name"],
+    ["an egress host with a trailing dot", { ...settings, egress: ["api.pwnedpasswords.com."] }, "must be a lowercase host name"],
+    ["an egress label that starts with a hyphen", { ...settings, egress: ["-api.pwnedpasswords.com"] }, "must be a lowercase host name"],
+    ["an egress label that ends with a hyphen", { ...settings, egress: ["api-.pwnedpasswords.com"] }, "must be a lowercase host name"],
+    ["an egress label longer than 63 characters", { ...settings, egress: [`${"a".repeat(64)}.example.com`] }, "must be a lowercase host name"],
+    ["an egress host longer than 253 characters", { ...settings, egress: [`${"a".repeat(63)}.`.repeat(4) + "com"] }, "must be a lowercase host name"],
   ];
 
   test.each(invalid)("reject settings with %s", async (_, qa, message) => {
