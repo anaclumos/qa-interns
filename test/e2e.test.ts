@@ -140,6 +140,10 @@ USER qa
         ["c1", "confirm", "done", 0, "fake-model-1"],
       ]);
       expect(intern(state, "i1").detail).toBe('stopped at minute 0: "Nothing more to test."');
+      expect([intern(state, "i1").charter, intern(state, "i2").charter]).toEqual([
+        "Project focus: How invoices calculate, store, and show money across currencies, lists, and exports.",
+        "Project focus: What owners, editors, and viewers can see and change, in the pages and in the API.",
+      ]);
       expect(["i1", "i2"].map((internId) => intern(state, internId).provider).sort()).toEqual(["cursor", "grok"]);
       expect(intern(state, "judge").provider).toBe("grok");
 
