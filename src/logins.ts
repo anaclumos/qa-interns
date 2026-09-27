@@ -1,8 +1,10 @@
 import type { Subprocess } from "bun";
-import { realpathSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, mkdirSync, openSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { stateDir } from "./state.ts";
 import { track } from "./target.ts";
 import type { Login, Provider } from "./types.ts";
 
@@ -30,6 +32,40 @@ function rawId(value: unknown): string | null {
   return typeof value === "object" && value !== null && "id" in value && typeof value.id === "string" ? value.id : null;
 }
 
+type Store = { store: string; credential: string | null };
+
+type Held = Store & { where: string };
+
+function credentialName(provider: Provider): string {
+  return provider === "claude" ? ".credentials.json" : "auth.json";
+}
+
+function resolveStore(provider: Provider, store: string): Store {
+  const credential = join(store, credentialName(provider));
+  return { store: realpathSync(store), credential: statSync(credential, { throwIfNoEntry: false })?.isFile() === true ? realpathSync(credential) : null };
+}
+
+function storeProblems(provider: Provider, path: string, found: Store, known: Held[]): string[] {
+  const problems: string[] = [];
+  if (found.store === "/") problems.push(`store ${path} is the root of the file system`);
+  let same = false;
+  for (const other of known) {
+    if (other.store === found.store) {
+      same = true;
+      problems.push(`duplicate store ${path}, already used by ${other.where}; one store serves one process at a time`);
+    } else if (found.store.startsWith(`${other.store}/`) || other.store.startsWith(`${found.store}/`)) {
+      problems.push(`store ${path} contains or is inside the store of ${other.where}; a runner mounting one could read or change the other`);
+    }
+  }
+  const name = credentialName(provider);
+  if (found.credential === null) problems.push(`${provider} store ${path} has no ${name}`);
+  else if (!same) {
+    const first = known.find((other) => other.credential === found.credential);
+    if (first !== undefined) problems.push(`${join(path, name)} is the same file as the credential of ${first.where}; one credential serves one process at a time`);
+  }
+  return problems;
+}
+
 export async function loadLogins(file: string): Promise<Login[]> {
   const handle = Bun.file(file);
   if (!(await handle.exists())) throw new Error(`No logins file at ${file}. Create it with this shape: ${example}`);
@@ -46,8 +82,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
   const problems: string[] = [];
   const logins: Login[] = [];
   const firstIndex = new Map<string, number>();
-  const storeIndex = new Map<string, number>();
-  const credentialIndex = new Map<string, number>();
+  const known: Held[] = [];
   for (const [index, value] of top.data.logins.entries()) {
     const id = rawId(value);
     const where = id === null ? `logins[${index}]` : `logins[${index}] "${id}"`;
@@ -65,28 +100,10 @@ export async function loadLogins(file: string): Promise<Login[]> {
     }
     const entry = parsed.data;
     if ((entry.store === undefined) === (entry.seat === undefined)) problems.push(`${where}: set exactly one of "store" or "seat"`);
-    const sameStore = entry.store !== undefined && storeIndex.has(realpathSync(entry.store));
     if (entry.store !== undefined) {
-      const store = realpathSync(entry.store);
-      if (store === "/") problems.push(`${where}: store ${entry.store} is the root of the file system`);
-      for (const [other, first] of storeIndex) {
-        if (other === store) problems.push(`${where}: duplicate store ${entry.store}, already used by logins[${first}]; one store serves one process at a time`);
-        else if (store.startsWith(`${other}/`) || other.startsWith(`${store}/`)) {
-          problems.push(`${where}: store ${entry.store} contains or is inside the store of logins[${first}]; a runner mounting one could read or change the other`);
-        }
-      }
-      if (!storeIndex.has(store)) storeIndex.set(store, index);
-    }
-    if (entry.store !== undefined) {
-      const name = entry.provider === "claude" ? ".credentials.json" : "auth.json";
-      const credential = join(entry.store, name);
-      if (statSync(credential, { throwIfNoEntry: false })?.isFile() !== true) problems.push(`${where}: ${entry.provider} store ${entry.store} has no ${name}`);
-      else if (!sameStore) {
-        const real = realpathSync(credential);
-        const first = credentialIndex.get(real);
-        if (first === undefined) credentialIndex.set(real, index);
-        else problems.push(`${where}: ${credential} is the same file as the credential of logins[${first}]; one credential serves one process at a time`);
-      }
+      const found = resolveStore(entry.provider, entry.store);
+      for (const problem of storeProblems(entry.provider, entry.store, found, known)) problems.push(`${where}: ${problem}`);
+      if (!known.some((other) => other.store === found.store)) known.push({ ...found, where: `logins[${index}]` });
     }
     if (entry.provider === "codex" && entry.store !== undefined) {
       if (entry.concurrency !== 1) {
@@ -105,31 +122,42 @@ export type Lease = { login: Login; store: string; release(): void };
 
 type Slot = { login: Login; active: number; exhausted: boolean };
 
-type Seat = { store: string; keeper: Subprocess | null };
+const lockHeld = 75;
 
-async function seat(login: Login, intern: string): Promise<Seat | null> {
-  if (login.store !== null) return { store: realpathSync(login.store), keeper: null };
-  if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
-  const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
-  try {
-    const child = track(Bun.spawn(login.seat, {
-      env: { ...process.env, QA_INTERNS_LEASE_PID: String(keeper.pid), QA_INTERNS_INTERN: intern },
-      stdout: "pipe",
-      stderr: "inherit",
-      timeout: 60_000,
-    }));
-    const [stdout, exitCode] = await Promise.all([child.stdout.text(), child.exited]);
-    const store = stdout
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line !== "")
-      .at(-1);
-    if (exitCode === 0 && store !== undefined && isAbsolute(store) && isDirectory(store)) return { store: realpathSync(store), keeper };
-  } catch (error) {
-    keeper.kill();
-    throw error;
+async function seatStore(command: string[], leasePid: number, intern: string): Promise<string | null> {
+  const child = track(Bun.spawn(command, {
+    env: { ...process.env, QA_INTERNS_LEASE_PID: String(leasePid), QA_INTERNS_INTERN: intern },
+    stdout: "pipe",
+    stderr: "inherit",
+    timeout: 60_000,
+  }));
+  const [stdout, exitCode] = await Promise.all([child.stdout.text(), child.exited]);
+  const store = stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .at(-1);
+  return exitCode === 0 && store !== undefined && isAbsolute(store) && isDirectory(store) ? store : null;
+}
+
+function lock(credential: string, slots: number): (() => void) | null {
+  const dir = join(stateDir(), "locks");
+  mkdirSync(dir, { recursive: true });
+  const key = createHash("sha256").update(credential).digest("hex");
+  for (let slot = 0; slot < slots; slot++) {
+    const file = join(dir, `${key}-${slot}.lock`);
+    const fd = openSync(file, "a", 0o600);
+    let code: number;
+    try {
+      code = Bun.spawnSync(["flock", "--nonblock", "--conflict-exit-code", String(lockHeld), "3"], { stdio: ["ignore", "ignore", "inherit", fd] }).exitCode;
+    } catch (error) {
+      closeSync(fd);
+      throw error;
+    }
+    if (code === 0) return () => closeSync(fd);
+    closeSync(fd);
+    if (code !== lockHeld) throw new Error(`flock on ${file} exited with ${code}`);
   }
-  keeper.kill();
   return null;
 }
 
@@ -137,7 +165,7 @@ export class Scheduler {
   private readonly slots: Slot[];
   private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0 };
   private readonly exhaustedStores = new Set<string>();
-  private readonly live = new Set<{ login: Login; store: string }>();
+  private readonly live = new Set<Held>();
 
   constructor(logins: Login[]) {
     this.slots = logins.map((login) => ({ login, active: 0, exhausted: false }));
@@ -158,33 +186,13 @@ export class Scheduler {
       if (slot === undefined) return null;
       tried.add(slot);
       slot.active += 1;
-      let granted: Seat | null = null;
+      let lease: Lease | null = null;
       try {
-        granted = await seat(slot.login, intern);
-        if (granted !== null && (this.exhaustedStores.has(granted.store) || this.held(slot.login, granted.store))) {
-          granted.keeper?.kill();
-          granted = null;
-        }
+        lease = await this.lease(slot, intern);
       } finally {
-        if (granted === null) slot.active -= 1;
+        if (lease === null) slot.active -= 1;
       }
-      if (granted === null) continue;
-      this.used[slot.login.provider] += 1;
-      let released = false;
-      const keeper = granted.keeper;
-      const entry = { login: slot.login, store: granted.store };
-      this.live.add(entry);
-      return {
-        login: slot.login,
-        store: granted.store,
-        release: () => {
-          if (released) return;
-          released = true;
-          slot.active -= 1;
-          this.live.delete(entry);
-          keeper?.kill();
-        },
-      };
+      if (lease !== null) return lease;
     }
   }
 
@@ -195,9 +203,54 @@ export class Scheduler {
     else slot.exhausted = true;
   }
 
-  private held(login: Login, store: string): boolean {
-    const nested = (a: string, b: string) => a === "/" || b === "/" || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
-    return [...this.live].some((lease) => (lease.store === store ? lease.login !== login || login.store === null : nested(lease.store, store)));
+  private async lease(slot: Slot, intern: string): Promise<Lease | null> {
+    const { login } = slot;
+    if (login.store !== null) {
+      const found = resolveStore(login.provider, login.store);
+      if (found.credential === null) throw new Error(`${login.provider} store ${login.store} has no ${credentialName(login.provider)}`);
+      return this.grant(slot, found.store, found.credential, login.concurrency, null);
+    }
+    if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
+    const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
+    let lease: Lease | null = null;
+    try {
+      const path = await seatStore(login.seat, keeper.pid, intern);
+      if (path !== null) {
+        const found = resolveStore(login.provider, path);
+        const known = [...this.configured(), ...this.live];
+        if (found.credential !== null && !this.exhaustedStores.has(found.store) && storeProblems(login.provider, path, found, known).length === 0) {
+          lease = this.grant(slot, found.store, found.credential, 1, keeper);
+        }
+      }
+    } finally {
+      if (lease === null) keeper.kill();
+    }
+    return lease;
+  }
+
+  private grant(slot: Slot, store: string, credential: string, slots: number, keeper: Subprocess | null): Lease | null {
+    const unlock = lock(credential, slots);
+    if (unlock === null) return null;
+    this.used[slot.login.provider] += 1;
+    const entry = { store, credential, where: `login ${slot.login.id}` };
+    this.live.add(entry);
+    let released = false;
+    return {
+      login: slot.login,
+      store,
+      release: () => {
+        if (released) return;
+        released = true;
+        slot.active -= 1;
+        this.live.delete(entry);
+        keeper?.kill();
+        unlock();
+      },
+    };
+  }
+
+  private configured(): Held[] {
+    return this.slots.flatMap(({ login }) => (login.store === null ? [] : [{ ...resolveStore(login.provider, login.store), where: `login ${login.id}` }]));
   }
 
   private next(avoid: Provider[], tried: Set<Slot>): Slot | undefined {

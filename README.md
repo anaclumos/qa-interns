@@ -8,7 +8,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 
 - Linux on x86-64. Chrome for Testing has no Linux ARM64 build.
 - Docker Engine with Compose v2 and the `isolated` bridge gateway mode. `qa-interns doctor` checks both.
-- Bun 1.4 or later, and Git.
+- Bun 1.4 or later, Git, and `flock` from util-linux.
 - At least one agent login: Claude Code, Codex, or Cursor (see [Logins](#logins)).
 - Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, and each service's `mem_limit` (1 GiB when the service sets none).
 
@@ -113,7 +113,8 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 | `cursor` | A Cursor credential directory with `auth.json`, mounted whole as `$XDG_CONFIG_HOME/cursor`. Use a directory that only QA Interns uses. | `XDG_CONFIG_HOME=<parent of store> agent login`, with the store named `cursor` |
 
 - Each running intern holds one lease on one login. A Codex store has `concurrency` 1, because OpenAI states that one `auth.json` copy serves one machine or one serialized job stream ([Codex CI/CD auth](https://learn.chatgpt.com/docs/auth/ci-cd-auth)).
-- A seat command is an external program that hands out a store for one intern. It runs with `QA_INTERNS_INTERN` and `QA_INTERNS_LEASE_PID` in its environment and prints an absolute store path as its last line. `QA_INTERNS_LEASE_PID` is a process that lives exactly as long as the intern holds the store, and ends when the orchestrator ends, so a pool manager can hold the store until that process exits. A nonzero exit means the seat command has no store now.
+- A lease locks the real path of its login's credential file until the lease ends. The locks live in `~/.local/state/qa-interns/locks/` (`$XDG_STATE_HOME` when set). Runs that share that directory hold, all together, no more leases on one credential than the highest `concurrency` any of them sets for it.
+- A seat command is an external program that hands out a store for one intern. It runs with `QA_INTERNS_INTERN` and `QA_INTERNS_LEASE_PID` in its environment and prints an absolute store path as its last line. `QA_INTERNS_LEASE_PID` is a process that lives exactly as long as the intern holds the store, and ends when the orchestrator ends, so a pool manager can hold the store until that process exits. A nonzero exit means the seat command has no store now. The printed store is checked like a configured store, against every configured store and every store an intern holds, and a store that fails a check counts as no store.
 - When an agent reports a usage limit or a failed login, the intern moves to another login with spare capacity and restarts its charter. Claude reports a usage limit as JSON-RPC error `-32603` with `data.errorKind` `rate_limit` or `billing_error`, and Codex as `-32603` with `data.codexErrorInfo` `usageLimitExceeded`. Cursor ends the turn with a chat message instead of an error, so a Cursor intern at its limit stops early and the report quotes its last message.
 
 ## What a run does
@@ -153,6 +154,7 @@ A finding is confirmed when two or more interns reproduced it.
 - The runner image is x86-64 only.
 - Two runs started at the same moment can pick the same subnet; the second fails to start that environment.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
+- An intern waits for a login only while its own run holds a lease. When other runs hold every login it could use, the intern ends as `limited`.
 
 ## Evaluation target
 

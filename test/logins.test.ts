@@ -11,9 +11,11 @@ let codexStore: string;
 let cursorStore: string;
 let emptyStore: string;
 let pool: string;
+const previousStateHome = process.env.XDG_STATE_HOME;
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "qa-interns-logins-"));
+  process.env.XDG_STATE_HOME = join(dir, "state");
   claudeStore = join(dir, "stores", "claude-1");
   codexStore = join(dir, "stores", "codex-1");
   cursorStore = join(dir, "stores", "cursor-1");
@@ -21,6 +23,7 @@ beforeAll(async () => {
   pool = join(dir, "pool");
   for (const store of [claudeStore, join(dir, "stores", "claude-2"), codexStore, cursorStore, emptyStore, pool]) await mkdir(store, { recursive: true });
   await Bun.write(join(claudeStore, ".credentials.json"), "{}");
+  await Bun.write(join(dir, "stores", "claude-2", ".credentials.json"), "{}");
   await Bun.write(join(codexStore, "auth.json"), "{}");
   await Bun.write(join(cursorStore, "auth.json"), "{}");
   await Bun.write(
@@ -29,6 +32,7 @@ beforeAll(async () => {
       "#!/bin/sh",
       "printf '%s\\n' \"$QA_INTERNS_LEASE_PID\" > \"$(dirname \"$0\")/seat-$QA_INTERNS_INTERN.pid\"",
       "mkdir -p \"$(dirname \"$0\")/pool/$QA_INTERNS_INTERN\"",
+      "echo '{}' > \"$(dirname \"$0\")/pool/$QA_INTERNS_INTERN/auth.json\"",
       "echo \"leasing a seat for $QA_INTERNS_INTERN\"",
       "echo \"$(dirname \"$0\")/pool/$QA_INTERNS_INTERN\"",
       "echo",
@@ -37,9 +41,23 @@ beforeAll(async () => {
   );
   await Bun.write(join(dir, "no-seat.sh"), ["#!/bin/sh", "echo \"$(dirname \"$0\")/stores/codex-1\"", "exit 1", ""].join("\n"));
   await Bun.write(join(dir, "relative-seat.sh"), ["#!/bin/sh", "echo pool/i1", ""].join("\n"));
+  await Bun.write(
+    join(dir, "holder.ts"),
+    [
+      `import { Scheduler } from ${JSON.stringify(join(import.meta.dir, "..", "src", "logins.ts"))};`,
+      "const scheduler = new Scheduler(JSON.parse(process.argv[2]));",
+      "const leases = [];",
+      "for (let index = 0; index < Number(process.argv[3]); index++) leases.push(await scheduler.acquire(`h${index}`, []));",
+      "console.log(leases.filter((lease) => lease !== null).length);",
+      "for await (const _ of Bun.stdin.stream()) {}",
+      "",
+    ].join("\n"),
+  );
 });
 
 afterAll(async () => {
+  if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
+  else process.env.XDG_STATE_HOME = previousStateHome;
   await rm(dir, { recursive: true });
 });
 
@@ -85,6 +103,21 @@ function alive(pid: number): boolean {
 async function ended(pid: number): Promise<boolean> {
   for (let tries = 0; tries < 50 && alive(pid); tries++) await Bun.sleep(20);
   return !alive(pid);
+}
+
+function releaseAll(leases: (Lease | null | undefined)[]): void {
+  for (const lease of leases) lease?.release();
+}
+
+async function holder(logins: Login[], count: number) {
+  const child = Bun.spawn([process.execPath, join(dir, "holder.ts"), JSON.stringify(logins), String(count)], {
+    env: { ...process.env },
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  const { value } = await child.stdout.getReader().read();
+  return { count: Number(new TextDecoder().decode(value).trim()), child };
 }
 
 describe("loadLogins", () => {
@@ -241,15 +274,19 @@ describe("Scheduler", () => {
     expect([first, second, third, fourth, fifth].map((lease) => lease?.login.id)).toEqual(["claude-2", "codex-1", "cursor-1", "claude-1", "claude-2"]);
     expect(first?.store).toBe(join(dir, "stores", "claude-2"));
     expect(await scheduler.acquire("i6", [])).toBeNull();
+    releaseAll([first, second, third, fourth, fifth]);
   });
 
   test("avoids providers when another has spare capacity and counts use across the run", async () => {
     const scheduler = new Scheduler([login("claude-1", "claude", 2), login("codex-1", "codex", 3), login("cursor-1", "cursor", 1)]);
-    expect((await scheduler.acquire("c1", ["claude", "codex"]))?.login.id).toBe("cursor-1");
+    const cursor = await scheduler.acquire("c1", ["claude", "codex"]);
+    expect(cursor?.login.id).toBe("cursor-1");
     const codex = await scheduler.acquire("c2", ["claude"]);
     expect(codex?.login.id).toBe("codex-1");
     codex?.release();
-    expect((await scheduler.acquire("c3", []))?.login.id).toBe("claude-1");
+    const claude = await scheduler.acquire("c3", []);
+    expect(claude?.login.id).toBe("claude-1");
+    releaseAll([cursor, claude]);
   });
 
   test("capacity counts concurrency of logins not exhausted, and release is idempotent", async () => {
@@ -264,7 +301,8 @@ describe("Scheduler", () => {
     claude?.release();
     const again = await scheduler.acquire("i2", ["codex", "cursor"]);
     expect(again?.login.id).toBe("claude-1");
-    expect((await scheduler.acquire("i3", ["codex", "cursor"]))?.login.id).toBe("cursor-1");
+    const cursor = await scheduler.acquire("i3", ["codex", "cursor"]);
+    expect(cursor?.login.id).toBe("cursor-1");
 
     scheduler.exhaust(held(again));
     expect(scheduler.capacity()).toBe(4);
@@ -280,6 +318,7 @@ describe("Scheduler", () => {
     expect(await scheduler.acquire("i8", [])).toBeNull();
     const unknown = { login: login("claude-9", "claude", 1), store: join(dir, "stores", "claude-9"), release: () => {} };
     expect(() => scheduler.exhaust(unknown)).toThrow("No login with id claude-9");
+    releaseAll([cursor, ...picks]);
   });
 
   test("a seat command gives each intern its own store and a lease pid that lives until release", async () => {
@@ -295,8 +334,9 @@ describe("Scheduler", () => {
     one?.release();
     expect(await ended(first)).toBe(true);
     expect(alive(second)).toBe(true);
-    expect((await scheduler.acquire("i4", []))?.store).toBe(join(pool, "i4"));
-    two?.release();
+    const four = await scheduler.acquire("i4", []);
+    expect(four?.store).toBe(join(pool, "i4"));
+    releaseAll([two, four]);
   });
 
   test("a usage limit on a seat login exhausts only that store, and a later grant of it is released at once", async () => {
@@ -321,6 +361,7 @@ describe("Scheduler", () => {
     const shared = join(dir, "shared-seat");
     await mkdir(join(dir, "links"), { recursive: true });
     await mkdir(shared);
+    await Bun.write(join(shared, "auth.json"), "{}");
     await symlink(shared, join(dir, "links", "k1"));
     await symlink(shared, join(dir, "links", "k2"));
     await Bun.write(join(dir, "linked-seat.sh"), ["#!/bin/sh", "echo \"$(dirname \"$0\")/links/$QA_INTERNS_INTERN\"", ""].join("\n"));
@@ -334,6 +375,7 @@ describe("Scheduler", () => {
 
   test("a store that a live lease holds is released at once when a seat login returns it, until that lease ends", async () => {
     await mkdir(join(dir, "same-store"));
+    await Bun.write(join(dir, "same-store", "auth.json"), "{}");
     await Bun.write(
       join(dir, "same-seat.sh"),
       ["#!/bin/sh", "printf '%s\\n' \"$QA_INTERNS_LEASE_PID\" > \"$(dirname \"$0\")/seat-$QA_INTERNS_INTERN.pid\"", "echo \"$(dirname \"$0\")/same-store\"", ""].join("\n"),
@@ -363,6 +405,72 @@ describe("Scheduler", () => {
     expect(lease?.store).toBe(cursorStore);
     expect(await scheduler.acquire("i2", [])).toBeNull();
     expect(scheduler.capacity()).toBe(8);
+    lease?.release();
+  });
+
+  test("a seat store that breaks a store rule counts as no store", async () => {
+    const bare = join(dir, "seat-cases", "bare");
+    const linked = join(dir, "seat-cases", "linked");
+    await mkdir(bare, { recursive: true });
+    await mkdir(linked, { recursive: true });
+    await symlink(join(codexStore, "auth.json"), join(linked, "auth.json"));
+    await Bun.write(join(dir, "stores", "auth.json"), "{}");
+    const cases: [Login["provider"], string][] = [
+      ["cursor", "/"],
+      ["codex", bare],
+      ["codex", codexStore],
+      ["cursor", join(dir, "stores")],
+      ["codex", linked],
+    ];
+    for (const [provider, store] of cases) {
+      const scheduler = new Scheduler([login("seat-pool", provider, 1, ["echo", store]), login("codex-1", "codex", 1)]);
+      const lease = held(await scheduler.acquire("s1", []));
+      expect([store, lease.login.id]).toEqual([store, "codex-1"]);
+      expect(await scheduler.acquire("s2", [])).toBeNull();
+      lease.release();
+    }
+  });
+
+  test("two seat stores whose credential files are one file are not leased at once", async () => {
+    const real = join(dir, "one-credential", "auth.json");
+    await mkdir(join(dir, "one-credential"));
+    await Bun.write(real, "{}");
+    for (const intern of ["n1", "n2"]) {
+      await mkdir(join(dir, "linked-pool", intern), { recursive: true });
+      await symlink(real, join(dir, "linked-pool", intern, "auth.json"));
+    }
+    const scheduler = new Scheduler([login("codex-pool", "codex", 2, ["sh", "-c", `echo ${join(dir, "linked-pool")}/$QA_INTERNS_INTERN`])]);
+    const first = held(await scheduler.acquire("n1", []));
+    expect(first.store).toBe(join(dir, "linked-pool", "n1"));
+    expect(await scheduler.acquire("n2", [])).toBeNull();
+    first.release();
+    const second = held(await scheduler.acquire("n2", []));
+    expect(second.store).toBe(join(dir, "linked-pool", "n2"));
+    second.release();
+  });
+
+  test("another process's lease on a credential counts against its concurrency until that process ends", async () => {
+    const codex = login("codex-1", "codex", 1);
+    const other = await holder([codex], 1);
+    expect(other.count).toBe(1);
+    const scheduler = new Scheduler([codex]);
+    expect(await scheduler.acquire("p1", [])).toBeNull();
+    other.child.kill("SIGKILL");
+    await other.child.exited;
+    const lease = held(await scheduler.acquire("p2", []));
+    expect(lease.store).toBe(codexStore);
+    lease.release();
+
+    const claude = login("claude-1", "claude", 2);
+    const sharing = await holder([claude], 1);
+    expect(sharing.count).toBe(1);
+    const shared = new Scheduler([claude]);
+    const one = held(await shared.acquire("q1", []));
+    expect(await shared.acquire("q2", [])).toBeNull();
+    sharing.child.stdin.end();
+    await sharing.child.exited;
+    const two = held(await shared.acquire("q3", []));
+    releaseAll([one, two]);
   });
 
   test("a seat command that cannot start throws and keeps no reservation", async () => {
