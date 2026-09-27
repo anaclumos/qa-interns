@@ -55,7 +55,7 @@ async function workspaces(runDir: string, state: RunState): Promise<string[]> {
 }
 
 async function disks(runDir: string, state: RunState): Promise<string[]> {
-  const images = await Promise.all(state.interns.map(async (intern) => (await readdir(join(runDir, "interns", intern.id))).filter((entry) => entry.endsWith(".img"))));
+  const images = await Promise.all(state.interns.map(async (intern) => (await readdir(join(runDir, "interns", intern.id))).filter((entry) => entry.endsWith(".img") || entry.endsWith(".img.new"))));
   const mounts = readFileSync("/proc/self/mountinfo", "utf8").split("\n").filter((line) => line.includes(runDir));
   return [...images.flat(), ...mounts];
 }

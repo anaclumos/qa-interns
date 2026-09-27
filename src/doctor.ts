@@ -68,9 +68,12 @@ async function checkDisk(image: string): Promise<string> {
   try {
     const out = join(dir, "out");
     await mkdir(out);
-    await createDisk(out, image);
-    await Bun.write(join(out, "check.txt"), "saved\n");
-    await saveDisk(out, image);
+    try {
+      await createDisk(out, image);
+      await Bun.write(join(out, "check.txt"), "saved\n");
+    } finally {
+      await saveDisk(out, image);
+    }
     const saved = await Bun.file(join(out, "check.txt")).text();
     if (saved !== "saved\n") throw new Error(`the saved disk holds ${JSON.stringify(saved)} instead of the file written to it`);
     return `created, mounted, and saved an output disk in ${state}`;
