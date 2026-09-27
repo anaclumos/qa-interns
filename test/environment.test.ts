@@ -298,7 +298,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     const mib = 1024 ** 2;
     const target = await loadTarget(ref, ledgerSource);
     expect(environmentMemory(target)).toBe(4 * gib + 128 * mib);
-    const limited: Target = { ...target, services: { ...target.services, db: { build: false, image: "postgres:17.11-alpine", memLimit: 512 * mib, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 } } };
+    const limited: Target = { ...target, services: { ...target.services, db: { build: false, image: "postgres:17.11-alpine", tags: [], memLimit: 512 * mib, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 } } };
     expect(environmentMemory(limited)).toBe(3 * gib + 640 * mib);
     const replicated: Target = { ...limited, services: { ...limited.services, db: { ...limited.services.db!, replicas: 3 } } };
     expect(environmentMemory(replicated)).toBe(4 * gib + 640 * mib);
@@ -311,7 +311,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     const target = await loadTarget(ref, ledgerSource);
     const profiled: Target = {
       ...target,
-      services: { web: { build: true, image: null, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false, replicas: 1 } },
+      services: { web: { build: true, image: null, tags: [], memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false, replicas: 1 } },
     };
     expect(environmentMemory(profiled)).toBe(2 * gib + 128 * mib);
     expect(await buildImages("3f9a1c2e", profiled, ledgerSource)).toEqual({});
@@ -348,7 +348,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     expect(created).toEqual([`qa-${runId}-web:latest`]);
   });
 
-  test("run a service without build that names a built service's image on the run's build of that service", async () => {
+  test("run a service without build that names a built service's image or build tag on the run's build of that service", async () => {
     const source = await scratch();
     const runId = crypto.randomUUID().slice(0, 8);
     const scope = `qair-t-shared-${runId}/`;
@@ -365,10 +365,18 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       join(source, ".devcontainer", "compose.yml"),
       `services:
   web:
-    build: ..
-    image: ${scope}app:latest
+    build:
+      context: ..
+      tags: ["${scope}tagged:v1"]
+    image: ${scope}app
   worker:
     image: ${scope}app:latest
+  hub:
+    image: docker.io/${scope}app
+  tagged:
+    image: ${scope}tagged:v1
+  other:
+    image: ${scope}app:v2
   db:
     image: postgres:17-alpine
 `,
@@ -378,10 +386,11 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     const listed = (await execute(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])).split("\n");
     const created = listed.filter((image) => [`qa-${runId}-`, scope].some((prefix) => image.startsWith(prefix)));
     if (created.length > 0) await execute(["docker", "image", "rm", ...created]);
-    expect(images).toEqual({ web: `qa-${runId}-web:latest`, worker: `qa-${runId}-web:latest` });
+    const run = `qa-${runId}-web:latest`;
+    expect(images).toEqual({ web: run, worker: run, hub: run, tagged: run });
     const runDir = await scratch();
     const config = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target, { images }), 1000, 1000));
-    expect(config.services.worker).toMatchObject({ image: `qa-${runId}-web:latest`, pull_policy: "never" });
+    expect(config.services.worker).toMatchObject({ image: run, pull_policy: "never" });
   });
 
   test("route every environment host around the proxy and allow only those hosts in the browser", () => {

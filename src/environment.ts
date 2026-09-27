@@ -206,15 +206,25 @@ function sourceComposeArgs(target: Target, root: string): string[] {
   return target.composeFiles.flatMap((entry) => ["-f", resolve(root, ".devcontainer", entry)]);
 }
 
+function imageReference(name: string): string {
+  const [head = "", ...rest] = name.split("/");
+  const hasDomain = rest.length > 0 && (head === "localhost" || head.includes(".") || head.includes(":") || head.toLowerCase() !== head);
+  const domain = hasDomain && head !== "index.docker.io" ? head : "docker.io";
+  const remote = hasDomain ? rest.join("/") : name;
+  const path = domain === "docker.io" && !remote.includes("/") ? `library/${remote}` : remote;
+  const last = path.slice(path.lastIndexOf("/") + 1);
+  return `${domain}/${path}${last.includes(":") || last.includes("@") ? "" : ":latest"}`;
+}
+
 export async function buildImages(runId: string, target: Target, sourceDir: string): Promise<Record<string, string>> {
-  const services = Object.entries(target.services)
-    .filter(([, service]) => service.build && service.active)
-    .map(([name]) => name);
+  const built = Object.entries(target.services).filter(([, service]) => service.build && service.active);
+  const services = built.map(([name]) => name);
   const image = (name: string) => `qa-${runId}-${name.toLowerCase()}:latest`;
   const images = Object.fromEntries(services.map((name) => [name, image(name)]));
   for (const [name, service] of Object.entries(target.services)) {
-    const builder = services.find((other) => target.services[other]?.image === service.image);
-    if (!service.build && service.image !== null && builder !== undefined) images[name] = image(builder);
+    const wanted = service.build || service.image === null ? null : imageReference(service.image);
+    const builder = built.find(([, other]) => [other.image, ...other.tags].some((ref) => ref !== null && imageReference(ref) === wanted));
+    if (builder !== undefined) images[name] = image(builder[0]);
   }
   if (services.length === 0) return images;
   const dir = await mkdtemp(join(tmpdir(), "qa-interns-tags-"));

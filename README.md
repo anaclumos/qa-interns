@@ -87,7 +87,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 
 Published ports and build `tags` are allowed; QA Interns removes them.
 
-A service without `build` whose `image` is the `image` of a service with `build` that the run starts runs the image QA Interns builds for that service, as in Compose. A service whose `image` names a build `tags` entry runs the host or registry image of that name, as Compose does.
+A service without `build` whose `image` names the `image` or a build `tags` entry of a service with `build` that the run starts runs the image QA Interns builds for that service, as it does in the target's own dev container. Names match as Docker resolves them, so `app` and `docker.io/library/app:latest` name the same image.
 
 The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint. The target project owns that guarantee.
 

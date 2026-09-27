@@ -9,6 +9,7 @@ export type TargetRef = { repo: string; path: string; commit: string };
 export type ComposeService = {
   build: boolean;
   image: string | null;
+  tags: string[];
   memLimit: number | null;
   networkMode: string | null;
   aliases: string[];
@@ -98,7 +99,7 @@ const composeSchema = z.object({
   services: z.record(
     z.string(),
     z.object({
-      build: z.unknown().optional(),
+      build: z.object({ tags: z.array(z.string()).optional() }).optional(),
       image: z.string().optional(),
       container_name: z.string().optional(),
       network_mode: z.string().optional(),
@@ -246,6 +247,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     services[name] = {
       build: entry.build !== undefined,
       image: entry.image ?? null,
+      tags: entry.build?.tags ?? [],
       memLimit: memory === undefined ? null : bytes(memory, `The memory limit of service ${name}`),
       networkMode: entry.network_mode ?? null,
       aliases,

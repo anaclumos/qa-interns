@@ -135,8 +135,8 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     expect(target.service).toBe("web");
     expect(target.config.workspaceFolder).toBe("/app");
     expect(target.services).toEqual({
-      web: { build: true, image: null, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 },
-      db: { build: false, image: "postgres:17.11-alpine", memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 },
+      web: { build: true, image: null, tags: [], memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 },
+      db: { build: false, image: "postgres:17.11-alpine", tags: [], memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 },
     });
   });
 
@@ -164,10 +164,10 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
 `;
     const target = await load(await fixture(compose, devcontainer({ dockerComposeFile: ["compose.yml"] })));
     expect(target.services).toEqual({
-      web: { build: false, image: "nginx:1.29-alpine", memLimit: 536870912, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: false, active: true, replicas: 1 },
-      sidecar: { build: false, image: "busybox:1.37", memLimit: null, networkMode: "service:web", aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 },
-      worker: { build: true, image: null, memLimit: 268435456, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: true, active: true, replicas: 1 },
-      mailer: { build: false, image: "axllent/mailpit:v1.27", memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false, replicas: 1 },
+      web: { build: false, image: "nginx:1.29-alpine", tags: [], memLimit: 536870912, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: false, active: true, replicas: 1 },
+      sidecar: { build: false, image: "busybox:1.37", tags: [], memLimit: null, networkMode: "service:web", aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 },
+      worker: { build: true, image: null, tags: [], memLimit: 268435456, networkMode: null, aliases: [], hasCpus: true, hasPidsLimit: true, deployLimits: true, active: true, replicas: 1 },
+      mailer: { build: false, image: "axllent/mailpit:v1.27", tags: [], memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false, replicas: 1 },
     });
   });
 
