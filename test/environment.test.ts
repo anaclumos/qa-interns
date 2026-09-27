@@ -412,8 +412,9 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       const certs = join(source, "certs");
       await mkdir(certs);
       await execute([
+        "docker", "run", "--rm", "--network", "none", "-v", `${certs}:/certs`, image,
         "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=api.example.test",
-        "-addext", "subjectAltName=DNS:api.example.test,DNS:blocked.example.test", "-keyout", join(certs, "key.pem"), "-out", join(certs, "cert.pem"),
+        "-addext", "subjectAltName=DNS:api.example.test,DNS:blocked.example.test", "-keyout", "/certs/key.pem", "-out", "/certs/cert.pem",
       ]);
       await Bun.write(
         join(source, ".devcontainer", "devcontainer.json"),

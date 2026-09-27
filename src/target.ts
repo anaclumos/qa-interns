@@ -210,7 +210,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const tags = new Map<string, string>();
   const aliasOwners = new Map<string, string>();
   for (const [name, entry] of Object.entries(project.services)) {
-    if (reservedServices.includes(name)) violations.push(`service ${name} uses a name QA Interns reserves`);
+    if (reservedServices.includes(name.toLowerCase())) violations.push(`service ${name} uses a name QA Interns reserves`);
     if (entry.container_name !== undefined) violations.push(`service ${name} sets container_name ${entry.container_name}`);
     if (entry.network_mode !== undefined && !entry.network_mode.startsWith("service:")) {
       violations.push(`service ${name} sets network_mode ${entry.network_mode}`);

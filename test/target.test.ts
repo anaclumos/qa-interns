@@ -267,6 +267,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       "service web declares network alias qa-proxy, a name QA Interns reserves",
     ],
     ["a service named qa-relay", "  web:\n    image: nginx:1.29-alpine\n  qa-relay:\n    image: nginx:1.29-alpine\n", "service qa-relay uses a name QA Interns reserves"],
+    ["a service named QA-Proxy", "  web:\n    image: nginx:1.29-alpine\n  QA-Proxy:\n    image: nginx:1.29-alpine\n", "service QA-Proxy uses a name QA Interns reserves"],
     [
       "a network alias two services declare",
       "  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"shop\"]\n  api:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"shop\"]\n",
@@ -423,6 +424,7 @@ networks:
     ["an egress URL", { ...settings, egress: ["https://api.pwnedpasswords.com"] }, "must be a lowercase host name"],
     ["an uppercase egress host", { ...settings, egress: ["API.pwnedpasswords.com"] }, "must be a lowercase host name"],
     ["a single-label egress host", { ...settings, egress: ["localhost"] }, "must be a lowercase host name"],
+    ["an egress host with a trailing dot", { ...settings, egress: ["api.pwnedpasswords.com."] }, "must be a lowercase host name"],
   ];
 
   test.each(invalid)("reject settings with %s", async (_, qa, message) => {
