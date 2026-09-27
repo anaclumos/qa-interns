@@ -1,4 +1,5 @@
 import type { Subprocess } from "bun";
+import { existsSync } from "node:fs";
 import { appendFile, mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
@@ -159,6 +160,26 @@ const renderSchema = z
   .catchall(z.unknown());
 
 type ComposeProject = z.infer<typeof composeSchema>;
+
+const referencesSchema = z
+  .object({
+    include: z
+      .array(
+        z.union([
+          z.string(),
+          z.object({
+            path: z.union([z.string(), z.tuple([z.string()], z.string())]),
+            project_directory: z.string().optional(),
+            env_file: z.union([z.string(), z.array(z.string())]).optional(),
+          }),
+        ]),
+      )
+      .nullish(),
+    services: z
+      .record(z.string(), z.union([z.object({ extends: z.union([z.string(), z.object({ file: z.string().optional() })]).optional() }), z.string()]).nullable())
+      .nullish(),
+  })
+  .nullable();
 
 const reservedServices = ["qa-proxy", "qa-runner"];
 const namespaces = ["pid", "ipc", "uts", "cgroup", "userns_mode"] as const;
@@ -352,6 +373,62 @@ export async function devContainerViolations(
   return [...violations, ...(await resourceViolations(project, projectName, root))];
 }
 
+async function checkComposeReferences(root: string, composePaths: string[]): Promise<void> {
+  const seen = new Set<string>();
+  const walk = async (file: string, dir: string, kind: "top" | "included" | "extended"): Promise<void> => {
+    const key = JSON.stringify([file, dir, kind]);
+    if (seen.has(key)) return;
+    seen.add(key);
+    const inside = async (field: string, value: string, base: string | null): Promise<string> => {
+      if (value.includes("$") || value.includes(":") || value.startsWith("~") || value.startsWith("github.com/")) {
+        throw new Error(`${file} names ${value} in ${field}, which Compose may expand or load from a remote source`);
+      }
+      if (base === null && !isAbsolute(value)) throw new Error(`${file} names ${value} in ${field}, a relative path that Compose resolves against the directory it runs in`);
+      const path = resolve(base ?? "/", value);
+      if (!existsSync(path) || !within(root, await realpath(path))) {
+        throw new Error(`${file} names ${value} in ${field}, which does not resolve to an existing path inside the target directory`);
+      }
+      return path;
+    };
+    const text = await Bun.file(file).text();
+    let parsed: unknown;
+    try {
+      parsed = Bun.YAML.parse(text);
+    } catch (error) {
+      throw new Error(`${file} is not valid YAML: ${error}`);
+    }
+    for (const document of Array.isArray(parsed) ? parsed : [parsed]) {
+      const references = referencesSchema.safeParse(document);
+      if (!references.success) throw new Error(`${file} is invalid:\n${z.prettifyError(references.error)}`);
+      const { include, services } = references.data ?? {};
+      for (const entry of kind !== "extended" ? (include ?? []) : []) {
+        const { path, project_directory, env_file } = typeof entry === "string" ? { path: entry } : entry;
+        const [main, ...overrides] = typeof path === "string" ? ([path] as const) : path;
+        const workingDir = kind === "top" ? dir : null;
+        const projectDir = project_directory ? await inside("include.project_directory", project_directory, workingDir) : dirname(resolve(dir, main));
+        const envFiles = [env_file ?? []].flat();
+        const dotenv = join(projectDir, ".env");
+        if (envFiles.length === 0 && existsSync(dotenv) && !within(root, await realpath(dotenv))) {
+          throw new Error(`${file} includes ${main}, whose project directory has a .env file that resolves outside the target directory`);
+        }
+        for (const value of envFiles.filter((value) => value !== "/dev/null")) await inside("include.env_file", value, workingDir);
+        for (const value of [main, ...overrides]) await walk(await inside("include", value, dir), projectDir, "included");
+      }
+      for (const [name, service] of Object.entries(services ?? {})) {
+        const base = typeof service === "string" ? undefined : service?.extends;
+        if (typeof base !== "object" || base.file === undefined) continue;
+        const extended = await inside(`services.${name}.extends.file`, base.file, dir);
+        await walk(extended, dirname(extended), "extended");
+      }
+    }
+  };
+  let projectDir: string | undefined;
+  for (const file of composePaths) {
+    projectDir ??= dirname(file);
+    await walk(file, projectDir, "top");
+  }
+}
+
 export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Target> {
   const file = join(sourceDir, ".devcontainer", "devcontainer.json");
   const object = z.record(z.string(), z.unknown()).safeParse(Bun.JSONC.parse(await Bun.file(file).text()));
@@ -372,6 +449,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       throw new Error(`${file} names the Compose file ${composeFiles[index]}, which resolves outside the target directory`);
     }
   }
+  await checkComposeReferences(root, paths);
   await composeVersion();
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
   const project = composeSchema.parse(await render(checkProject, paths, env));
