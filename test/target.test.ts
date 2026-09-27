@@ -311,6 +311,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     ],
     ["a device cgroup rule", "  web:\n    image: nginx:1.29-alpine\n    device_cgroup_rules: [\"b 8:* rmw\"]\n", "service web sets device_cgroup_rules b 8:* rmw"],
     ["GPUs", "  web:\n    image: nginx:1.29-alpine\n    gpus: all\n", "service web requests GPUs"],
+    ["a container runtime other than runc", "  web:\n    image: nginx:1.29-alpine\n    runtime: nvidia\n", "service web sets runtime nvidia"],
     [
       "a device reservation",
       "  web:\n    image: nginx:1.29-alpine\n    deploy:\n      resources:\n        reservations:\n          devices:\n            - capabilities: [\"gpu\"]\n",

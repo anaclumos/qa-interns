@@ -85,7 +85,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - Two services whose names differ only in case, since Docker's network names are case-insensitive and prebuilt image tags are lowercase.
 - `privileged: true`, or a `pre_start`, `post_start`, or `pre_stop` hook with `privileged: true`.
 - A `pid`, `ipc`, `uts`, `cgroup`, or `userns_mode` of `host` or `container:<name>`.
-- A `devices` entry, a `device_cgroup_rules` entry, `gpus`, a device reservation under `deploy.resources.reservations`, a `cap_add` entry, or a `security_opt` entry other than `no-new-privileges`. A seccomp or AppArmor profile, a label option, or `unconfined` can each loosen the default confinement.
+- A `devices` entry, a `device_cgroup_rules` entry, `gpus`, a device reservation under `deploy.resources.reservations`, a `runtime` other than `runc` (the NVIDIA runtime, for example, can add host GPUs), a `cap_add` entry, or a `security_opt` entry other than `no-new-privileges`. A seccomp or AppArmor profile, a label option, or `unconfined` can each loosen the default confinement.
 - `use_api_socket: true`, which mounts the Docker socket.
 - A `volumes_from` entry with a `container:` source.
 - A build with a `network` other than `default` or `none`, `privileged: true`, an `entitlements` entry, an `ssh` entry, a `cache_to` entry, or a `cache_from` entry other than an image reference.

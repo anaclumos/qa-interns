@@ -139,6 +139,7 @@ const composeSchema = z.object({
       cap_add: z.array(z.string()).optional(),
       security_opt: z.array(z.string()).optional(),
       use_api_socket: z.boolean().optional(),
+      runtime: z.string().optional(),
       env_file: z.array(z.object({ path: z.string() })).optional(),
       volumes: z.array(z.object({ type: z.string(), source: z.string().optional() })).optional(),
       volumes_from: z.array(z.string()).optional(),
@@ -266,6 +267,7 @@ async function serviceViolations(name: string, entry: ComposeProject["services"]
   for (const rule of entry.device_cgroup_rules ?? []) violations.push(`service ${name} sets device_cgroup_rules ${rule}`);
   if ((entry.gpus ?? []).length > 0) violations.push(`service ${name} requests GPUs`);
   if ((entry.deploy?.resources?.reservations?.devices ?? []).length > 0) violations.push(`service ${name} reserves devices`);
+  if (entry.runtime !== undefined && entry.runtime !== "runc") violations.push(`service ${name} sets runtime ${entry.runtime}`);
   for (const capability of entry.cap_add ?? []) violations.push(`service ${name} adds capability ${capability}`);
   for (const option of entry.security_opt ?? []) {
     if (!confinedOptions.includes(option)) violations.push(`service ${name} sets security_opt ${option}`);
