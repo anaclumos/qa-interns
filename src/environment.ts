@@ -481,6 +481,10 @@ export async function stopEnvironment(runDir: string, name: string, project: str
   await down(project);
   await removeImages([`vsc-${project}-`]);
   await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
+  await saveDisks(runDir, name, project, image);
+}
+
+export async function saveDisks(runDir: string, name: string, project: string, image: string): Promise<void> {
   for (const out of await diskOuts(join(runDir, "interns", name))) await saveDisk(out, image, project);
 }
 

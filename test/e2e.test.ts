@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { writeChromePolicy } from "../src/environment.ts";
+import { removeCopies, writeChromePolicy } from "../src/environment.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { newRunId, readState } from "../src/state.ts";
@@ -307,6 +307,7 @@ USER qa
         if ((await capture(["docker", "network", "inspect", other])).code === 0) await execute(["docker", "network", "rm", other]);
       }
       expect(await leftovers(runId)).toEqual([]);
+      expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
     },
     timeout,
   );
@@ -324,8 +325,10 @@ USER qa
       } finally {
         await execute(["docker", "rm", "-f", held]);
         await execute(["docker", "network", "rm", held]);
+        await removeCopies(join(root, "asks", runId), runId, fakeImage);
       }
       expect(await leftovers(runId)).toEqual([]);
+      expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
     },
     timeout,
   );
