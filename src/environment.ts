@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { errorCode } from "./findings.ts";
-import { capture, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
+import { capture, devContainerViolations, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
 import type { GeneratedFile, Mount } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
@@ -273,10 +273,15 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   return images;
 }
 
-function composeArgs(spec: EnvironmentSpec): string[] {
+function composeFiles(spec: EnvironmentSpec): string[] {
   const dir = envDir(spec);
-  const target = spec.target === null ? [] : sourceComposeArgs(spec.target, join(dir, projectName(spec.runId, spec.name)));
-  return [...target, "-f", join(dir, "compose.qa.yml")];
+  const workspace = join(dir, projectName(spec.runId, spec.name));
+  const target = spec.target === null ? [] : spec.target.composeFiles.map((entry) => resolve(workspace, ".devcontainer", entry));
+  return [...target, join(dir, "compose.qa.yml")];
+}
+
+function composeArgs(spec: EnvironmentSpec): string[] {
+  return composeFiles(spec).flatMap((file) => ["-f", file]);
 }
 
 async function writeFiles(spec: EnvironmentSpec): Promise<void> {
@@ -342,9 +347,10 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   await mkdir(tmp, { recursive: true });
   await Bun.write(config, `${JSON.stringify(overrideConfig(target, join(dir, "compose.qa.yml")), null, 2)}\n`);
 
+  const upEnv = { ...env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp };
   const up = await capture(
     [process.execPath, devcontainer, "up", "--workspace-folder", workspace, "--override-config", config, "--user-data-folder", join(dir, "devcontainer-data"), "--id-label", `qa-interns.env=${project}`, "--log-format", "json"],
-    { env: { ...env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp }, log, timeout: 20 * minute },
+    { env: upEnv, log, timeout: 20 * minute },
   );
   const last = up.stdout.trim().split("\n").at(-1) ?? "";
   const result = upSchema.safeParse(last.startsWith("{") ? JSON.parse(last) : null);
@@ -353,12 +359,17 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
     throw new Error(`devcontainer up for ${project} exited with ${up.code}: ${detail} (log: ${log})`);
   }
   const devContainer = result.data.containerId;
+  const configFiles = await execute(["docker", "inspect", "--format", '{{index .Config.Labels "com.docker.compose.project.config_files"}}', devContainer]);
+  const violations = await devContainerViolations(project, composeFiles(spec), configFiles.trim().split(","), target.service, workspace, upEnv);
+  if (violations.length > 0) {
+    throw new Error(`The dev container that devcontainer up created for ${project} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
+  }
 
   const runServices = target.config.runServices;
   const services = Array.isArray(runServices) ? [target.service, ...runServices, ...qaServices(target)] : [];
   await execute(
     ["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds, "--no-recreate", ...services],
-    { env, log },
+    { env: upEnv, log },
   );
   const runner = await runnerId(project);
   const exec = [process.execPath, devcontainer, "exec", "--container-id", devContainer, "--workspace-folder", workspace, "--override-config", config];
