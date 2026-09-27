@@ -653,6 +653,60 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
     },
     20 * 60_000,
   );
+
+  test.each([
+    ["an empty runServices", [], ["extra", "web"]],
+    ["a runServices entry whose profile enables an optional dependency", ["worker"], ["helper", "web", "worker"]],
+  ])(
+    "start exactly the services that loadTarget counts as active for %s",
+    async (_, runServices, expected) => {
+      const runId = `btest-${crypto.randomUUID().slice(0, 8)}`;
+      const runDir = await scratch();
+      const source = join(runDir, "source");
+      const sleeper = `    image: busybox:1.37\n    command: ["sleep", "86400"]\n    init: true\n`;
+      await Bun.write(
+        join(source, ".devcontainer", "compose.yml"),
+        `services:
+  web:
+${sleeper}  extra:
+${sleeper}  worker:
+${sleeper}    profiles: ["jobs"]
+    depends_on:
+      helper:
+        condition: service_started
+        required: false
+  helper:
+${sleeper}    profiles: ["jobs"]
+  mailer:
+${sleeper}    profiles: ["mail"]
+`,
+      );
+      await Bun.write(
+        join(source, ".devcontainer", "devcontainer.json"),
+        JSON.stringify({
+          dockerComposeFile: "compose.yml",
+          service: "web",
+          runServices,
+          customizations: { "qa-interns": { urls: { app: "http://web:8080" }, ready: "true", seed: "echo '{}'" } },
+        }),
+      );
+      const image = await ensureRunnerImage();
+      try {
+        const target = await loadTarget(ref, source);
+        expect(Object.keys(target.services).filter((name) => target.services[name]?.active).sort()).toEqual(expected);
+        const images = await buildImages(runId, target, source);
+        await writeChromePolicy(runDir, target.settings.urls);
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
+        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), images, runner }));
+        const running = (await execute(["docker", "compose", "-p", environment.project, "ps", "--services"])).split("\n").filter((name) => name !== "");
+        expect(running.sort()).toEqual([...expected, "qa-proxy", "qa-runner"].sort());
+      } finally {
+        await stopRun(runId);
+        await removeCopies(runDir, runId, image);
+      }
+    },
+    20 * 60_000,
+  );
 });
 
 describe.skipIf(!dockerAvailable)("qa-relay", () => {
