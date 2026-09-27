@@ -92,7 +92,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 
 `devcontainer up` writes settings from `devcontainer.json`, its features, and the `devcontainer.metadata` label of the dev container image into its own Compose files. After `devcontainer up` creates an environment's dev container, `run` renders the environment's Compose files with and without the files the Dev Container CLI wrote. Those files may add volumes and may change only the `image`, `build`, `entrypoint`, `command`, `init`, `user`, `environment`, `labels`, `privileged`, `cap_add`, `security_opt`, and `volumes` of the dev container service. `run` then applies the checks above, except the build checks, to every target service in the environment's copy of the target, with the environment variables `devcontainer up` used. When a check fails, the environment is torn down before its intern starts.
 
-Published ports are allowed; QA Interns removes them.
+Published ports and build `tags` are allowed; QA Interns removes them.
 
 The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint. The target project owns that guarantee.
 
