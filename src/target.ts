@@ -1,6 +1,7 @@
 import type { Subprocess } from "bun";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, realpath } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 
@@ -61,12 +62,37 @@ export async function execute(cmd: string[], options: CommandOptions = {}): Prom
   return result.stdout;
 }
 
-const dockerEnv = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_API_VERSION"];
+const dockerEnv = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CERT_PATH", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_API_VERSION"];
 
-export function targetEnv(hostEnv: string[]): Record<string, string | undefined> {
+async function withoutProxies(file: string): Promise<string> {
+  const text = existsSync(file) ? await readFile(file, "utf8") : "";
+  if (text.trim() === "") return "{}";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${file} is not valid JSON (${String(error)})`);
+  }
+  const config = z.record(z.string(), z.unknown()).nullable().safeParse(parsed);
+  if (!config.success) throw new Error(`${file} is not a JSON object`);
+  return JSON.stringify(Object.fromEntries(Object.entries(config.data ?? {}).filter(([key]) => key.toUpperCase() !== "PROXIES")));
+}
+
+export async function dockerConfig(dir: string): Promise<string> {
+  const source = resolve(process.env.DOCKER_CONFIG || join(homedir(), ".docker"));
+  const config = join(dir, "docker");
+  await mkdir(config, { recursive: true, mode: 0o700 });
+  for (const entry of existsSync(source) ? await readdir(source) : []) {
+    if (entry === "config.json") await writeFile(join(config, entry), await withoutProxies(join(source, entry)), { mode: 0o600 });
+    else await symlink(join(source, entry), join(config, entry));
+  }
+  return config;
+}
+
+export async function targetEnv(hostEnv: string[], dir: string): Promise<Record<string, string | undefined>> {
   const missing = hostEnv.filter((name) => process.env[name] === undefined);
   if (missing.length > 0) throw new Error(`customizations["qa-interns"].hostEnv names ${missing.join(", ")}, which the environment of qa-interns does not set`);
-  return Object.fromEntries([...dockerEnv, ...hostEnv].map((name) => [name, process.env[name]]));
+  return { ...Object.fromEntries([...dockerEnv, ...hostEnv].map((name) => [name, process.env[name]])), DOCKER_CONFIG: await dockerConfig(dir) };
 }
 
 export function isHttpUrl(value: string): boolean {
@@ -245,7 +271,6 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const parsed = configSchema.safeParse(config);
   if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
   const { dockerComposeFile, service, runServices, customizations } = parsed.data;
-  const env = targetEnv(customizations["qa-interns"].hostEnv);
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
   const root = await realpath(sourceDir);
   for (const entry of composeFiles) {
@@ -258,7 +283,15 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   await checkComposeReferences(root, composePaths);
   const files = composePaths.flatMap((path) => ["-f", path]);
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
-  const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"], { env });
+  const checkDir = await mkdtemp(join(tmpdir(), "qa-interns-check-"));
+  let output: string;
+  try {
+    output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"], {
+      env: await targetEnv(customizations["qa-interns"].hostEnv, checkDir),
+    });
+  } finally {
+    await rm(checkDir, { recursive: true, force: true });
+  }
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
 
