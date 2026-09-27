@@ -1,0 +1,9 @@
+{
+  "name": "qa-interns",
+  "version": "0.1.0",
+  "description": "Run many AI QA interns in parallel against isolated copies of a web application and report what breaks.",
+  "author": {
+    "name": "anaclumos"
+  },
+  "repository": "https://github.com/anaclumos/qa-interns"
+}

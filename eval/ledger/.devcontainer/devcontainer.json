@@ -1,0 +1,19 @@
+{
+  "name": "Ledger",
+  "dockerComposeFile": ["compose.yml"],
+  "service": "web",
+  "workspaceFolder": "/app",
+  "shutdownAction": "stopCompose",
+  "customizations": {
+    "qa-interns": {
+      "urls": { "app": "http://web:3000" },
+      "ready": "http://web:3000/health",
+      "seed": "bun run src/seed.ts",
+      "focus": [
+        "How invoices calculate, store, and show money across currencies, lists, and exports.",
+        "What owners, editors, and viewers can see and change, in the pages and in the API."
+      ],
+      "offLimits": ["Do not change the password of a seeded account."]
+    }
+  }
+}
