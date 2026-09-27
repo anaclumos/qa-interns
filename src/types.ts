@@ -1,4 +1,4 @@
-export type Provider = "claude" | "codex" | "cursor";
+export type Provider = "claude" | "codex" | "cursor" | "grok";
 
 export type Login = { id: string; provider: Provider; store: string | null; seat: string[] | null; concurrency: number };
 

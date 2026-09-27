@@ -72,7 +72,7 @@ const listedFindings = (text) => {
 
 const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 
-const login = () => JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8"));
+const login = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8"));
 
 const endTurn = { result: { stopReason: "end_turn" } };
 
