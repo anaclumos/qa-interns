@@ -1,5 +1,5 @@
 import type { Subprocess } from "bun";
-import { appendFile, mkdir, readlink, realpath } from "node:fs/promises";
+import { appendFile, mkdir, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 
@@ -128,6 +128,7 @@ const composeSchema = z.object({
       cap_add: z.array(z.string()).optional(),
       security_opt: z.array(z.string()).optional(),
       use_api_socket: z.boolean().optional(),
+      env_file: z.array(z.object({ path: z.string() })).optional(),
       volumes: z.array(z.object({ type: z.string(), source: z.string().optional() })).optional(),
       volumes_from: z.array(z.string()).optional(),
       pre_start: hooksSchema,
@@ -143,7 +144,9 @@ const composeSchema = z.object({
   configs: filesSchema,
 });
 
-const envFilesSchema = z.object({ services: z.record(z.string(), z.object({ env_file: z.array(z.object({ path: z.string() })).optional() })) });
+const renderSchema = z
+  .object({ services: z.record(z.string(), z.record(z.string(), z.unknown())), volumes: z.record(z.string(), z.unknown()).optional() })
+  .catchall(z.unknown());
 
 type ComposeProject = z.infer<typeof composeSchema>;
 
@@ -151,6 +154,20 @@ const reservedServices = ["qa-proxy", "qa-runner"];
 const namespaces = ["pid", "ipc", "uts", "cgroup", "userns_mode"] as const;
 const hooks = ["pre_start", "post_start", "pre_stop"] as const;
 const buildNetworks = ["default", "none"];
+const devContainerKeys = ["image", "build", "entrypoint", "command", "init", "user", "environment", "labels", "privileged", "cap_add", "security_opt", "volumes"];
+
+export async function composeVersion(): Promise<string> {
+  const version = (await execute(["docker", "compose", "version", "--short"])).trim();
+  if (Number(version.split(".")[0]) < 5) {
+    throw new Error(`QA Interns needs Docker Compose 5.0 or later, which reports env_file paths in docker compose config --no-env-resolution; this host has Compose ${version}`);
+  }
+  return version;
+}
+
+async function render(projectName: string, files: string[], env?: Record<string, string | undefined>): Promise<unknown> {
+  const cmd = ["docker", "compose", "-p", projectName, ...files.flatMap((file) => ["-f", file]), "--profile", "*", "config", "--format", "json", "--no-env-resolution"];
+  return JSON.parse(await execute(cmd, { env }));
+}
 
 export async function resolveTarget(dir: string, rev: string): Promise<TargetRef> {
   const git = ["git", "-C", dir, "rev-parse"];
@@ -187,22 +204,13 @@ function within(dir: string, file: string): boolean {
   return path !== ".." && !path.startsWith("../");
 }
 
-function hasCode(error: unknown, codes: string[]): boolean {
-  return error instanceof Error && "code" in error && typeof error.code === "string" && codes.includes(error.code);
-}
-
 async function resolveReal(path: string): Promise<string> {
   try {
     return await realpath(path);
   } catch (error) {
-    if (!hasCode(error, ["ENOENT"])) throw error;
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+    return join(await resolveReal(dirname(path)), basename(path));
   }
-  const entry = join(await resolveReal(dirname(path)), basename(path));
-  const link = await readlink(entry).catch((error: unknown) => {
-    if (hasCode(error, ["ENOENT", "EINVAL"])) return null;
-    throw error;
-  });
-  return link === null ? entry : resolveReal(resolve(dirname(entry), link));
 }
 
 async function escapes(root: string, subject: string, path: string): Promise<string[]> {
@@ -237,25 +245,29 @@ async function serviceViolations(name: string, entry: ComposeProject["services"]
   for (const volume of entry.volumes ?? []) {
     if (volume.type === "bind" && volume.source !== undefined) violations.push(...(await escapes(root, `service ${name} mounts`, volume.source)));
   }
-  const build = entry.build;
-  if (build !== undefined) {
-    const local = isAbsolute(build.context);
-    if (local) violations.push(...(await escapes(root, `service ${name} builds from context`, build.context)));
-    if (build.dockerfile !== undefined && (local || isAbsolute(build.dockerfile))) {
-      violations.push(...(await escapes(root, `service ${name} builds from Dockerfile`, resolve(build.context, build.dockerfile))));
-    }
-    for (const [key, value] of Object.entries(build.additional_contexts ?? {})) {
-      if (isAbsolute(value)) violations.push(...(await escapes(root, `service ${name} builds with additional context ${key}`, value)));
-      else if (value.startsWith("oci-layout://")) violations.push(`service ${name} builds with additional context ${key} from host OCI layout ${value}`);
-    }
-    if (build.network !== undefined && !buildNetworks.includes(build.network)) violations.push(`service ${name} builds on network ${build.network}`);
-    if (build.privileged === true) violations.push(`service ${name} builds privileged`);
-    for (const entitlement of build.entitlements ?? []) violations.push(`service ${name} builds with entitlement ${entitlement}`);
-    for (const agent of build.ssh ?? []) violations.push(`service ${name} builds with SSH ${agent}`);
-    for (const cache of [...(build.cache_from ?? []), ...(build.cache_to ?? [])]) {
-      if (cache.split(",").includes("type=local")) violations.push(`service ${name} builds with host cache ${cache}`);
-    }
+  for (const envFile of entry.env_file ?? []) violations.push(...(await escapes(root, `service ${name} reads env_file`, envFile.path)));
+  return violations;
+}
+
+async function buildViolations(name: string, build: z.infer<typeof buildSchema>, root: string): Promise<string[]> {
+  const violations: string[] = [];
+  const local = isAbsolute(build.context);
+  if (local) violations.push(...(await escapes(root, `service ${name} builds from context`, build.context)));
+  if (build.dockerfile !== undefined && (local || isAbsolute(build.dockerfile))) {
+    violations.push(...(await escapes(root, `service ${name} builds from Dockerfile`, resolve(build.context, build.dockerfile))));
   }
+  for (const [key, value] of Object.entries(build.additional_contexts ?? {})) {
+    if (isAbsolute(value)) violations.push(...(await escapes(root, `service ${name} builds with additional context ${key}`, value)));
+    else if (value.startsWith("oci-layout://")) violations.push(`service ${name} builds with additional context ${key} from host OCI layout ${value}`);
+  }
+  if (build.network !== undefined && !buildNetworks.includes(build.network)) violations.push(`service ${name} builds on network ${build.network}`);
+  if (build.privileged === true) violations.push(`service ${name} builds privileged`);
+  for (const entitlement of build.entitlements ?? []) violations.push(`service ${name} builds with entitlement ${entitlement}`);
+  for (const agent of build.ssh ?? []) violations.push(`service ${name} builds with SSH ${agent}`);
+  for (const cache of build.cache_from ?? []) {
+    if (cache.includes("=")) violations.push(`service ${name} builds with cache_from ${cache}`);
+  }
+  for (const cache of build.cache_to ?? []) violations.push(`service ${name} builds with cache_to ${cache}`);
   return violations;
 }
 
@@ -285,13 +297,41 @@ async function resourceViolations(project: ComposeProject, projectName: string, 
   return violations;
 }
 
-export async function devContainerViolations(projectName: string, files: string[], service: string, workspace: string, env: Record<string, string | undefined>): Promise<string[]> {
-  const render = ["docker", "compose", "-p", projectName, ...files.flatMap((file) => ["-f", file]), "--profile", "*", "config", "--format", "json"];
-  const project = composeSchema.parse(JSON.parse(await execute(render, { env })));
-  const entry = project.services[service];
-  if (entry === undefined) throw new Error(`The Compose files of ${projectName} have no service ${service}`);
+export async function devContainerViolations(
+  projectName: string,
+  baseFiles: string[],
+  files: string[],
+  service: string,
+  workspace: string,
+  env: Record<string, string | undefined>,
+): Promise<string[]> {
+  const before = renderSchema.parse(await render(projectName, baseFiles, env));
+  const rendered = await render(projectName, files, env);
+  const after = renderSchema.parse(rendered);
+  const project = composeSchema.parse(rendered);
+  const violations: string[] = [];
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (key !== "services" && key !== "volumes" && !Bun.deepEquals(before[key], after[key])) violations.push(`devcontainer up changes the top-level ${key}`);
+  }
+  for (const [name, volume] of Object.entries(before.volumes ?? {})) {
+    if (!Bun.deepEquals(volume, after.volumes?.[name])) violations.push(`devcontainer up changes volume ${name}`);
+  }
+  for (const name of new Set([...Object.keys(before.services), ...Object.keys(after.services)])) {
+    const was = before.services[name] ?? {};
+    const is = after.services[name] ?? {};
+    if (name !== service) {
+      if (!Bun.deepEquals(was, is)) violations.push(`devcontainer up changes service ${name}`);
+      continue;
+    }
+    for (const key of new Set([...Object.keys(was), ...Object.keys(is)])) {
+      if (!devContainerKeys.includes(key) && !Bun.deepEquals(was[key], is[key])) violations.push(`devcontainer up changes ${key} of service ${name}`);
+    }
+  }
   const root = await realpath(workspace);
-  return [...(await serviceViolations(service, entry, root)), ...(await resourceViolations(project, projectName, root))];
+  for (const [name, entry] of Object.entries(project.services)) {
+    if (!reservedServices.includes(name)) violations.push(...(await serviceViolations(name, entry, root)));
+  }
+  return [...violations, ...(await resourceViolations(project, projectName, root))];
 }
 
 export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Target> {
@@ -312,11 +352,9 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       throw new Error(`${file} names the Compose file ${entry}, which resolves outside the target directory`);
     }
   }
-  const files = composeFiles.flatMap((entry) => ["-f", resolve(sourceDir, ".devcontainer", entry)]);
+  await composeVersion();
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
-  const render = ["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"];
-  const project = composeSchema.parse(JSON.parse(await execute(render)));
-  const envFiles = envFilesSchema.parse(JSON.parse(await execute([...render, "--no-interpolate"])));
+  const project = composeSchema.parse(await render(checkProject, composeFiles.map((entry) => resolve(sourceDir, ".devcontainer", entry))));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
 
   const started =
@@ -341,10 +379,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   for (const [name, entry] of Object.entries(project.services)) {
     if (reservedServices.includes(name)) violations.push(`service ${name} uses a name QA Interns reserves`);
     violations.push(...(await serviceViolations(name, entry, root)));
-    for (const envFile of envFiles.services[name]?.env_file ?? []) {
-      if (envFile.path.includes("$")) violations.push(`service ${name} reads env_file ${envFile.path}, whose path uses a variable`);
-      else violations.push(...(await escapes(root, `service ${name} reads env_file`, envFile.path)));
-    }
+    if (entry.build !== undefined) violations.push(...(await buildViolations(name, entry.build, root)));
     const aliases = [...new Set(Object.values(entry.networks ?? {}).flatMap((network) => network?.aliases ?? []))];
     for (const alias of aliases) {
       const key = alias.toLowerCase();

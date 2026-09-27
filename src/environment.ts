@@ -224,10 +224,15 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   return images;
 }
 
-function composeArgs(spec: EnvironmentSpec): string[] {
+function composeFiles(spec: EnvironmentSpec): string[] {
   const dir = envDir(spec);
-  const target = spec.target === null ? [] : sourceComposeArgs(spec.target, join(dir, projectName(spec.runId, spec.name)));
-  return [...target, "-f", join(dir, "compose.qa.yml")];
+  const workspace = join(dir, projectName(spec.runId, spec.name));
+  const target = spec.target === null ? [] : spec.target.composeFiles.map((entry) => resolve(workspace, ".devcontainer", entry));
+  return [...target, join(dir, "compose.qa.yml")];
+}
+
+function composeArgs(spec: EnvironmentSpec): string[] {
+  return composeFiles(spec).flatMap((file) => ["-f", file]);
 }
 
 async function writeFiles(spec: EnvironmentSpec): Promise<void> {
@@ -301,7 +306,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   }
   const devContainer = result.data.containerId;
   const configFiles = await execute(["docker", "inspect", "--format", '{{index .Config.Labels "com.docker.compose.project.config_files"}}', devContainer]);
-  const violations = await devContainerViolations(project, configFiles.trim().split(","), target.service, workspace, env);
+  const violations = await devContainerViolations(project, composeFiles(spec), configFiles.trim().split(","), target.service, workspace, env);
   if (violations.length > 0) {
     throw new Error(`The dev container that devcontainer up created for ${project} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
   }
@@ -310,7 +315,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const services = Array.isArray(runServices) ? [target.service, ...runServices, "qa-proxy", "qa-runner"] : [];
   await execute(
     ["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds, "--no-recreate", ...services],
-    { log },
+    { env, log },
   );
   const runner = await runnerId(project);
   const exec = [process.execPath, devcontainer, "exec", "--container-id", devContainer, "--workspace-folder", workspace, "--override-config", config];

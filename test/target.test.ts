@@ -287,8 +287,8 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     ["a privileged build", "  web:\n    build:\n      context: ..\n      privileged: true\n", "service web builds privileged"],
     ["a build entitlement", "  web:\n    build:\n      context: ..\n      entitlements: [\"security.insecure\"]\n", "service web builds with entitlement security.insecure"],
     ["SSH agent forwarding into a build", "  web:\n    build:\n      context: ..\n      ssh: [\"default\"]\n", "service web builds with SSH default"],
-    ["a build cache read from a host folder", "  web:\n    build:\n      context: ..\n      cache_from: [\"type=local,src=/srv/cache\"]\n", "service web builds with host cache type=local,src=/srv/cache"],
-    ["a build cache written to a host folder", "  web:\n    build:\n      context: ..\n      cache_to: [\"type=local,dest=/srv/cache\"]\n", "service web builds with host cache type=local,dest=/srv/cache"],
+    ["a build cache read with exporter attributes", "  web:\n    build:\n      context: ..\n      cache_from: [\"TYPE=local,src=/srv/cache\"]\n", "service web builds with cache_from TYPE=local,src=/srv/cache"],
+    ["a build cache written anywhere", "  web:\n    build:\n      context: ..\n      cache_to: [\"type=registry,ref=shop/web:buildcache\"]\n", "service web builds with cache_to type=registry,ref=shop/web:buildcache"],
     ["cgroup host", "  web:\n    image: nginx:1.29-alpine\n    cgroup: host\n", "service web sets cgroup host"],
     [
       "a privileged lifecycle hook",
@@ -311,11 +311,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     ],
     ["a volume driver other than local", "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"uploads:/data\"]\nvolumes:\n  uploads:\n    driver: rclone\n", "volume uploads uses driver rclone"],
     ["an env_file outside the target", "  web:\n    image: nginx:1.29-alpine\n    env_file: /etc/hostname\n", "service web reads env_file /etc/hostname, which resolves to /etc/hostname, outside the target directory"],
-    [
-      "an env_file path that uses a variable",
-      "  web:\n    image: nginx:1.29-alpine\n    env_file:\n      - path: ${HOME}/.config/shop/app.env\n        required: false\n",
-      "/${HOME}/.config/shop/app.env, whose path uses a variable",
-    ],
+    ["an env_file path that a variable points outside the target", "  web:\n    image: nginx:1.29-alpine\n    env_file: ${HOME}/.config/shop/app.env\n", "/.config/shop/app.env, which resolves to "],
     [
       "a secret file outside the target",
       "  web:\n    image: nginx:1.29-alpine\n    secrets: [\"hosts\"]\nsecrets:\n  hosts:\n    file: /etc/hosts\n",
@@ -452,17 +448,6 @@ volumes:
     git(root, "add", "-A");
     git(root, "commit", "-q", "-m", "link");
     await expect(load(root)).rejects.toThrow(`/shared/uploads, which resolves to ${await realpath(outside)}/uploads, outside the target directory`);
-  });
-
-  test("reject a bind mount through a dangling symbolic link that points outside the target", async () => {
-    const root = await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: [\"../results:/results\"]\n");
-    await symlink("../../../qa-interns-missing-results", join(root, "results"));
-    git(root, "add", "-A");
-    git(root, "commit", "-q", "-m", "link");
-    const error = await load(root).catch((reason: unknown) => reason);
-    if (!(error instanceof Error)) throw new Error("loadTarget accepted a dangling link that leaves the target");
-    expect(error.message).toContain("/results, which resolves to ");
-    expect(error.message).toContain("/qa-interns-missing-results, outside the target directory");
   });
 
   test("reject a Compose file outside the target, by its path or through a symbolic link", async () => {

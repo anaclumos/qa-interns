@@ -7,7 +7,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 ## Requirements
 
 - Linux on x86-64. Chrome for Testing has no Linux ARM64 build.
-- Docker Engine with Compose v2 and the `isolated` bridge gateway mode. `qa-interns doctor` checks both.
+- Docker Engine with Compose 5.0 or later and the `isolated` bridge gateway mode. `qa-interns doctor` checks both. Compose 2 drops `env_file` paths from `docker compose config --no-env-resolution`, which the target checks read.
 - Bun 1.4 or later, and Git.
 - At least one agent login: Claude Code, Codex, or Cursor (see [Logins](#logins)).
 - Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, and each service's `mem_limit` (1 GiB when the service sets none).
@@ -86,10 +86,10 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - A `devices` entry, a `device_cgroup_rules` entry, `gpus`, a device reservation under `deploy.resources.reservations`, a `cap_add` entry, or a `security_opt` entry that contains `unconfined`.
 - `use_api_socket: true`, which mounts the Docker socket.
 - A `volumes_from` entry with a `container:` source.
-- A build with a `network` other than `default` or `none`, `privileged: true`, an `entitlements` entry, an `ssh` entry, or a `cache_from` or `cache_to` entry of `type=local`.
-- A bind mount, `env_file`, secret or config `file`, build context, Dockerfile, or additional build context whose path lies outside the target directory, and an additional build context from an `oci-layout://` directory. `run` reads `env_file` paths before variable interpolation, so it also rejects an `env_file` path that contains a variable. A path is checked after its symbolic links are resolved, dangling ones included, so a Docker socket is rejected whether it is mounted directly or through a symbolic link, and so is a path under a symbolic link that points outside the target.
+- A build with a `network` other than `default` or `none`, `privileged: true`, an `entitlements` entry, an `ssh` entry, a `cache_to` entry, or a `cache_from` entry other than an image reference.
+- A bind mount, `env_file`, secret or config `file`, build context, Dockerfile, or additional build context whose path lies outside the target directory, and an additional build context from an `oci-layout://` directory. A path is checked after its symbolic links are resolved, so a Docker socket is rejected whether it is mounted directly or through a symbolic link, and so is a missing path under a symbolic link that points outside the target.
 
-`devcontainer up` adds settings from `devcontainer.json`, its features, and the `devcontainer.metadata` label of the dev container image to the dev container service. After `devcontainer up` creates an environment's dev container, `run` renders the Compose files that the dev container was created from, including the override the Dev Container CLI wrote, and applies the checks above to the dev container service and to the project's volumes, networks, secrets, and configs. When a check fails, the environment is torn down before its intern starts.
+`devcontainer up` writes settings from `devcontainer.json`, its features, and the `devcontainer.metadata` label of the dev container image into its own Compose files. After `devcontainer up` creates an environment's dev container, `run` renders the environment's Compose files with and without the files the Dev Container CLI wrote. Those files may add volumes and may change only the `image`, `build`, `entrypoint`, `command`, `init`, `user`, `environment`, `labels`, `privileged`, `cap_add`, `security_opt`, and `volumes` of the dev container service. `run` then applies the checks above, except the build checks, to every target service in the environment's copy of the target, with the environment variables `devcontainer up` used. When a check fails, the environment is torn down before its intern starts.
 
 Published ports are allowed; QA Interns removes them.
 
