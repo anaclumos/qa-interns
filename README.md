@@ -7,7 +7,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 ## Requirements
 
 - Linux on x86-64. Chrome for Testing has no Linux ARM64 build.
-- Docker Engine with Compose v2 and the `isolated` bridge gateway mode. `qa-interns doctor` checks both.
+- Docker Engine with Compose 5.0 or later and the `isolated` bridge gateway mode. `qa-interns doctor` checks both. Compose 2 drops `env_file` paths from `docker compose config --no-env-resolution`, which the target checks read.
 - Bun 1.4 or later, Git, and `flock` from util-linux.
 - At least one agent login: Claude Code, Codex, Cursor, or Grok (see [Logins](#logins)).
 - Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, 128 MiB for its relay when the target lists `egress` hosts, and each service's `mem_limit` (1 GiB when the service sets none).
@@ -80,14 +80,21 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - An `include` path, `project_directory`, or `env_file`, or an `extends.file`, that is not an existing path inside the target directory. These paths are checked as written: a path that contains `$` or `:`, or starts with `~` or `github.com/`, is rejected, because Compose may expand it or load it from a remote source. The `.env` file that Compose reads from an included project's directory must also resolve inside the target. An `include` inside an included file cannot set a relative `project_directory` or `env_file`, because Compose resolves those against the directory it runs in.
 - A `container_name`.
 - An external volume or network, or a volume or network with an explicit `name:`.
+- A volume with `driver_opts` or a `driver` other than `local`.
 - A `network_mode` other than `service:<name>`, including `host`.
 - A service named `qa-proxy`, `qa-relay`, or `qa-runner`, in any letter case.
 - A network alias that is the name of another service, `qa-proxy`, `qa-relay`, or `qa-runner`, or that two services declare.
 - An `egress` host that is the name or a network alias of a service.
 - Two services whose names differ only in case, since Docker's network names are case-insensitive and prebuilt image tags are lowercase.
-- `privileged: true`, `pid: host`, `ipc: host`, or `userns_mode: host`.
-- A `devices` entry, a `cap_add` entry, or a `security_opt` entry that contains `unconfined`.
-- A bind mount whose source lies outside the target directory. A source that exists is checked after its symbolic links are resolved, so a Docker socket is rejected whether it is mounted directly or through a symbolic link.
+- `privileged: true`, or a `pre_start`, `post_start`, or `pre_stop` hook with `privileged: true`.
+- A `pid`, `ipc`, `uts`, `cgroup`, or `userns_mode` of `host` or `container:<name>`.
+- A `devices` entry, a `device_cgroup_rules` entry, `gpus`, a device reservation under `deploy.resources.reservations`, a `runtime` other than `runc` (the NVIDIA runtime, for example, can add host GPUs), a `cap_add` entry, or a `security_opt` entry other than `no-new-privileges`. A seccomp or AppArmor profile, a label option, or `unconfined` can each loosen the default confinement.
+- `use_api_socket: true`, which mounts the Docker socket.
+- A `volumes_from` entry with a `container:` source.
+- A build with a `network` other than `default` or `none`, `privileged: true`, an `entitlements` entry, an `ssh` entry, a `cache_to` entry, or a `cache_from` entry other than an image reference.
+- A bind mount, `env_file`, secret or config `file`, build context, Dockerfile, additional build context, or project `.env` file (the `.env` beside the first Compose file, which Compose reads for interpolation) whose path lies outside the target directory, and an additional build context from an `oci-layout://` directory. A path is checked after its symbolic links are resolved, so a Docker socket is rejected whether it is mounted directly or through a symbolic link, and so is a missing path under a symbolic link that points outside the target.
+
+`devcontainer up` writes settings from `devcontainer.json`, its features, and the `devcontainer.metadata` label of the dev container image into its own Compose files. After `devcontainer up` creates an environment's dev container, `run` renders the environment's Compose files with and without the files the Dev Container CLI wrote. Those files may add volumes and may change only the `image`, `build`, `entrypoint`, `command`, `init`, `user`, `environment`, `labels`, `privileged`, `cap_add`, `security_opt`, and `volumes` of the dev container service. `run` then applies the checks above, except the build checks, to every target service in the environment's copy of the target, with the environment variables `devcontainer up` used. When a check fails, the environment is torn down before its intern starts.
 
 Published ports and build `tags` are allowed; QA Interns removes them. `logging` settings are allowed; QA Interns replaces them with its own log limit (see [Isolation](#isolation)).
 
@@ -129,7 +136,7 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 1. Exports the target at the commit and checks its dev container and Compose files.
 2. Builds the target's images once.
-3. Starts one environment per intern, each as its own Compose project on its own isolated network, at most as many at once as free memory and login capacity allow, and at most four starting at a time.
+3. Starts one environment per intern, each as its own Compose project on its own isolated network, at most as many at once as free memory and login capacity allow, and at most four starting at a time. Checks each dev container that `devcontainer up` created.
 4. Starts one agent per intern inside that intern's runner container, over the Agent Client Protocol.
 5. Gives each intern the rules, one charter, the application URLs, and the seeded accounts. The intern tests until its time box ends and writes each finding as JSON.
 6. Groups duplicate findings in one judge pass, then hands each group to a different intern in a fresh environment, on a different provider when one is free, which reproduces it from the written finding alone.
