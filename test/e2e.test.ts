@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { cp, mkdir, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -74,6 +75,14 @@ async function askOptions(runId: string, name: string): Promise<AskOptions> {
     file: "groups.json",
     parse: (raw) => JSON.parse(raw),
   };
+}
+
+function internalSubnet(runDir: string, internId: string): string {
+  const network = readFileSync(join(runDir, "envs", internId, "compose.qa.yml"), "utf8")
+    .split("\n")
+    .find((entry) => entry.startsWith("  qa_internal: "));
+  if (network === undefined) throw new Error(`compose.qa.yml of ${internId} has no qa_internal network`);
+  return JSON.parse(network.slice("  qa_internal: ".length)).ipam.config[0].subnet;
 }
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
@@ -184,9 +193,12 @@ USER qa
   );
 
   test(
-    "an intern at a usage limit moves to another login and restarts its charter, and each attempt keeps its own output",
+    "an intern at a usage limit moves to another login and restarts its charter in a free subnet, and each attempt keeps its own output",
     async () => {
       const lines: string[] = [];
+      const blocker = `qair-f-e2e-${id}-slot`;
+      let first = null as string | null;
+      let blocked = null as number | null;
       const runDir = await runQa({
         dir: target,
         rev: "HEAD",
@@ -199,11 +211,20 @@ USER qa
           { id: "claude-no-confirm", provider: "claude", confirms: false, model: "fake-model-c" },
         ]),
         runnerImage: async () => fakeImage,
-        print: (line) => lines.push(line),
+        print: (line) => {
+          lines.push(line);
+          const [dir] = lines;
+          if (dir === undefined || line !== "i1 starting on claude-confirm-limit (claude)") return;
+          first = internalSubnet(dir, "i1");
+          blocked = Bun.spawnSync(["docker", "network", "create", "--internal", "--subnet", first, blocker], { stdout: "ignore" }).exitCode;
+        },
+      }).finally(async () => {
+        if (blocked === 0) await execute(["docker", "network", "rm", blocker]);
       });
 
       expect(lines).toContain("i1 starting on claude-charter-limit (claude)");
       expect(lines).toContain("i1 starting on claude-confirm-limit (claude)");
+      expect(internalSubnet(runDir, "i1")).not.toBe(first);
       expect(lines).toContain("c1 starting on claude-confirm-limit (claude)");
       expect(lines).toContain("c1 starting on claude-no-confirm (claude)");
       const state = await readState(runDir);
