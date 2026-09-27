@@ -67,6 +67,35 @@ async function until(check: () => boolean | Promise<boolean>, what: string) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
+function fakeSession(label: string): Promise<Session> {
+  return openSession({
+    container: agent,
+    provider: { ...providers.claude, adapter: ["node", "/opt/qa/fake-agent.mjs"] },
+    transcript: path.join(internDir, `${label}-transcript.jsonl`),
+    adapterLog: path.join(internDir, `${label}-adapter.log`),
+  });
+}
+
+const findAdapter = [
+  "const { openSync, readdirSync, readFileSync, writeSync } = require('node:fs');",
+  "const pid = readdirSync('/proc')",
+  "  .filter((entry) => Number.isInteger(Number(entry)))",
+  "  .find((entry) => readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\\0')[1] === '/opt/qa/fake-agent.mjs');",
+];
+
+function printAsAdapter(pieces: string): Promise<string> {
+  const script = [...findAdapter, "const fd = openSync(`/proc/${pid}/fd/1`, 'w');", `for (const piece of ${pieces}) writeSync(fd, piece);`];
+  return docker("exec", agent, "node", "-e", script.join("\n"));
+}
+
+function signalAdapter(signal: "SIGSTOP" | "SIGCONT"): Promise<string> {
+  return docker("exec", agent, "node", "-e", [...findAdapter, `process.kill(Number(pid), "${signal}");`].join("\n"));
+}
+
+function updateLines(...updates: object[]): string {
+  return updates.map((update) => `${JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "fake-session-1", update } })}\n`).join("");
+}
+
 describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
   let session: Session;
 
@@ -196,4 +225,74 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
       { stopReason: "cancelled" },
     ]);
   });
+
+  test("updates the agent prints between turns do not reach the next turn", async () => {
+    const between = await fakeSession("between");
+    try {
+      const idle = { stopReason: "end_turn", toolCalls: 0, lastMessage: "Nothing more to test." };
+      expect(await between.prompt("Keep testing your charter.")).toEqual(idle);
+      const stale = updateLines(
+        { sessionUpdate: "tool_call", toolCallId: "call-9", title: "Fetch the home page", kind: "fetch", status: "in_progress" },
+        { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Printed between turns." } },
+      );
+      await printAsAdapter(JSON.stringify([stale]));
+      await until(
+        () => readFileSync(path.join(internDir, "between-transcript.jsonl"), "utf8").includes("Printed between turns."),
+        "the updates to reach the transcript",
+      );
+      expect(await between.prompt("Keep testing your charter.")).toEqual(idle);
+    } finally {
+      await between.close();
+    }
+  });
+
+  test("a turn keeps the first 300 characters of the agent's text, printed one byte at a time", async () => {
+    const long = await fakeSession("long");
+    try {
+      const turn = long.prompt("SLOW: keep working until you are stopped.");
+      await until(() => readFileSync(path.join(internDir, "long-transcript.jsonl"), "utf8").includes("Slow turn started."), "the slow turn to start");
+      const text = "The invoice total differs from the sum of its line items. ".repeat(20);
+      await printAsAdapter(`${JSON.stringify(updateLines({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } }))}.split("")`);
+      await long.cancel();
+      expect(await turn).toEqual({ stopReason: "cancelled", toolCalls: 0, lastMessage: `Slow turn started.${text}`.slice(0, 300) });
+    } finally {
+      await long.close();
+    }
+  });
+
+  test("an agent line of more than 64 MiB with no newline fails the session", async () => {
+    const overlong = await fakeSession("overlong");
+    try {
+      const turn = overlong.prompt("SLOW: keep working until you are stopped.");
+      await until(
+        () => readFileSync(path.join(internDir, "overlong-transcript.jsonl"), "utf8").includes("Slow turn started."),
+        "the slow turn to start",
+      );
+      const flood = printAsAdapter("['x'.repeat(64 * 2 ** 20 + 1)]");
+      await expect(turn).rejects.toThrow(`docker exec -i -w /qa/out ${agent} node /opt/qa/fake-agent.mjs printed more than 64 MiB without a newline`);
+      await flood;
+    } finally {
+      await overlong.close();
+    }
+    expect(execProcesses(agent)).toHaveLength(0);
+  }, 60_000);
+
+  test("requests that make qa-interns send a stopped agent more than 64 MiB fail the session", async () => {
+    const stalled = await fakeSession("oversent");
+    try {
+      const turn = stalled.prompt("SLOW: keep working until you are stopped.");
+      await until(
+        () => readFileSync(path.join(internDir, "oversent-transcript.jsonl"), "utf8").includes("Slow turn started."),
+        "the slow turn to start",
+      );
+      await signalAdapter("SIGSTOP");
+      const flood = printAsAdapter("Array.from({ length: 32 }, (_, id) => JSON.stringify({ jsonrpc: '2.0', id, method: 'x'.repeat(2 ** 20) }) + '\\n')");
+      await expect(turn).rejects.toThrow(`qa-interns sent more than 64 MiB to docker exec -i -w /qa/out ${agent} node /opt/qa/fake-agent.mjs`);
+      await flood;
+    } finally {
+      await signalAdapter("SIGCONT");
+      await stalled.close();
+    }
+    expect(execProcesses(agent)).toHaveLength(0);
+  }, 60_000);
 });
