@@ -87,9 +87,9 @@ export async function dockerConfig(dir: string): Promise<string> {
   const config = join(dir, "docker");
   await mkdir(config, { recursive: true, mode: 0o700 });
   for (const entry of existsSync(source) ? await readdir(source) : []) {
-    if (entry === "config.json") await writeFile(join(config, entry), await withoutProxies(join(source, entry)), { mode: 0o600 });
-    else await symlink(join(source, entry), join(config, entry));
+    if (entry.toLowerCase() !== "config.json") await symlink(join(source, entry), join(config, entry));
   }
+  await writeFile(join(config, "config.json"), await withoutProxies(join(source, "config.json")), { mode: 0o600 });
   return config;
 }
 
