@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { buildImages, environmentMemory, freeSlot, renderOverride, runnerEnv, slotSubnets, writeChromePolicy, type EnvironmentSpec } from "../src/environment.ts";
-import { loadTarget, type Target } from "../src/target.ts";
+import { execute, loadTarget, type Target } from "../src/target.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -285,7 +285,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     const mib = 1024 ** 2;
     const target = await loadTarget(ref, ledgerSource);
     expect(environmentMemory(target)).toBe(4 * gib + 128 * mib);
-    const limited: Target = { ...target, services: { ...target.services, db: { build: false, memLimit: 512 * mib, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 } } };
+    const limited: Target = { ...target, services: { ...target.services, db: { build: false, image: "postgres:17.11-alpine", memLimit: 512 * mib, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 } } };
     expect(environmentMemory(limited)).toBe(3 * gib + 640 * mib);
     const replicated: Target = { ...limited, services: { ...limited.services, db: { ...limited.services.db!, replicas: 3 } } };
     expect(environmentMemory(replicated)).toBe(4 * gib + 640 * mib);
@@ -298,10 +298,46 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     const target = await loadTarget(ref, ledgerSource);
     const profiled: Target = {
       ...target,
-      services: { web: { build: true, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false, replicas: 1 } },
+      services: { web: { build: true, image: null, memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false, replicas: 1 } },
     };
     expect(environmentMemory(profiled)).toBe(2 * gib + 128 * mib);
     expect(await buildImages("3f9a1c2e", profiled, ledgerSource)).toEqual({});
+  });
+
+  test("run a service without build that names a built service's image on the run's build of that service", async () => {
+    const source = await scratch();
+    const runId = crypto.randomUUID().slice(0, 8);
+    const scope = `qair-t-shared-${runId}/`;
+    await Bun.write(join(source, "Dockerfile"), "FROM scratch\nCOPY Dockerfile /Dockerfile\n");
+    await Bun.write(
+      join(source, ".devcontainer", "devcontainer.json"),
+      JSON.stringify({
+        dockerComposeFile: "compose.yml",
+        service: "web",
+        customizations: { "qa-interns": { urls: { app: "http://web:3000" }, ready: "http://web:3000/health", seed: "node seed.mjs" } },
+      }),
+    );
+    await Bun.write(
+      join(source, ".devcontainer", "compose.yml"),
+      `services:
+  web:
+    build: ..
+    image: ${scope}app:latest
+  worker:
+    image: ${scope}app:latest
+  db:
+    image: postgres:17-alpine
+`,
+    );
+    const target = await loadTarget(ref, source);
+    const images = await buildImages(runId, target, source);
+    const listed = (await execute(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])).split("\n");
+    const created = listed.filter((image) => [`qa-${runId}-`, scope].some((prefix) => image.startsWith(prefix)));
+    if (created.length > 0) await execute(["docker", "image", "rm", ...created]);
+    expect(images).toEqual({ web: `qa-${runId}-web:latest`, worker: `qa-${runId}-web:latest` });
+    const runDir = await scratch();
+    const config = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target, { images }), 1000, 1000));
+    expect(config.services.worker).toMatchObject({ image: `qa-${runId}-web:latest`, pull_policy: "never" });
   });
 
   test("route every environment host around the proxy and allow only those hosts in the browser", () => {

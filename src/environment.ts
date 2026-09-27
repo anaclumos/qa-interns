@@ -210,7 +210,12 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   const services = Object.entries(target.services)
     .filter(([, service]) => service.build && service.active)
     .map(([name]) => name);
-  const images = Object.fromEntries(services.map((name) => [name, `qa-${runId}-${name.toLowerCase()}:latest`]));
+  const image = (name: string) => `qa-${runId}-${name.toLowerCase()}:latest`;
+  const images = Object.fromEntries(services.map((name) => [name, image(name)]));
+  for (const [name, service] of Object.entries(target.services)) {
+    const builder = services.find((other) => target.services[other]?.image === service.image);
+    if (!service.build && service.image !== null && builder !== undefined) images[name] = image(builder);
+  }
   if (services.length === 0) return images;
   const dir = await mkdtemp(join(tmpdir(), "qa-interns-tags-"));
   try {
