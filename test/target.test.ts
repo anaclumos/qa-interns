@@ -359,24 +359,32 @@ networks:
 
   test("accept include and extends files inside the target, resolved the way Compose resolves them", async () => {
     const root = await repo({
-      ".devcontainer/devcontainer.json": devcontainer(),
+      ".devcontainer/devcontainer.json": devcontainer({ dockerComposeFile: ["compose.yml", "extra/second.yml"] }),
       ".devcontainer/compose.yml": `include:
   - inc/worker.yml
   - path: inc/cron.yml
     project_directory: ..
     env_file: ../cron.env
+  - path: inc/job/job.yml
+    project_directory: ""
+    env_file: /dev/null
 services:
   web:
     extends: { file: base.yml, service: base }
 `,
+      ".devcontainer/extra/second.yml": "include:\nservices:\n  extra:\n    extends: { file: base.yml, service: base }\n  gone: !reset null\n",
       ".devcontainer/base.yml": "services:\n  base:\n    image: nginx:1.29-alpine\n",
-      ".devcontainer/inc/worker.yml": "include: [queue.yml]\nservices:\n  worker:\n    extends: { file: ../base.yml, service: base }\n",
+      ".devcontainer/inc/worker.yml": "include: [queue.yml]\nservices:\n  worker:\n    extends: { file: ../chain/mid.yml, service: mid }\n",
       ".devcontainer/inc/queue.yml": "services:\n  queue:\n    image: redis:8.2-alpine\n",
       ".devcontainer/inc/cron.yml": "services:\n  cron:\n    extends: { file: .devcontainer/base.yml, service: base }\n    image: busybox:${CRON_TAG}\n",
+      ".devcontainer/inc/job/job.yml": "services:\n  job:\n    extends: { file: jobbase.yml, service: base }\n",
+      ".devcontainer/inc/job/jobbase.yml": "services:\n  base:\n    image: busybox:1.37\n",
+      ".devcontainer/chain/mid.yml": "include: [missing.yml]\nservices:\n  mid:\n    extends: { file: leaf.yml, service: leaf }\n",
+      ".devcontainer/chain/leaf.yml": "services:\n  leaf:\n    image: nginx:1.29-alpine\n",
       "cron.env": "CRON_TAG=1.37\n",
     });
     const target = await load(root);
-    expect(Object.keys(target.services).sort()).toEqual(["cron", "queue", "web", "worker"]);
+    expect(Object.keys(target.services).sort()).toEqual(["cron", "extra", "job", "queue", "web", "worker"]);
   });
 
   const outsideReferences: [string, (outside: string) => [Record<string, string>, string]][] = [
@@ -424,17 +432,38 @@ services:
       ],
     ],
     [
-      "a remote include",
+      "an OCI include",
       () => [
         { "compose.yml": "include: [oci://qa-interns.invalid/compose:1]\nservices:\n  web:\n    image: nginx:1.29-alpine\n" },
-        "compose.yml names oci://qa-interns.invalid/compose:1 in include, which does not resolve",
+        "compose.yml names oci://qa-interns.invalid/compose:1 in include, which Compose may expand or load from a remote source",
       ],
     ],
     [
-      "an include path with a variable",
+      "a Git include in SCP form, even when that literal path is committed",
       () => [
-        { "compose.yml": "include: [\"${QA_INTERNS_INCLUDE:-inc/a.yml}\"]\nservices:\n  web:\n    image: nginx:1.29-alpine\n", "inc/a.yml": "services: {}\n" },
-        "compose.yml names ${QA_INTERNS_INCLUDE:-inc/a.yml} in include, which does not resolve",
+        { "compose.yml": "include: [\"git@qa-interns.invalid:compose.git\"]\nservices:\n  web:\n    image: nginx:1.29-alpine\n", "git@qa-interns.invalid:compose.git": "services: {}\n" },
+        "compose.yml names git@qa-interns.invalid:compose.git in include, which Compose may expand or load from a remote source",
+      ],
+    ],
+    [
+      "a GitHub include, even when that literal path is committed",
+      () => [
+        { "compose.yml": "include: [github.com/qa-interns/compose]\nservices:\n  web:\n    image: nginx:1.29-alpine\n", "github.com/qa-interns/compose": "services: {}\n" },
+        "compose.yml names github.com/qa-interns/compose in include, which Compose may expand or load from a remote source",
+      ],
+    ],
+    [
+      "an extends file with a variable, even when that literal path is committed",
+      () => [
+        { "compose.yml": "services:\n  web:\n    extends: { file: \"${QA_INTERNS_DIR}/base.yml\", service: base }\n", "${QA_INTERNS_DIR}/base.yml": "services:\n  base:\n    image: nginx:1.29-alpine\n" },
+        "compose.yml names ${QA_INTERNS_DIR}/base.yml in services.web.extends.file, which Compose may expand or load from a remote source",
+      ],
+    ],
+    [
+      "an extends file under the home directory, even when that literal path is committed",
+      () => [
+        { "compose.yml": "services:\n  web:\n    extends: { file: \"~/base.yml\", service: base }\n", "~/base.yml": "services:\n  base:\n    image: nginx:1.29-alpine\n" },
+        "compose.yml names ~/base.yml in services.web.extends.file, which Compose may expand or load from a remote source",
       ],
     ],
   ];
@@ -457,6 +486,20 @@ services:
     git(root, "add", "-A");
     git(root, "commit", "-q", "-m", "link");
     await expect(load(root)).rejects.toThrow("compose.yml names linked.yml in include, which does not resolve to an existing path inside the target directory");
+  });
+
+  test("reject an included project whose .env file is a symbolic link that points outside the target", async () => {
+    const outside = await scratch("qa-interns-outside-");
+    await Bun.write(join(outside, "host.env"), "TAG=1.37\n");
+    const root = await repo({
+      ".devcontainer/devcontainer.json": devcontainer(),
+      ".devcontainer/compose.yml": "include: [inc/a.yml]\nservices:\n  web:\n    image: nginx:1.29-alpine\n",
+      ".devcontainer/inc/a.yml": "services:\n  worker:\n    image: busybox:${TAG}\n",
+    });
+    await symlink(join(outside, "host.env"), join(root, ".devcontainer", "inc", ".env"));
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "link");
+    await expect(load(root)).rejects.toThrow("compose.yml includes inc/a.yml, whose project directory has a .env file that resolves outside the target directory");
   });
 
   test("reject a single-container dev container", async () => {
