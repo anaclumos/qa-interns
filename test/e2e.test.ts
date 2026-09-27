@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { writeChromePolicy } from "../src/environment.ts";
+import { removeCopies, writeChromePolicy } from "../src/environment.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { newRunId, readState } from "../src/state.ts";
@@ -53,6 +53,12 @@ async function leftovers(runId: string): Promise<string[]> {
 async function workspaces(runDir: string, state: RunState): Promise<string[]> {
   const names = await Promise.all(state.interns.map(async (intern) => (await readdir(join(runDir, "envs", intern.id))).filter((entry) => entry === `qa-${state.runId}-${intern.id}` || entry === "tmp")));
   return names.flat();
+}
+
+async function disks(runDir: string, state: RunState): Promise<string[]> {
+  const images = await Promise.all(state.interns.map(async (intern) => (await readdir(join(runDir, "interns", intern.id))).filter((entry) => entry.endsWith(".img") || entry.endsWith(".img.new"))));
+  const mounts = readFileSync("/proc/self/mountinfo", "utf8").split("\n").filter((line) => line.includes(runDir));
+  return [...images.flat(), ...mounts];
 }
 
 function intern(state: RunState, internId: string) {
@@ -204,6 +210,7 @@ USER qa
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
     },
     timeout,
   );
@@ -282,6 +289,7 @@ USER qa
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
     },
     timeout,
   );
@@ -299,6 +307,7 @@ USER qa
         if ((await capture(["docker", "network", "inspect", other])).code === 0) await execute(["docker", "network", "rm", other]);
       }
       expect(await leftovers(runId)).toEqual([]);
+      expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
     },
     timeout,
   );
@@ -316,8 +325,10 @@ USER qa
       } finally {
         await execute(["docker", "rm", "-f", held]);
         await execute(["docker", "network", "rm", held]);
+        await removeCopies(join(root, "asks", runId), runId, fakeImage);
       }
       expect(await leftovers(runId)).toEqual([]);
+      expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
     },
     timeout,
   );
@@ -379,19 +390,20 @@ USER qa
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
     },
     timeout,
   );
 
   test(
-    "a runner file stops at 1 GiB, and an intern whose /qa/out passes 1 GiB is stopped and keeps its findings",
+    "an intern that fills its 1 GiB disk, partly with a deleted file it keeps open, is stopped and keeps its findings",
     async () => {
       const lines: string[] = [];
       const run = runQa({
         dir: target,
         rev: "HEAD",
         interns: 1,
-        minutes: 0.5,
+        minutes: 5,
         confirmMinutes: 0.5,
         loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
         runnerImage: async () => fakeImage,
@@ -406,15 +418,19 @@ USER qa
       expect(intern(state, "i1")).toMatchObject({
         status: "failed",
         findings: 1,
-        detail: `${join(runDir, "interns", "i1", "out")} holds more than 1 GiB, so its runner was stopped`,
+        detail: `${join(runDir, "interns", "i1", "out")} filled its 1 GiB disk, so its runner was stopped`,
       });
-      expect(Bun.file(join(runDir, "interns", "i1", "out", "evidence", "big.bin")).size).toBe(1024 ** 3);
+      const big = Bun.file(join(runDir, "interns", "i1", "out", "evidence", "big.bin")).size;
+      expect(big).toBeGreaterThan(0);
+      expect(big).toBeLessThan(1024 ** 3 - 600 * 1024 ** 2);
+      expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "held.bin")).exists()).toBe(false);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups.map((group: { findings: { id: string }[] }) => group.findings.map((finding) => finding.id))).toEqual([["i1/fake-home"]]);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
     },
     timeout,
   );

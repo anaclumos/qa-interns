@@ -21,6 +21,7 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 - No MCP anywhere. Every `session/new` sends `mcpServers: []`. Claude and Codex have their MCP sources blocked in `src/providers.ts`, Grok has them blocked by the root-owned `/etc/grok/requirements.toml` that `runner/Dockerfile` writes, and a Cursor runner has no MCP source because its home is an empty tmpfs and `CURSOR_CONFIG_DIR` points Cursor's settings and sessions into that home, out of the store. Adding a provider means finding and blocking its MCP sources first.
 - The runner container holds no source, no Docker socket, and no credential beyond its own login store. Egress goes only through the proxy allowlist in `src/providers.ts`.
 - Target services reach outside hosts only through `qa-relay`, and only the target's `egress` hosts. The runner and the target never share a proxy: the runner does not join `qa_relay`, and target services join neither `qa_agent` nor `qa_egress`.
+- Every attempt's `/qa/out` is its own 1 GiB ext4 disk. The disk helper in `src/environment.ts` is the only privileged container that QA Interns adds to a run. It runs the runner image with fixed scripts from that file on paths the orchestrator chose.
 - Usage-limit detection is structural: JSON-RPC `code` and `data` fields only, never message text.
 - A Codex `auth.json` serves one running process at a time.
 - Docker objects of a run are named `qa-<runId>-*` and prebuilt images `qa-<runId>-<service in lowercase>:latest`. Manual and test work uses other prefixes and removes what it creates.

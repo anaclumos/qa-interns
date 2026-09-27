@@ -1,9 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
-import { closeSync, linkSync, openSync, writeSync } from "node:fs";
-import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { cp, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import {
   buildImages,
@@ -16,7 +15,6 @@ import {
   slotSubnets,
   startEnvironment,
   stopRun,
-  watchOut,
   writeChromePolicy,
   type EnvironmentSpec,
 } from "../src/environment.ts";
@@ -74,23 +72,6 @@ async function normalize(runDir: string, composeFiles: string[], override: strin
   if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
   return JSON.parse(proc.stdout.toString());
 }
-
-describe("watchOut", () => {
-  test("count a file with four names once", async () => {
-    const dir = await scratch();
-    const recording = join(dir, "recording.webm");
-    const chunk = randomBytes(1024 ** 2);
-    const fd = openSync(recording, "w");
-    for (let mib = 0; mib < 300; mib += 1) writeSync(fd, chunk);
-    closeSync(fd);
-    for (const name of ["copy-1.webm", "copy-2.webm", "copy-3.webm"]) linkSync(recording, join(dir, name));
-    const quiet = new AbortController();
-    const watching = watchOut(dir, quiet.signal);
-    await Bun.sleep(2500);
-    quiet.abort();
-    await expect(watching).rejects.toThrow("aborted");
-  }, 30_000);
-});
 
 describe.skipIf(!dockerAvailable)("slots", () => {
   test("map a slot to its internal, relay, agent, and egress subnets", () => {
@@ -616,6 +597,29 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
 
 describe.skipIf(!dockerAvailable)("startEnvironment", () => {
   test(
+    "save the output disk of an environment that only down tears down",
+    async () => {
+      const runId = crypto.randomUUID().slice(0, 8);
+      const runDir = await scratch();
+      const image = await ensureRunnerImage();
+      await writeChromePolicy(runDir, {});
+      const out = join(runDir, "interns", "i1", "out");
+      const runner = { image, out, env: runnerEnv({}), mounts: [], files: [], tmpfs: [] };
+      try {
+        const environment = await startEnvironment(spec(runDir, null, { runId, slot: await freeSlot(new Set()), runner }));
+        await execute(["docker", "exec", environment.runner, "sh", "-c", "mkdir /qa/out/findings && echo '{}' > /qa/out/findings/left.json"]);
+      } finally {
+        await stopRun(runId);
+        await removeCopies(runDir, runId, image);
+      }
+      expect(await Bun.file(join(out, "findings", "left.json")).text()).toBe("{}\n");
+      expect(existsSync(`${out}.img`)).toBe(false);
+      expect((await stat(out)).dev).toBe((await stat(dirname(out))).dev);
+    },
+    20 * 60_000,
+  );
+
+  test(
     "hand the target only the host variables that hostEnv names",
     async () => {
       const runId = crypto.randomUUID().slice(0, 8);
@@ -803,6 +807,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         }
       } finally {
         await stopRun(runId);
+        await removeCopies(runDir, runId, image);
       }
     },
     5 * 60_000,
