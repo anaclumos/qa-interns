@@ -156,7 +156,7 @@ A finding is confirmed when two or more interns reproduced it.
 
 - Single-container dev containers are not supported yet.
 - The runner image is x86-64 only.
-- Two runs started at the same moment can pick the same subnet; the second fails to start that environment.
+- Two runs that start an environment at the same moment can pick the same subnet; the second fails to start that environment.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
 - An intern waits for a login only while its own run holds a lease. When other runs hold every login it could use, the intern ends as `limited`.
 - Credential locks and the store checks compare real paths, so two hard links to one credential file count as two credentials.
