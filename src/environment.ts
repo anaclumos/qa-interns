@@ -32,6 +32,7 @@ const outLimit = gib;
 const outCheckMs = 1000;
 const fullBelow = 16 * mib;
 const diskSuffix = ".img";
+const diskLabel = "qa-interns.disk";
 const createDiskScript =
   'if [ -e "$2" ] || mountpoint -q "$1"; then echo "$1 already has an output disk" >&2; exit 1; fi; { truncate -s "$4" "$2.new" && mkfs.ext4 -q -F -m 0 -E root_owner="$3" "$2.new" && mount -o loop "$2.new" /mnt && rmdir /mnt/lost+found && umount /mnt && mv "$2.new" "$2" && mount -o loop,nosuid,nodev "$2" "$1"; } || { rm -f "$2.new"; exit 1; }';
 const saveDiskScript =
@@ -425,7 +426,7 @@ async function diskHelper(out: string, image: string, owner: string, script: str
   const dir = dirname(out);
   const name = `${owner}-disk-${crypto.randomUUID().slice(0, 8)}`;
   const mounts = ["-v", "/dev:/dev", "-v", `${dir}:${dir}:rshared`];
-  await execute(["docker", "run", "--rm", "--name", name, "--privileged", "--network", "none", "--user", "0:0", ...mounts, image, "flock", dir, "sh", "-c", script, "sh", out, `${out}${diskSuffix}`, ...args]);
+  await execute(["docker", "run", "--rm", "--name", name, "--label", `${diskLabel}=${owner}`, "--privileged", "--network", "none", "--user", "0:0", ...mounts, image, "flock", dir, "sh", "-c", script, "sh", out, `${out}${diskSuffix}`, ...args]);
 }
 
 export async function createDisk(out: string, image: string, owner: string): Promise<void> {
@@ -496,7 +497,26 @@ export async function saveDisks(runDir: string, name: string, project: string, i
   for (const out of await diskOuts(join(runDir, "interns", name))) await saveDisk(out, image, project);
 }
 
+async function diskHelpers(runId: string, state: "created" | "running"): Promise<string[]> {
+  const listed = await execute(["docker", "ps", "-a", "--filter", `label=${diskLabel}`, "--filter", `status=${state}`, "--format", `{{.ID}} {{.Label "${diskLabel}"}}`]);
+  return listed.split("\n").flatMap((line) => {
+    const [id, owner] = line.split(" ");
+    return id !== undefined && owner !== undefined && owner.startsWith(`qa-${runId}-`) ? [id] : [];
+  });
+}
+
+async function settleDiskHelpers(runId: string): Promise<void> {
+  for (;;) {
+    const created = await diskHelpers(runId, "created");
+    const running = await diskHelpers(runId, "running");
+    if (created.length === 0 && running.length === 0) return;
+    if (created.length > 0) await capture(["docker", "rm", "-f", ...created]);
+    if (running.length > 0) await capture(["docker", "wait", ...running]);
+  }
+}
+
 export async function removeCopies(runDir: string, runId: string, image: string): Promise<void> {
+  await settleDiskHelpers(runId);
   const envs = join(runDir, "envs");
   const names = existsSync(envs) ? await readdir(envs) : [];
   const paths = names.flatMap((name) => [join(name, projectName(runId, name)), join(name, "tmp")]).filter((path) => existsSync(join(envs, path)));
