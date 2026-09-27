@@ -434,9 +434,9 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
   );
 
   test(
-    "keep at most 20 MiB of Docker log for the runner and for the proxy, whatever a process in the runner writes",
+    "keep two log files of 10 MB for the runner and for the proxy, whatever a process in the runner writes",
     async () => {
-      const mib = 1024 ** 2;
+      const file = 10_000_000;
       const runId = crypto.randomUUID().slice(0, 8);
       const runDir = await scratch();
       const image = await ensureRunnerImage();
@@ -458,8 +458,8 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         await execute(["docker", "exec", environment.runner, "node", "-e", flood]);
         for (const container of [environment.runner, proxy]) {
           const kept = (await execute(["docker", "logs", container])).length;
-          expect(kept).toBeGreaterThan(0);
-          expect(kept).toBeLessThanOrEqual(20 * mib);
+          expect(kept).toBeGreaterThan(file);
+          expect(kept).toBeLessThanOrEqual(2 * file);
         }
       } finally {
         await stopRun(runId);
