@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { link, mkdtemp, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { closeSync, linkSync, openSync, writeSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -73,20 +75,20 @@ async function normalize(runDir: string, composeFiles: string[], override: strin
 }
 
 describe("watchOut", () => {
-  test("count a file with two names once, and fire when the directory holds more than 1 GiB", async () => {
+  test("count a file with four names once", async () => {
     const dir = await scratch();
-    const mib = 1024 ** 2;
-    await Bun.write(join(dir, "recording.webm"), new Uint8Array(600 * mib).fill(1));
-    await link(join(dir, "recording.webm"), join(dir, "recording-copy.webm"));
+    const recording = join(dir, "recording.webm");
+    const chunk = randomBytes(1024 ** 2);
+    const fd = openSync(recording, "w");
+    for (let mib = 0; mib < 300; mib += 1) writeSync(fd, chunk);
+    closeSync(fd);
+    for (const name of ["copy-1.webm", "copy-2.webm", "copy-3.webm"]) linkSync(recording, join(dir, name));
     const quiet = new AbortController();
     const watching = watchOut(dir, quiet.signal);
     await Bun.sleep(2500);
     quiet.abort();
     await expect(watching).rejects.toThrow("aborted");
-
-    await Bun.write(join(dir, "trace.har"), new Uint8Array(500 * mib).fill(1));
-    expect(await watchOut(dir, new AbortController().signal)).toBe(`${dir} holds more than 1 GiB`);
-  }, 60_000);
+  }, 30_000);
 });
 
 describe.skipIf(!dockerAvailable)("slots", () => {

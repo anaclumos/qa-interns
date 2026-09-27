@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 
@@ -75,7 +76,7 @@ const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, 
 const login = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8"));
 
 const fill = (file, mib) => {
-  const chunk = Buffer.alloc(1024 ** 2, 1);
+  const chunk = randomBytes(1024 ** 2);
   const fd = openSync(file, "w");
   try {
     for (let index = 0; index < mib; index += 1) writeSync(fd, chunk);
