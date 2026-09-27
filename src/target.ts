@@ -95,6 +95,15 @@ export async function targetEnv(hostEnv: string[], dir: string): Promise<Record<
   return { ...Object.fromEntries([...dockerEnv, ...hostEnv].map((name) => [name, process.env[name]])), DOCKER_CONFIG: await dockerConfig(dir) };
 }
 
+async function executeInTargetEnv(cmd: string[], hostEnv: string[]): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "qa-interns-check-"));
+  try {
+    return await execute(cmd, { env: await targetEnv(hostEnv, dir) });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 export function isHttpUrl(value: string): boolean {
   return URL.canParse(value) && ["http:", "https:"].includes(new URL(value).protocol);
 }
@@ -131,8 +140,6 @@ const composeSchema = z.object({
       cpus: z.number().optional(),
       pids_limit: z.number().optional(),
       deploy: z.object({ replicas: z.number().optional(), resources: z.object({ limits: limitsSchema.optional() }).optional() }).optional(),
-      profiles: z.array(z.string()).optional(),
-      depends_on: z.record(z.string(), z.object({ required: z.boolean().optional() })).optional(),
       privileged: z.boolean().optional(),
       pid: z.string().optional(),
       ipc: z.string().optional(),
@@ -283,33 +290,15 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   await checkComposeReferences(root, composePaths);
   const files = composePaths.flatMap((path) => ["-f", path]);
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
-  const checkDir = await mkdtemp(join(tmpdir(), "qa-interns-check-"));
-  let output: string;
-  try {
-    output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"], {
-      env: await targetEnv(customizations["qa-interns"].hostEnv, checkDir),
-    });
-  } finally {
-    await rm(checkDir, { recursive: true, force: true });
-  }
+  const hostEnv = customizations["qa-interns"].hostEnv;
+  const output = await executeInTargetEnv(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"], hostEnv);
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
-
-  const started =
-    runServices === undefined
-      ? Object.entries(project.services)
-          .filter(([name, entry]) => (entry.profiles ?? []).length === 0 || name === service)
-          .map(([name]) => name)
-      : [service, ...runServices];
-  const starts = new Set<string>();
-  const start = (name: string) => {
-    if (starts.has(name)) return;
-    starts.add(name);
-    for (const [dependency, condition] of Object.entries(project.services[name]?.depends_on ?? {})) {
-      if (condition.required !== false || (project.services[dependency]?.profiles ?? []).length === 0) start(dependency);
-    }
-  };
-  started.forEach(start);
+  const selection = await executeInTargetEnv(
+    ["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", ...(runServices === undefined ? [] : [service, ...runServices])],
+    hostEnv,
+  );
+  const started = composeSchema.parse(JSON.parse(selection)).services;
   const violations: string[] = [];
   const services: Record<string, ComposeService> = {};
   const tags = new Map<string, string>();
@@ -349,7 +338,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     const other = tags.get(name.toLowerCase());
     if (other === undefined) tags.set(name.toLowerCase(), name);
     else violations.push(`services ${other} and ${name} differ only by case, so their names and prebuilt image tags collide`);
-    const active = starts.has(name);
+    const active = Object.hasOwn(started, name);
     const limits = entry.deploy?.resources?.limits;
     const memory = entry.mem_limit ?? limits?.memory;
     services[name] = {
