@@ -635,7 +635,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
   test(
     "keep the proxies of the Docker client configuration, under any key spelling Docker reads, out of every container and image build",
     async () => {
-      const runId = crypto.randomUUID().slice(0, 8);
+      const runId = `btest-${crypto.randomUUID().slice(0, 8)}`;
       const runDir = await scratch();
       const source = join(runDir, "source");
       const dockerConfig = join(runDir, "docker");
