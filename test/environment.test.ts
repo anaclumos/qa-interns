@@ -462,4 +462,39 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
     },
     20 * 60_000,
   );
+
+  test(
+    "keep two log files of 10 MB for the runner and for the proxy, whatever a process in the runner writes",
+    async () => {
+      const file = 10_000_000;
+      const runId = `btest-${crypto.randomUUID().slice(0, 8)}`;
+      const runDir = await scratch();
+      const image = await ensureRunnerImage();
+      await writeChromePolicy(runDir, {});
+      const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv({}), mounts: [], files: [], tmpfs: [] };
+      const flood = [
+        "const { writeFileSync } = require('node:fs');",
+        "const { connect } = require('node:net');",
+        "const pad = 'x'.repeat(8000);",
+        "writeFileSync('/proc/1/fd/1', `${pad}\\n`.repeat(8192));",
+        "const batch = `GET http://x/${pad} HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n`.repeat(128);",
+        "(async () => {",
+        "  for (let i = 0; i < 64; i++) await new Promise((resolve, reject) => connect(3128, 'qa-proxy').on('close', resolve).on('error', reject).resume().end(batch));",
+        "})();",
+      ].join("\n");
+      try {
+        const environment = await startEnvironment(spec(runDir, null, { runId, slot: await freeSlot(new Set()), runner }));
+        const proxy = (await execute(["docker", "compose", "-p", environment.project, "ps", "-q", "qa-proxy"])).trim();
+        await execute(["docker", "exec", environment.runner, "node", "-e", flood]);
+        for (const container of [environment.runner, proxy]) {
+          const kept = (await execute(["docker", "logs", container])).length;
+          expect(kept).toBeGreaterThan(file);
+          expect(kept).toBeLessThanOrEqual(2 * file);
+        }
+      } finally {
+        await stopRun(runId);
+      }
+    },
+    5 * 60_000,
+  );
 });
