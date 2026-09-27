@@ -1,12 +1,13 @@
 import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError, type AnyMessage, type NewSessionResponse } from "@agentclientprotocol/sdk";
 import { spawn } from "node:child_process";
-import { appendFileSync, closeSync, openSync } from "node:fs";
+import { appendFileSync, statSync } from "node:fs";
 import { Writable } from "node:stream";
 import { ReadableStream } from "node:stream/web";
 import { version } from "../package.json";
 import type { ProviderSpec } from "./providers.ts";
 
 const startupMs = 5 * 60_000;
+const logLimit = 64 * 1024 ** 2;
 const lineLimit = 64 * 1024 ** 2;
 const heldReads = 1024;
 const sentLimit = 64 * 1024 ** 2;
@@ -41,20 +42,37 @@ function modelOf(response: NewSessionResponse): string | null {
     : null;
 }
 
+function appender(path: string): (data: string | Uint8Array) => void {
+  appendFileSync(path, "");
+  let room = logLimit - statSync(path).size;
+  return (data) => {
+    const size = Buffer.byteLength(data);
+    if (size > room) {
+      room = 0;
+      return;
+    }
+    appendFileSync(path, data);
+    room -= size;
+  };
+}
+
 export async function openSession(opts: { container: string; provider: ProviderSpec; transcript: string; adapterLog: string }): Promise<Session> {
   const argv = ["docker", "exec", "-i", "-w", "/qa/out", opts.container, ...opts.provider.adapter];
-  const log = openSync(opts.adapterLog, "a");
-  const child = spawn("docker", argv.slice(1), { stdio: ["pipe", "pipe", log] });
-  closeSync(log);
-  const { stdin, stdout } = child;
-  if (stdin === null || stdout === null) throw new Error(`${argv.join(" ")} started without stdio pipes`);
-  const exited = new Promise<void>((resolve) => {
-    child.once("exit", () => resolve());
-    child.once("close", () => resolve());
-  });
+  const log = appender(opts.adapterLog);
+  const transcript = appender(opts.transcript);
+  const child = spawn("docker", argv.slice(1), { stdio: "pipe" });
+  const { stdin, stdout, stderr } = child;
+  if (stdin === null || stdout === null || stderr === null) throw new Error(`${argv.join(" ")} started without stdio pipes`);
+  const exited = Promise.all([
+    new Promise<void>((resolve) => {
+      child.once("exit", () => resolve());
+      child.once("close", () => resolve());
+    }),
+    new Promise<void>((resolve) => stderr.once("close", () => resolve())),
+  ]);
 
   const record = (from: "client" | "agent", message: AnyMessage) =>
-    appendFileSync(opts.transcript, `${JSON.stringify({ t: new Date().toISOString(), from, message })}\n`);
+    transcript(`${JSON.stringify({ t: new Date().toISOString(), from, message })}\n`);
   const overlong = new Error(`${argv.join(" ")} printed more than ${lineLimit / 1024 ** 2} MiB without a newline`);
   const oversent = new Error(`qa-interns sent more than ${sentLimit / 1024 ** 2} MiB to ${argv.join(" ")}`);
   let unterminated = 0;
@@ -121,6 +139,13 @@ export async function openSession(opts: { container: string; provider: ProviderS
     })
     .connect(stream);
   child.once("error", (error) => connection.close(error));
+  stderr.on("data", (data: Buffer) => {
+    try {
+      log(data);
+    } catch (error) {
+      connection.close(error);
+    }
+  });
 
   let closing: Promise<void> | undefined;
   const close = () =>
