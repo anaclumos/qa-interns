@@ -1,4 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { closeSync, linkSync, openSync, writeSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +16,7 @@ import {
   slotSubnets,
   startEnvironment,
   stopRun,
+  watchOut,
   writeChromePolicy,
   type EnvironmentSpec,
 } from "../src/environment.ts";
@@ -71,6 +74,23 @@ async function normalize(runDir: string, composeFiles: string[], override: strin
   if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
   return JSON.parse(proc.stdout.toString());
 }
+
+describe("watchOut", () => {
+  test("count a file with four names once", async () => {
+    const dir = await scratch();
+    const recording = join(dir, "recording.webm");
+    const chunk = randomBytes(1024 ** 2);
+    const fd = openSync(recording, "w");
+    for (let mib = 0; mib < 300; mib += 1) writeSync(fd, chunk);
+    closeSync(fd);
+    for (const name of ["copy-1.webm", "copy-2.webm", "copy-3.webm"]) linkSync(recording, join(dir, name));
+    const quiet = new AbortController();
+    const watching = watchOut(dir, quiet.signal);
+    await Bun.sleep(2500);
+    quiet.abort();
+    await expect(watching).rejects.toThrow("aborted");
+  }, 30_000);
+});
 
 describe.skipIf(!dockerAvailable)("slots", () => {
   test("map a slot to its internal, agent, and egress subnets", () => {
@@ -160,6 +180,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
       mem_limit: "2147483648",
       cpus: 2,
       pids_limit: 1024,
+      ulimits: { fsize: 1073741824 },
       tmpfs: [
         "/tmp:rw,nosuid,nodev,size=1g",
         "/home/qa:rw,nosuid,nodev,size=256m,uid=1234,gid=2345,mode=0700",
