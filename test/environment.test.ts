@@ -401,4 +401,56 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
     },
     20 * 60_000,
   );
+
+  test(
+    "keep the proxies of the Docker client configuration out of every container and image build",
+    async () => {
+      const runId = crypto.randomUUID().slice(0, 8);
+      const runDir = await scratch();
+      const source = join(runDir, "source");
+      const dockerConfig = join(runDir, "docker");
+      await Bun.write(
+        join(dockerConfig, "config.json"),
+        JSON.stringify({ Proxies: { default: { httpProxy: "http://qa:secret@corp-proxy.test:3128", allProxy: "socks5://qa:secret@corp-proxy.test:1080" } } }),
+      );
+      await Bun.write(join(source, "Dockerfile"), `FROM busybox:1.37\nRUN printf %s "$HTTP_PROXY$ALL_PROXY" > /build-proxy-${runId}\n`);
+      await Bun.write(join(source, ".devcontainer", "compose.yml"), 'services:\n  web:\n    build: ..\n    command: ["sleep", "86400"]\n    init: true\n');
+      await Bun.write(
+        join(source, ".devcontainer", "devcontainer.json"),
+        JSON.stringify({
+          dockerComposeFile: "compose.yml",
+          service: "web",
+          customizations: { "qa-interns": { urls: { app: "http://web:8080" }, ready: "true", seed: `printf '{"build":"%s"}' "$(cat /build-proxy-${runId})"` } },
+        }),
+      );
+      const image = await ensureRunnerImage();
+      const hostConfig = process.env.DOCKER_CONFIG;
+      process.env.DOCKER_CONFIG = dockerConfig;
+      try {
+        const target = await loadTarget(ref, source);
+        const images = await buildImages(runId, target, source);
+        await writeChromePolicy(runDir, target.settings.urls);
+        const reserved = new Set<number>();
+        const runner = (name: string, urls: Record<string, string>) => ({ image, out: join(runDir, "interns", name, "out"), env: runnerEnv(urls), mounts: [], files: [], tmpfs: [] });
+        const intern = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(reserved), images, runner: runner("i1", target.settings.urls) }));
+        const judge = await startEnvironment(spec(runDir, null, { runId, name: "judge", slot: await freeSlot(reserved), runner: runner("judge", {}) }));
+        const containers = [intern.project, judge.project].flatMap((project) => {
+          const ids = Bun.spawnSync(["docker", "ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`]).stdout.toString().split("\n").filter((id) => id !== "");
+          const inspected = JSON.parse(Bun.spawnSync(["docker", "inspect", ...ids]).stdout.toString());
+          return z.array(z.object({ Config: z.object({ Labels: z.record(z.string(), z.string()), Env: z.array(z.string()) }) })).parse(inspected);
+        });
+        expect(containers.map(({ Config }) => `${Config.Labels["com.docker.compose.project"]}/${Config.Labels["com.docker.compose.service"]}`).sort()).toEqual(
+          [`${intern.project}/qa-proxy`, `${intern.project}/qa-runner`, `${intern.project}/web`, `${judge.project}/qa-proxy`, `${judge.project}/qa-runner`].sort(),
+        );
+        expect(containers.flatMap(({ Config }) => Config.Env.filter((entry) => entry.includes("corp-proxy.test")))).toEqual([]);
+        expect(intern.seed).toEqual({ build: "" });
+      } finally {
+        if (hostConfig === undefined) delete process.env.DOCKER_CONFIG;
+        else process.env.DOCKER_CONFIG = hostConfig;
+        await stopRun(runId);
+        await removeCopies(runDir, runId, image);
+      }
+    },
+    20 * 60_000,
+  );
 });

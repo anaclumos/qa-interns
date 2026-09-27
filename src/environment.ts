@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
-import { tmpdir, userInfo } from "node:os";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -206,6 +206,24 @@ function sourceComposeArgs(target: Target, root: string): string[] {
   return target.composeFiles.flatMap((entry) => ["-f", resolve(root, ".devcontainer", entry)]);
 }
 
+async function withoutProxies(file: string): Promise<string> {
+  const config = z.record(z.string(), z.unknown()).safeParse(JSON.parse(await readFile(file, "utf8")));
+  if (!config.success) throw new Error(`${file} is not a JSON object`);
+  return JSON.stringify(Object.fromEntries(Object.entries(config.data).filter(([key]) => key.toLowerCase() !== "proxies")));
+}
+
+async function composeEnv(hostEnv: string[], dir: string): Promise<Record<string, string | undefined>> {
+  const env = targetEnv(hostEnv);
+  const source = resolve(env.DOCKER_CONFIG || join(homedir(), ".docker"));
+  const config = join(dir, "docker");
+  await mkdir(config, { recursive: true, mode: 0o700 });
+  for (const entry of existsSync(source) ? await readdir(source) : []) {
+    if (entry === "config.json") await writeFile(join(config, entry), await withoutProxies(join(source, entry)), { mode: 0o600 });
+    else await symlink(join(source, entry), join(config, entry));
+  }
+  return { ...env, DOCKER_CONFIG: config };
+}
+
 export async function buildImages(runId: string, target: Target, sourceDir: string): Promise<Record<string, string>> {
   const services = Object.entries(target.services)
     .filter(([, service]) => service.build && service.active)
@@ -218,7 +236,7 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
     const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(images[name])}`]);
     await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
     await execute(["docker", "compose", "-p", projectName(runId, "build"), ...sourceComposeArgs(target, sourceDir), "-f", tags, "build", ...services], {
-      env: targetEnv(target.settings.hostEnv),
+      env: await composeEnv(target.settings.hostEnv, dir),
       timeout: 30 * minute,
     });
   } finally {
@@ -279,17 +297,16 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const dir = envDir(spec);
   const log = join(dir, "env.log");
   await writeFiles(spec);
+  const tmp = join(dir, "tmp");
   if (spec.target === null) {
-    await execute(["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds], { log });
+    await execute(["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds], { env: await composeEnv([], tmp), log });
     return { project, runner: await runnerId(project), devContainer: null, seed: null };
   }
   const target = spec.target;
-  const env = targetEnv(target.settings.hostEnv);
+  const env = await composeEnv(target.settings.hostEnv, tmp);
   const workspace = join(dir, project);
   const config = join(dir, "devcontainer.json");
-  const tmp = join(dir, "tmp");
   await execute(["cp", "-a", "--reflink=auto", join(spec.runDir, "source"), workspace]);
-  await mkdir(tmp, { recursive: true });
   await Bun.write(config, `${JSON.stringify(overrideConfig(target, join(dir, "compose.qa.yml")), null, 2)}\n`);
 
   const up = await capture(
