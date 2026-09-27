@@ -82,18 +82,25 @@ describe("internPrompt", () => {
 });
 
 describe("continuePrompt", () => {
-  test("lists each rejected file at its path inside the runner with the reason", () => {
-    const prompt = continuePrompt(12, [
-      { intern: "i1", file: "interns/i1/out/findings/negative-total.json", reason: "steps must have at least one entry" },
-      { intern: "i1", file: "interns/i1/out/findings/export.json", reason: "evidence path /qa/out/evidence/a.png does not exist" },
-    ]);
+  test("lists each rejected file at its path inside the runner of its attempt with the reason", () => {
+    const prompt = continuePrompt(
+      12,
+      [
+        { intern: "i1", file: "interns/i1/out-2/findings/negative-total.json", reason: "steps must have at least one entry" },
+        { intern: "i1", file: "interns/i1/out-2/findings/export.json", reason: "evidence path /qa/out/evidence/a.png does not exist" },
+      ],
+      "interns/i1/out-2",
+    );
     expect(prompt).toContain("12");
     expect(prompt).toContain("/qa/out/findings/negative-total.json: steps must have at least one entry");
     expect(prompt).toContain("/qa/out/findings/export.json: evidence path /qa/out/evidence/a.png does not exist");
   });
 
   test("names no file an agent keys on", () => {
-    for (const prompt of [continuePrompt(5, []), continuePrompt(1, [{ intern: "i2", file: "interns/i2/out/findings/x.json", reason: "not valid JSON: Unexpected EOF" }])]) {
+    for (const prompt of [
+      continuePrompt(5, [], "interns/i2/out"),
+      continuePrompt(1, [{ intern: "i2", file: "interns/i2/out/findings/x.json", reason: "not valid JSON: Unexpected EOF" }], "interns/i2/out"),
+    ]) {
       expect(prompt).not.toContain("Charter:");
       expect(prompt).not.toContain("/qa/out/groups.json");
       expect(prompt).not.toContain("/qa/out/confirmation.json");
