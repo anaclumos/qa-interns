@@ -229,6 +229,22 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     });
   });
 
+  test("count a service's containers from scale or deploy.replicas", async () => {
+    const compose = `services:
+  web:
+    image: nginx:1.29-alpine
+  worker:
+    image: busybox:1.37
+    scale: 3
+  queue:
+    image: redis:8.2-alpine
+    deploy:
+      replicas: 2
+`;
+    const target = await load(await fixture(compose, devcontainer({})));
+    expect(Object.fromEntries(Object.entries(target.services).map(([name, service]) => [name, service.replicas]))).toEqual({ web: 1, worker: 3, queue: 2 });
+  });
+
   test("treat services behind a profile that the target's .env enables as active", async () => {
     const compose = `services:
   web:

@@ -6,10 +6,12 @@ import {
   buildImages,
   environmentMemory,
   freeSlot,
+  freeSlots,
   removeCopies,
   runnerEnv,
   startEnvironment,
   stopEnvironment,
+  stopProject,
   stopRun,
   watchOut,
   writeChromePolicy,
@@ -506,10 +508,29 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
 export async function ask(opts: AskOptions): Promise<unknown> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
   const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, async () => {});
+  const project = `qa-${opts.runId}-${opts.name}`;
+  const finish = once(async (): Promise<string | null> => {
+    const teardowns = [...ctx.teardowns];
+    try {
+      await stopProject(project);
+    } catch (reason) {
+      teardowns.push(message(reason));
+    }
+    return teardowns.length === 0 ? null : `Teardown of ${project} failed: ${teardowns.join("; ")}`;
+  });
   return guard(
     ctx,
-    () => askWith(ctx, opts.name, opts.prompt, opts.file, opts.parse),
-    async () => {},
+    async () => {
+      const [result] = await Promise.allSettled([askWith(ctx, opts.name, opts.prompt, opts.file, opts.parse)]);
+      const teardown = await finish();
+      if (teardown !== null) throw new Error(result.status === "rejected" ? `${message(result.reason)}; ${teardown}` : teardown);
+      if (result.status === "rejected") throw result.reason;
+      return result.value;
+    },
+    async () => {
+      const teardown = await finish();
+      if (teardown !== null) throw new Error(teardown);
+    },
   );
 }
 
@@ -588,7 +609,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const target = await loadTarget(ref, source);
     const memory = environmentMemory(target);
     const free = freemem();
-    const concurrency = Math.min(opts.interns, Math.floor(free / memory), scheduler.capacity());
+    const slots = await freeSlots(ctx.reserved);
+    if (slots === 0) throw new Error("No free network slot: every 10.213.x.0/23 block overlaps a Docker network or a host route");
+    const concurrency = Math.min(opts.interns, Math.floor(free / memory), scheduler.capacity(), slots);
     if (concurrency < 1) {
       throw new Error(`Free memory is ${(free / gib).toFixed(1)} GiB, and one environment of this target reserves ${(memory / gib).toFixed(1)} GiB`);
     }
