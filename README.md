@@ -65,7 +65,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 }
 ```
 
-- `urls`: named application URLs as seen from inside the environment network.
+- `urls`: named application URLs as seen from inside the environment network. The interns' browser treats the origin of each `http:` URL as a secure context, so `crypto.subtle`, `crypto.randomUUID()`, and `navigator.clipboard` work as they do over HTTPS. An `http:` origin that `urls` does not name, such as another port on the same host, is not a secure context.
 - `ready`: an `http:` or `https:` URL that answers 2xx when the application is ready, or a shell command that exits 0 in the dev container.
 - `seed`: a shell command, run once in the dev container, that creates test accounts and data and prints them as one JSON document.
 - `focus` (optional): areas the project wants covered, dealt to interns before the built-in charters. A run with no more interns than focus entries deals no built-in charter; list fewer focus entries or raise `--interns` to get both.
@@ -140,6 +140,8 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 - `findings.json`: the same data as JSON.
 - `interns/<id>/out/`: each intern's findings and evidence (screenshots, recordings, HAR files, console logs). After a move to another login, the next attempt writes to `interns/<id>/out-2/`, the one after it to `out-3/`, and so on. The id of a finding from such an attempt names its folder, as in `i1/out-2/<slug>`.
 - `interns/<id>/transcript.jsonl`: the agent traffic of each intern.
+- `interns/<id>/adapter.log`: the error output of each intern's agent.
+- Each transcript and error log stops growing at 64 MiB. Later traffic and output are not recorded.
 - `state.json`: the run's phase and every intern's status.
 
 A finding is confirmed when two or more interns reproduced it.

@@ -167,6 +167,12 @@ USER qa
         environment: { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: intern(state, "i1").provider, model: "fake-model-1" },
       });
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "page.html")).text()).toContain("<form");
+      expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "browser.json")).json()).toEqual({
+        isSecureContext: true,
+        randomUUID: "function",
+        subtle: "object",
+        clipboard: "object",
+      });
 
       const markdown = await Bun.file(join(runDir, "report.md")).text();
       const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Seen once"));
