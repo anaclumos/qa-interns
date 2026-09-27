@@ -8,7 +8,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 
 - Linux on x86-64. Chrome for Testing has no Linux ARM64 build.
 - Docker Engine with Compose v2 and the `isolated` bridge gateway mode. `qa-interns doctor` checks both.
-- Bun 1.4 or later, and Git.
+- Bun 1.4 or later, Git, and `flock` from util-linux.
 - At least one agent login: Claude Code, Codex, Cursor, or Grok (see [Logins](#logins)).
 - Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, and each service's `mem_limit` (1 GiB when the service sets none).
 
@@ -118,7 +118,8 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 | `grok` | A directory with `auth.json`, mounted whole, because Grok replaces the file when it refreshes the token. A runner writes only `auth.json` and its lock file there. Use a directory that only QA Interns uses. | `GROK_HOME=<store> grok login` |
 
 - Each running intern holds one lease on one login. A Codex store has `concurrency` 1, because OpenAI states that one `auth.json` copy serves one machine or one serialized job stream ([Codex CI/CD auth](https://learn.chatgpt.com/docs/auth/ci-cd-auth)).
-- A seat command is an external program that hands out a store for one intern. It runs with `QA_INTERNS_INTERN` and `QA_INTERNS_LEASE_PID` in its environment and prints an absolute store path as its last line. `QA_INTERNS_LEASE_PID` is a process that lives exactly as long as the intern holds the store, and ends when the orchestrator ends, so a pool manager can hold the store until that process exits. A nonzero exit means the seat command has no store now.
+- A lease locks the real path of what the runner mounts until the lease ends: the credential file of a Claude or Codex store, and the whole store of a Cursor or Grok store. The locks live in `~/.local/state/qa-interns/locks/` (`$XDG_STATE_HOME` when set). Runs that share that directory hold, all together, no more leases on one credential than the highest `concurrency` any of them sets for it.
+- A seat command is an external program that hands out a store for one intern. It runs with `QA_INTERNS_INTERN` and `QA_INTERNS_LEASE_PID` in its environment and prints an absolute store path as its last line. `QA_INTERNS_LEASE_PID` is a process that lives exactly as long as the intern holds the store, and ends when the orchestrator ends, so a pool manager can hold the store until that process exits. A nonzero exit means the seat command has no store now. The printed store is checked like a configured store, against every configured store and every store an intern holds, and a store that fails a check counts as no store.
 - When an agent reports a usage limit or a failed login, the intern moves to another login with spare capacity and restarts its charter in a fresh environment with an empty `/qa/out`. The findings of the earlier attempt stay in the report, and `findings.json` records the provider and model of the attempt that wrote each one. A confirming intern that moves answers with the `confirmation.json` of its latest attempt that wrote a valid one, under that attempt's provider. Claude reports a usage limit as JSON-RPC error `-32603` with `data.errorKind` `rate_limit` or `billing_error`, and Codex as `-32603` with `data.codexErrorInfo` `usageLimitExceeded`. Grok reports a rate or usage limit as `-32003`, and spent credits or a rejected token as `-32603` with `data.http_status` 402 or 401. Cursor ends the turn with a chat message instead of an error, so a Cursor intern at its limit stops early and the report quotes its last message.
 
 ## What a run does
@@ -152,6 +153,7 @@ A finding is confirmed when two or more interns reproduced it.
 - `/qa/out` is the intern's `interns/<id>/out` directory on the host. The runner cannot write a file larger than 1 GiB anywhere. While the agent runs, the orchestrator walks `/qa/out` once a second and stops the runner when it holds more than 1 GiB. The intern then ends as failed, and the findings it wrote stay in the report.
 - The orchestrator keeps an agent's output in memory until a newline arrives. An intern fails when its agent prints more than 64 MiB without a newline, or when the orchestrator's messages to the agent pass 64 MiB in total.
 - The runner reaches the internet only through a proxy container that allows HTTPS to the model provider hosts and nothing else.
+- Docker keeps the log of the runner and the log of the proxy with the `local` log driver, whatever log driver and options the Docker daemon sets. Each log is a current file and the previous file. Docker starts a new current file once the current file holds 10 MB, and then compresses the previous file. A log of data that does not compress takes up to about 20 MB, and up to about 30 MB while that compression runs.
 - Target services have no internet access and cannot reach the proxy. Lifecycle commands that run in a target container, and application code, fail when they need the network.
 - Every agent session starts with no MCP servers. Claude and Codex have their MCP sources blocked in `src/providers.ts`. Grok has them blocked by the root-owned `/etc/grok/requirements.toml` in the runner image. A Cursor runner has no MCP source, because its home directory is an empty tmpfs and `CURSOR_CONFIG_DIR` keeps Cursor's settings and sessions in that home, out of the store.
 - Chrome runs with `--no-sandbox`, because Docker's default seccomp profile blocks its sandbox, so the container is the boundary. A compromised renderer can read what the runner user can read, including that intern's login.
@@ -162,6 +164,8 @@ A finding is confirmed when two or more interns reproduced it.
 - The runner image is x86-64 only.
 - Two runs that start an environment at the same moment can pick the same subnet; the second fails to start that environment.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
+- An intern waits for a login only while its own run holds a lease. When other runs hold every login it could use, the intern ends as `limited`.
+- Credential locks and the store checks compare real paths, so two hard links to one credential file count as two credentials.
 - A Grok login whose token refresh fails during a turn ends the intern instead of moving it to another login, because Grok reports that failure as `-32603` with text data only.
 - A Grok login without a Grok subscription ends the intern instead of moving it to another login, because Grok reports it as `-32603` with `data.http_status` 403, the same shape as a content policy denial.
 - When a Grok token refresh fails for good, Grok deletes `auth.json` from the store, and the next run rejects the logins file until you log in to that store again.
