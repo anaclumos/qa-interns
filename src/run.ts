@@ -206,9 +206,13 @@ async function attempt<T>(ctx: Context, id: string, env: Environment, lease: Lea
     ctx.sessions.add(session);
     checkStopping(ctx);
     await ctx.update(id, { status: "testing", model: session.model });
-    const out = join(ctx.runDir, "interns", id, "out");
-    const result = await Promise.race([work(session, env, lease.login.provider, note).then((value) => ({ value })), watchOut(out, done.signal)]);
+    let stopped = false;
+    const live: Note = async (text) => {
+      if (!stopped) await note(text);
+    };
+    const result = await Promise.race([work(session, env, lease.login.provider, live).then((value) => ({ value })), watchOut(env.out, done.signal)]);
     if (typeof result !== "string") return result;
+    stopped = true;
     await execute(["docker", "kill", env.runner]);
     throw new Error(`${result}, so its runner was stopped`);
   } catch (error) {

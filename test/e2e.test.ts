@@ -201,7 +201,7 @@ USER qa
   );
 
   test(
-    "an intern whose /qa/out passes 1 GiB is stopped and keeps the findings it wrote",
+    "a runner file stops at 1 GiB, and an intern whose /qa/out passes 1 GiB is stopped and keeps its findings",
     async () => {
       const lines: string[] = [];
       const run = runQa({
@@ -225,6 +225,7 @@ USER qa
         findings: 1,
         detail: `${join(runDir, "interns", "i1", "out")} holds more than 1 GiB, so its runner was stopped`,
       });
+      expect(Bun.file(join(runDir, "interns", "i1", "out", "evidence", "big.bin")).size).toBe(1024 ** 3);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups.map((group: { findings: { id: string }[] }) => group.findings.map((finding) => finding.id))).toEqual([["i1/fake-home"]]);

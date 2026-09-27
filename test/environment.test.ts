@@ -143,6 +143,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
       mem_limit: "2147483648",
       cpus: 2,
       pids_limit: 1024,
+      ulimits: { fsize: 1073741824 },
       tmpfs: [
         "/tmp:rw,nosuid,nodev,size=1g",
         "/home/qa:rw,nosuid,nodev,size=256m,uid=1234,gid=2345,mode=0700",

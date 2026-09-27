@@ -74,11 +74,16 @@ const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, 
 
 const credentials = () => JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8"));
 
-const flood = (file, mib) => {
+const fill = (file, mib) => {
   const chunk = Buffer.alloc(1024 ** 2, 1);
   const fd = openSync(file, "w");
-  for (let index = 0; index < mib; index += 1) writeSync(fd, chunk);
-  closeSync(fd);
+  try {
+    for (let index = 0; index < mib; index += 1) writeSync(fd, chunk);
+  } catch (error) {
+    if (error.code !== "EFBIG") throw error;
+  } finally {
+    closeSync(fd);
+  }
 };
 
 const endTurn = { result: { stopReason: "end_turn" } };
@@ -121,7 +126,8 @@ const charterTurn = async (text) => {
   update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" });
   say("Recorded one finding.");
   if (credentials().flood === true) {
-    flood("/qa/out/evidence/flood.bin", 1100);
+    fill("/qa/out/evidence/big.bin", 1100);
+    fill("/qa/out/evidence/more.bin", 16);
     return slowTurn();
   }
   return endTurn;
