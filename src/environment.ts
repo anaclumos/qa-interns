@@ -28,6 +28,7 @@ const minute = 60_000;
 const readyTimeout = 5 * minute;
 const waitTimeoutSeconds = "600";
 const proxyUrl = "http://qa-proxy:3128";
+const relayProbe = "require('node:net').connect(443, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))";
 const outLimit = gib;
 const outCheckMs = 1000;
 
@@ -75,9 +76,14 @@ async function usedBlocks(): Promise<Cidr[]> {
   return [...subnets, ...destinations].map(parseCidr);
 }
 
-export function slotSubnets(slot: number): { internal: string; agent: string; egress: string } {
+export function slotSubnets(slot: number): { internal: string; relay: string; agent: string; egress: string } {
   if (!Number.isInteger(slot) || slot < 0 || slot > 127) throw new Error(`Slot ${slot} is not an integer from 0 to 127`);
-  return { internal: `10.213.${slot * 2}.0/25`, agent: `10.213.${slot * 2}.128/25`, egress: `10.213.${slot * 2 + 1}.0/24` };
+  return {
+    internal: `10.213.${slot * 2}.0/25`,
+    relay: `10.213.${slot * 2}.128/25`,
+    agent: `10.213.${slot * 2 + 1}.0/25`,
+    egress: `10.213.${slot * 2 + 1}.128/25`,
+  };
 }
 
 export async function freeSlot(reserved: Set<number>): Promise<number> {
@@ -110,15 +116,23 @@ function bind(source: string, target: string, readOnly: boolean) {
 
 export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number): string {
   if (spec.egress.length === 0) throw new Error(`Environment ${spec.name} has no egress hosts for qa-proxy`);
-  const { internal, agent, egress } = slotSubnets(spec.slot);
+  const { internal, relay, agent, egress } = slotSubnets(spec.slot);
+  const relayHosts = spec.target?.settings.egress ?? [];
+  const relayAddress = `10.213.${spec.slot * 2}.254`;
   const y = (value: unknown) => JSON.stringify(value);
   const isolated = (subnet: string) => ({ internal: true, driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" }, ipam: { config: [{ subnet }] } });
   const lines = ["services:"];
   for (const [name, service] of Object.entries(spec.target?.services ?? {})) {
     lines.push(`  ${y(name)}:`, "    ports: !reset []");
     if (!service.networkMode?.startsWith("service:")) {
-      const networks = service.aliases.length > 0 ? { qa_internal: { aliases: service.aliases } } : ["qa_internal"];
+      const networks = { qa_internal: service.aliases.length > 0 ? { aliases: service.aliases } : null, ...(relayHosts.length > 0 ? { qa_relay: null } : {}) };
       lines.push(`    networks: !override ${y(networks)}`);
+      if (relayHosts.length > 0) {
+        lines.push(
+          `    extra_hosts: ${y(Object.fromEntries(relayHosts.map((host) => [host, relayAddress])))}`,
+          `    depends_on: ${y({ "qa-relay": { condition: "service_healthy" } })}`,
+        );
+      }
     }
     const memory = service.memLimit === null ? "1g" : null;
     const cpus = service.hasCpus ? null : 2;
@@ -134,7 +148,13 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     const image = spec.images[name];
     if (image !== undefined) lines.push(`    image: ${y(image)}`, "    build: !reset null", `    pull_policy: ${y("never")}`);
   }
-  const hardening = ["    init: true", "    read_only: true", `    cap_drop: ${y(["ALL"])}`, `    security_opt: ${y(["no-new-privileges:true"])}`];
+  const hardening = [
+    "    init: true",
+    "    read_only: true",
+    `    cap_drop: ${y(["ALL"])}`,
+    `    security_opt: ${y(["no-new-privileges:true"])}`,
+    `    logging: ${y({ driver: "local", options: { "max-size": "10m", "max-file": "2" } })}`,
+  ];
   const volumes = [
     bind(spec.runner.out, "/qa/out", false),
     bind(join(spec.runDir, "chrome-policy.json"), "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json", true),
@@ -168,17 +188,36 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     `    mem_limit: ${y("2g")}`,
     "    cpus: 2",
     `    networks: ${y(["qa_internal", "qa_agent"])}`,
+  );
+  if (relayHosts.length > 0) {
+    lines.push(
+      `  "qa-relay":`,
+      `    image: ${y(spec.runner.image)}`,
+      `    pull_policy: ${y("never")}`,
+      `    command: ${y(["node", "/opt/qa-interns/relay.mjs"])}`,
+      `    environment: ${y({ QA_RELAY_ALLOW: relayHosts.join(",") })}`,
+      `    networks: ${y({ qa_relay: { ipv4_address: relayAddress }, qa_egress: null })}`,
+      `    healthcheck: ${y({ test: ["CMD", "node", "-e", relayProbe], start_period: "30s", start_interval: "500ms" })}`,
+      ...hardening,
+      `    mem_limit: ${y("128m")}`,
+      "    cpus: 0.5",
+      "    pids_limit: 128",
+    );
+  }
+  lines.push(
     "networks:",
-    `  qa_internal: ${y(isolated(internal))}`,
-    `  qa_agent: ${y(isolated(agent))}`,
-    `  qa_egress: ${y({ ipam: { config: [{ subnet: egress }] } })}`,
+    `  qa_internal: !override ${y(isolated(internal))}`,
+    ...(relayHosts.length > 0 ? [`  qa_relay: !override ${y(isolated(relay))}`] : []),
+    `  qa_agent: !override ${y(isolated(agent))}`,
+    `  qa_egress: !override ${y({ ipam: { config: [{ subnet: egress }] } })}`,
   );
   return `${lines.join("\n")}\n`;
 }
 
 export function environmentMemory(target: Target | null): number {
   const services = Object.values(target?.services ?? {}).filter((service) => service.active);
-  return services.reduce((sum, service) => sum + (service.memLimit ?? gib) * service.replicas, 2 * gib + 128 * mib);
+  const relay = (target?.settings.egress.length ?? 0) > 0 ? 128 * mib : 0;
+  return services.reduce((sum, service) => sum + (service.memLimit ?? gib) * service.replicas, 2 * gib + 128 * mib + relay);
 }
 
 function urlHosts(urls: Record<string, string>): string[] {
@@ -187,7 +226,10 @@ function urlHosts(urls: Record<string, string>): string[] {
 
 export async function writeChromePolicy(runDir: string, urls: Record<string, string>): Promise<void> {
   const hosts = urlHosts(urls).filter((host) => !host.includes("."));
-  await Bun.write(join(runDir, "chrome-policy.json"), `${JSON.stringify({ HSTSPolicyBypassList: hosts }, null, 2)}\n`);
+  const parsed = Object.values(urls).map((url) => new URL(url));
+  const insecure = [...new Set(parsed.filter((url) => url.protocol === "http:").map((url) => url.origin))];
+  const policy = { HSTSPolicyBypassList: hosts, OverrideSecurityRestrictionsOnInsecureOrigin: insecure };
+  await Bun.write(join(runDir, "chrome-policy.json"), `${JSON.stringify(policy, null, 2)}\n`);
 }
 
 export function runnerEnv(urls: Record<string, string>): Record<string, string> {
@@ -250,12 +292,16 @@ async function runnerId(project: string): Promise<string> {
   return id;
 }
 
+function qaServices(target: Target): string[] {
+  return ["qa-proxy", "qa-runner", ...(target.settings.egress.length > 0 ? ["qa-relay"] : [])];
+}
+
 function overrideConfig(target: Target, composeFile: string): Record<string, unknown> {
   const runServices = target.config.runServices;
   return {
     ...target.config,
     dockerComposeFile: [...target.composeFiles, composeFile],
-    ...(Array.isArray(runServices) ? { runServices: [...runServices, "qa-proxy", "qa-runner"] } : {}),
+    ...(Array.isArray(runServices) ? { runServices: [...runServices, ...qaServices(target)] } : {}),
   };
 }
 
@@ -309,7 +355,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const devContainer = result.data.containerId;
 
   const runServices = target.config.runServices;
-  const services = Array.isArray(runServices) ? [target.service, ...runServices, "qa-proxy", "qa-runner"] : [];
+  const services = Array.isArray(runServices) ? [target.service, ...runServices, ...qaServices(target)] : [];
   await execute(
     ["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds, "--no-recreate", ...services],
     { env, log },

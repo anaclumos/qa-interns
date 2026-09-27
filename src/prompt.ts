@@ -14,7 +14,7 @@ export const charters: readonly string[] = [
 ];
 
 export function deck(focus: string[]): string[] {
-  return [...charters, ...focus.map((entry) => `Project focus: ${entry}`)];
+  return [...focus.map((entry) => `Project focus: ${entry}`), ...charters];
 }
 
 export type PromptEnvironment = { urls: Record<string, string>; seed: unknown; minutes: number; offLimits: string[] };

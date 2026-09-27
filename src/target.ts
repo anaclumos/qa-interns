@@ -1,10 +1,11 @@
 import type { Subprocess } from "bun";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, realpath } from "node:fs/promises";
+import { isIP } from "node:net";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 
-export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; hostEnv: string[] };
+export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; hostEnv: string[]; egress: string[] };
 export type TargetRef = { repo: string; path: string; commit: string };
 export type ComposeService = {
   build: boolean;
@@ -73,6 +74,21 @@ export function isHttpUrl(value: string): boolean {
   return URL.canParse(value) && ["http:", "https:"].includes(new URL(value).protocol);
 }
 
+const hostCharacters = new Set("abcdefghijklmnopqrstuvwxyz0123456789-.");
+
+function isHostName(value: string): boolean {
+  const labels = value.split(".");
+  return (
+    value.length <= 253 &&
+    labels.length > 1 &&
+    labels.every((label) => label.length > 0 && label.length <= 63 && !label.startsWith("-") && !label.endsWith("-")) &&
+    [...value].every((character) => hostCharacters.has(character)) &&
+    isIP(value) === 0 &&
+    URL.canParse(`https://${value}`) &&
+    new URL(`https://${value}`).hostname === value
+  );
+}
+
 const settingsSchema = z.strictObject({
   urls: z
     .record(z.string(), z.string().refine(isHttpUrl, "must be an http: or https: URL"))
@@ -82,6 +98,7 @@ const settingsSchema = z.strictObject({
   focus: z.array(z.string().min(1)).default([]),
   offLimits: z.array(z.string().min(1)).default([]),
   hostEnv: z.array(z.string().min(1)).default([]),
+  egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
 });
 
 const configSchema = z.object({
@@ -105,8 +122,6 @@ const composeSchema = z.object({
       cpus: z.number().optional(),
       pids_limit: z.number().optional(),
       deploy: z.object({ replicas: z.number().optional(), resources: z.object({ limits: limitsSchema.optional() }).optional() }).optional(),
-      profiles: z.array(z.string()).optional(),
-      depends_on: z.record(z.string(), z.object({ required: z.boolean().optional() })).optional(),
       privileged: z.boolean().optional(),
       pid: z.string().optional(),
       ipc: z.string().optional(),
@@ -141,7 +156,7 @@ const referencesSchema = z
   })
   .nullable();
 
-const reservedServices = ["qa-proxy", "qa-runner"];
+const reservedServices = ["qa-proxy", "qa-relay", "qa-runner"];
 
 export async function resolveTarget(dir: string, rev: string): Promise<TargetRef> {
   const git = ["git", "-C", dir, "rev-parse"];
@@ -261,28 +276,14 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"], { env });
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
-
-  const started =
-    runServices === undefined
-      ? Object.entries(project.services)
-          .filter(([name, entry]) => (entry.profiles ?? []).length === 0 || name === service)
-          .map(([name]) => name)
-      : [service, ...runServices];
-  const starts = new Set<string>();
-  const start = (name: string) => {
-    if (starts.has(name)) return;
-    starts.add(name);
-    for (const [dependency, condition] of Object.entries(project.services[name]?.depends_on ?? {})) {
-      if (condition.required !== false || (project.services[dependency]?.profiles ?? []).length === 0) start(dependency);
-    }
-  };
-  started.forEach(start);
+  const selection = await execute(["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", ...(runServices === undefined ? [] : [service, ...runServices])], { env });
+  const started = composeSchema.parse(JSON.parse(selection)).services;
   const violations: string[] = [];
   const services: Record<string, ComposeService> = {};
   const tags = new Map<string, string>();
   const aliasOwners = new Map<string, string>();
   for (const [name, entry] of Object.entries(project.services)) {
-    if (reservedServices.includes(name)) violations.push(`service ${name} uses a name QA Interns reserves`);
+    if (reservedServices.includes(name.toLowerCase())) violations.push(`service ${name} uses a name QA Interns reserves`);
     if (entry.container_name !== undefined) violations.push(`service ${name} sets container_name ${entry.container_name}`);
     if (entry.network_mode !== undefined && !entry.network_mode.startsWith("service:")) {
       violations.push(`service ${name} sets network_mode ${entry.network_mode}`);
@@ -316,7 +317,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     const other = tags.get(name.toLowerCase());
     if (other === undefined) tags.set(name.toLowerCase(), name);
     else violations.push(`services ${other} and ${name} differ only by case, so their names and prebuilt image tags collide`);
-    const active = starts.has(name);
+    const active = Object.hasOwn(started, name);
     const limits = entry.deploy?.resources?.limits;
     const memory = entry.mem_limit ?? limits?.memory;
     services[name] = {
@@ -330,6 +331,9 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       replicas: entry.deploy?.replicas ?? 1,
       active,
     };
+  }
+  for (const host of parsed.data.customizations["qa-interns"].egress) {
+    if (tags.has(host) || aliasOwners.has(host)) violations.push(`egress host ${host} is the name or a network alias of a service`);
   }
   for (const [kind, entries] of [
     ["volume", project.volumes ?? {}],
