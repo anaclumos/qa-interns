@@ -337,7 +337,7 @@ describe("Scheduler", () => {
     expect(scheduler.capacity()).toBe(0);
     expect(scheduler.providers()).toEqual([]);
     expect(await scheduler.acquire("i8", [])).toBeNull();
-    const unknown = { login: login("claude-9", "claude", 1), store: join(dir, "stores", "claude-9"), release: () => {} };
+    const unknown = { login: login("claude-9", "claude", 1), store: join(dir, "stores", "claude-9"), credential: join(dir, "stores", "claude-9", ".credentials.json"), release: () => {} };
     expect(() => scheduler.exhaust(unknown)).toThrow("No login with id claude-9");
     releaseAll([cursor, ...picks]);
   });
@@ -463,7 +463,7 @@ describe("Scheduler", () => {
     lease.release();
   });
 
-  test("two seat stores whose credential files are one file are not leased at once", async () => {
+  test("two seat stores whose credential files are one file are not leased at once, and a usage limit on one exhausts both", async () => {
     const real = join(dir, "one-credential", "auth.json");
     await mkdir(join(dir, "one-credential"));
     await Bun.write(real, "{}");
@@ -478,7 +478,9 @@ describe("Scheduler", () => {
     first.release();
     const second = held(await scheduler.acquire("n2", []));
     expect(second.store).toBe(join(dir, "linked-pool", "n2"));
+    scheduler.exhaust(second);
     second.release();
+    expect(await scheduler.acquire("n1", [])).toBeNull();
   });
 
   test("another process's lease on a credential counts against its concurrency until that process ends", async () => {

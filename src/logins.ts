@@ -118,7 +118,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
   return logins;
 }
 
-export type Lease = { login: Login; store: string; release(): void };
+export type Lease = { login: Login; store: string; credential: string; release(): void };
 
 type Slot = { login: Login; active: number; exhausted: boolean; store: { store: string; credential: string; where: string } | null };
 
@@ -164,7 +164,7 @@ function lock(credential: string, slots: number): (() => void) | null {
 export class Scheduler {
   private readonly slots: Slot[];
   private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0, grok: 0 };
-  private readonly exhaustedStores = new Set<string>();
+  private readonly exhaustedCredentials = new Set<string>();
   private readonly live = new Set<Held>();
 
   constructor(logins: Login[]) {
@@ -204,7 +204,7 @@ export class Scheduler {
   exhaust(lease: Lease): void {
     const slot = this.slots.find((candidate) => candidate.login.id === lease.login.id);
     if (slot === undefined) throw new Error(`No login with id ${lease.login.id}`);
-    if (slot.login.store === null) this.exhaustedStores.add(lease.store);
+    if (slot.login.store === null) this.exhaustedCredentials.add(lease.credential);
     else slot.exhausted = true;
   }
 
@@ -219,7 +219,7 @@ export class Scheduler {
       if (path !== null) {
         const found = resolveStore(login.provider, path);
         const known = [...this.slots.flatMap((other) => other.store ?? []), ...this.live];
-        if (found.credential !== null && !this.exhaustedStores.has(found.store) && storeProblems(login.provider, path, found, known).length === 0) {
+        if (found.credential !== null && !this.exhaustedCredentials.has(found.credential) && storeProblems(login.provider, path, found, known).length === 0) {
           lease = this.grant(slot, found.store, found.credential, 1, keeper);
         }
       }
@@ -239,6 +239,7 @@ export class Scheduler {
     return {
       login: slot.login,
       store,
+      credential,
       release: () => {
         if (released) return;
         released = true;
