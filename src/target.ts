@@ -79,8 +79,9 @@ const hostCharacters = new Set("abcdefghijklmnopqrstuvwxyz0123456789-.");
 function isHostName(value: string): boolean {
   const labels = value.split(".");
   return (
+    value.length <= 253 &&
     labels.length > 1 &&
-    labels.every((label) => label !== "") &&
+    labels.every((label) => label.length > 0 && label.length <= 63 && !label.startsWith("-") && !label.endsWith("-")) &&
     [...value].every((character) => hostCharacters.has(character)) &&
     isIP(value) === 0 &&
     URL.canParse(`https://${value}`) &&

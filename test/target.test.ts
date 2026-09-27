@@ -440,6 +440,10 @@ networks:
     ["an uppercase egress host", { ...settings, egress: ["API.pwnedpasswords.com"] }, "must be a lowercase host name"],
     ["a single-label egress host", { ...settings, egress: ["localhost"] }, "must be a lowercase host name"],
     ["an egress host with a trailing dot", { ...settings, egress: ["api.pwnedpasswords.com."] }, "must be a lowercase host name"],
+    ["an egress label that starts with a hyphen", { ...settings, egress: ["-api.pwnedpasswords.com"] }, "must be a lowercase host name"],
+    ["an egress label that ends with a hyphen", { ...settings, egress: ["api-.pwnedpasswords.com"] }, "must be a lowercase host name"],
+    ["an egress label longer than 63 characters", { ...settings, egress: [`${"a".repeat(64)}.example.com`] }, "must be a lowercase host name"],
+    ["an egress host longer than 253 characters", { ...settings, egress: [`${"a".repeat(63)}.`.repeat(4) + "com"] }, "must be a lowercase host name"],
   ];
 
   test.each(invalid)("reject settings with %s", async (_, qa, message) => {

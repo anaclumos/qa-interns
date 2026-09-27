@@ -229,6 +229,9 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
   metrics:
     image: prom/statsd-exporter:v0.28.0
     network_mode: "service:db"
+networks:
+  qa_relay:
+    driver: macvlan
 `,
     );
     const target = await loadTarget(ref, source);
@@ -236,6 +239,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
     const config = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target), 1000, 1000));
 
     expect(Object.keys(config.services).sort()).toEqual(["api", "db", "metrics", "qa-proxy", "qa-relay", "qa-runner"]);
+    expect(config.networks.qa_relay?.driver).toBeUndefined();
     const hosts = ["ai-gateway.vercel.sh=10.213.6.254", "api.pwnedpasswords.com=10.213.6.254"];
     const relayReady = { "qa-relay": { condition: "service_healthy" } };
     expect(config.services.api).toMatchObject({

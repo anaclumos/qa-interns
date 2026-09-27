@@ -196,10 +196,10 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
   }
   lines.push(
     "networks:",
-    `  qa_internal: ${y(isolated(internal))}`,
-    ...(relayHosts.length > 0 ? [`  qa_relay: ${y(isolated(relay))}`] : []),
-    `  qa_agent: ${y(isolated(agent))}`,
-    `  qa_egress: ${y({ ipam: { config: [{ subnet: egress }] } })}`,
+    `  qa_internal: !override ${y(isolated(internal))}`,
+    ...(relayHosts.length > 0 ? [`  qa_relay: !override ${y(isolated(relay))}`] : []),
+    `  qa_agent: !override ${y(isolated(agent))}`,
+    `  qa_egress: !override ${y({ ipam: { config: [{ subnet: egress }] } })}`,
   );
   return `${lines.join("\n")}\n`;
 }
