@@ -442,7 +442,10 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       const dockerConfig = join(runDir, "docker");
       await Bun.write(
         join(dockerConfig, "config.json"),
-        JSON.stringify({ Proxieſ: { default: { httpProxy: "http://qa:secret@corp-proxy.test:3128", allProxy: "socks5://qa:secret@corp-proxy.test:1080" } } }),
+        JSON.stringify({
+          proxies: { default: { httpProxy: "http://qa:secret@corp-proxy.test:3128" } },
+          Proxieſ: { default: { allProxy: "socks5://qa:secret@corp-proxy.test:1080" } },
+        }),
       );
       await Bun.write(join(source, "Dockerfile"), `FROM busybox:1.37\nRUN printf %s "$HTTP_PROXY$ALL_PROXY" > /build-proxy-${runId}\n`);
       await Bun.write(join(source, ".devcontainer", "compose.yml"), 'services:\n  web:\n    build: ..\n    command: ["sleep", "86400"]\n    init: true\n');
