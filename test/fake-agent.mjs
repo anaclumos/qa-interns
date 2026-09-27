@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const sessionId = "fake-session-1";
@@ -75,6 +76,18 @@ const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, 
 
 const login = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8"));
 
+const fill = (file, mib) => {
+  const chunk = randomBytes(1024 ** 2);
+  const fd = openSync(file, "w");
+  try {
+    for (let index = 0; index < mib; index += 1) writeSync(fd, chunk);
+  } catch (error) {
+    if (error.code !== "EFBIG") throw error;
+  } finally {
+    closeSync(fd);
+  }
+};
+
 const endTurn = { result: { stopReason: "end_turn" } };
 
 const charterTurn = async (text) => {
@@ -120,6 +133,11 @@ const charterTurn = async (text) => {
   });
   update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" });
   say("Recorded one finding.");
+  if (login().flood === true) {
+    fill("/qa/out/evidence/big.bin", 1100);
+    fill("/qa/out/evidence/more.bin", 16);
+    return slowTurn();
+  }
   return endTurn;
 };
 
