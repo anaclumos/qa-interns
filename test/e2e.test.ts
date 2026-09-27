@@ -133,7 +133,12 @@ USER qa
         id: "g1",
         confirmed: true,
         reproductions: ["i1", "i2", "c1"],
-        confirmation: { intern: "c1", provider: "claude", result: { reproduced: true, observed: "fake reproduction", evidence: [] }, error: null },
+        confirmation: {
+          intern: "c1",
+          provider: "claude",
+          result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
+          error: null,
+        },
       });
       expect(report.groups[0].findings.map((finding: { id: string }) => finding.id)).toEqual(["i1/fake-home", "i2/fake-home"]);
       expect(report.groups[0].findings[0]).toMatchObject({
@@ -198,16 +203,20 @@ USER qa
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups).toHaveLength(1);
       expect(report.groups[0]).toMatchObject({
-        confirmed: false,
-        reproductions: ["i1"],
-        confirmation: { intern: "c1", provider: "claude", result: null, error: "no confirmation.json written" },
+        confirmed: true,
+        reproductions: ["i1", "c1"],
+        confirmation: {
+          intern: "c1",
+          provider: "claude",
+          result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
+          error: null,
+        },
       });
       const findings: Finding[] = report.groups[0].findings;
       expect(findings.map((finding) => [finding.id, finding.evidence, finding.environment])).toEqual([
         ["i1/fake-home", ["interns/i1/out/evidence/page.html"], { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-a" }],
         ["i1/out-2/fake-home", ["interns/i1/out-2/evidence/page.html"], { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-b" }],
       ]);
-      expect(await Bun.file(join(runDir, "interns", "c1", "out", "confirmation.json")).exists()).toBe(true);
       expect(await Bun.file(join(runDir, "interns", "c1", "out-2", "confirmation.json")).exists()).toBe(false);
 
       expect(await leftovers(state.runId)).toEqual([]);

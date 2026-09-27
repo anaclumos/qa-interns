@@ -131,7 +131,9 @@ const confirmationTurn = () => {
     say("The confirmation did not finish.");
     return endTurn;
   }
-  writeJson("/qa/out/confirmation.json", { reproduced: true, observed: "fake reproduction", evidence: [] });
+  mkdirSync("/qa/out/evidence", { recursive: true });
+  writeFileSync("/qa/out/evidence/reproduction.txt", "fake reproduction\n");
+  writeJson("/qa/out/confirmation.json", { reproduced: true, observed: "fake reproduction", evidence: ["evidence/reproduction.txt"] });
   say("Wrote the confirmation.");
   return endTurn;
 };

@@ -379,32 +379,40 @@ function lead(group: Group): Finding {
 async function reproduce(ctx: Context, intern: InternState, group: Group, target: Target, minutes: number): Promise<void> {
   const finding = lead(group);
   const avoid = [...new Set(group.findings.map((entry) => entry.environment.provider))];
-  const outcome = await agentTask(ctx, intern.id, target, avoid, async (session, attempt, env, _provider, note) => {
+  const check = async (attempt: number): Promise<{ result: Confirmation | null; error: string | null }> => {
+    try {
+      return { result: await readConfirmation(ctx.runDir, intern.id, attempt), error: null };
+    } catch (error) {
+      return { result: null, error: message(error) };
+    }
+  };
+  const attempts: { attempt: number; provider: Provider }[] = [];
+  const outcome = await agentTask(ctx, intern.id, target, avoid, async (session, attempt, env, provider, note) => {
+    attempts.push({ attempt, provider });
     const out = outDir(intern.id, attempt);
     const file = join(ctx.runDir, out, "confirmation.json");
-    const check = async (): Promise<{ result: Confirmation | null; error: string | null }> => {
-      try {
-        return { result: await readConfirmation(ctx.runDir, intern.id, attempt), error: null };
-      } catch (error) {
-        return { result: null, error: message(error) };
-      }
-    };
     const deadline = Date.now() + minutes * minute;
     let answer: { result: Confirmation | null; error: string | null } = { result: null, error: "no confirmation.json written" };
     let corrected = false;
     await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
-      answer = await check();
+      answer = await check(attempt);
       if (answer.error === null || corrected) return null;
       corrected = true;
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
-    if (answer.result === null && (await Bun.file(file).exists())) answer = await check();
+    if (answer.result === null && (await Bun.file(file).exists())) answer = await check(attempt);
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : answer.result.reproduced ? "reproduced" : "did not reproduce");
     return answer;
   });
   const answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };
-  group.confirmation = { intern: intern.id, provider: intern.provider, ...answer };
+  let confirmation = { intern: intern.id, provider: intern.provider, ...answer };
+  for (const entry of attempts.toReversed()) {
+    if (confirmation.result !== null) break;
+    const earlier = await check(entry.attempt);
+    if (earlier.result !== null) confirmation = { intern: intern.id, provider: entry.provider, ...earlier };
+  }
+  group.confirmation = confirmation;
 }
 
 function internState(id: string, role: InternState["role"], charter: string, group: string | null): InternState {

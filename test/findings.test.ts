@@ -273,6 +273,17 @@ describe("readFindings", () => {
     expect(await reasonOf("huge")).toBe("the file is above the limit of 1 MiB");
   });
 
+  test("reads a later attempt from its own folder, with ids and evidence paths that name that folder", async () => {
+    await finding("a1", "pagination-overlap", { ...pagination, evidence: [] });
+    await Bun.write(path.join(runDir, "interns", "a1", "out-2", "evidence", "page-1.png"), "png bytes");
+    await Bun.write(path.join(runDir, "interns", "a1", "out-2", "findings", "pagination-overlap.json"), JSON.stringify({ ...pagination, evidence: ["/qa/out/evidence/page-1.png"] }));
+    await Bun.write(path.join(runDir, "interns", "a1", "out-2", "findings", "broken.json"), "{");
+    const later = await readFindings(runDir, "a1", 2, environment);
+    expect(later.findings.map((item) => [item.id, item.intern, item.evidence])).toEqual([["a1/out-2/pagination-overlap", "a1", ["interns/a1/out-2/evidence/page-1.png"]]]);
+    expect(later.rejected.map((item) => item.file)).toEqual(["interns/a1/out-2/findings/broken.json"]);
+    expect((await readFindings(runDir, "a1", 1, environment)).findings.map((item) => item.id)).toEqual(["a1/pagination-overlap"]);
+  });
+
   test("accepts null contradicts for a kind other than inconsistency", async () => {
     await finding("i1", "null-contradicts", { ...pagination, contradicts: null, evidence: [] });
     const { findings } = await readFindings(runDir, "i1", 1, environment);
@@ -332,6 +343,13 @@ describe("readConfirmation", () => {
       observed: "Page 2 starts with \"INV-0014 Stark Industries\", the last row of page 1.",
       evidence: ["interns/c1/out/evidence/repeat.png"],
     });
+  });
+
+  test("reads a later attempt from its own folder", async () => {
+    await Bun.write(path.join(runDir, "interns", "c7", "out-2", "evidence", "repeat.png"), "png bytes");
+    await Bun.write(path.join(runDir, "interns", "c7", "out-2", "confirmation.json"), JSON.stringify({ reproduced: false, observed: "Page 2 starts with INV-0013.", evidence: ["evidence/repeat.png"] }));
+    expect(await readConfirmation(runDir, "c7", 2)).toEqual({ reproduced: false, observed: "Page 2 starts with INV-0013.", evidence: ["interns/c7/out-2/evidence/repeat.png"] });
+    await expect(readConfirmation(runDir, "c7", 1)).rejects.toThrow("the file does not exist");
   });
 
   test("throws when the file does not exist", async () => {
