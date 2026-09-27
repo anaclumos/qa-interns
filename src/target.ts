@@ -486,6 +486,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const object = z.record(z.string(), z.unknown()).safeParse(Bun.JSONC.parse(await Bun.file(file).text()));
   if (!object.success) throw new Error(`${file} is not a JSON object`);
   const config = object.data;
+  if (Array.isArray(config.runServices) && config.runServices.length === 0) delete config.runServices;
   if (config.dockerComposeFile === undefined) {
     throw new Error(`${file} has no dockerComposeFile. Single-container dev containers are not supported yet; use a Docker Compose dev container.`);
   }
