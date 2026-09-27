@@ -23,7 +23,7 @@ const stateSchema = z.object({
       role: z.enum(["intern", "judge", "confirm"]),
       charter: z.string(),
       group: z.string().nullable(),
-      provider: z.enum(["claude", "codex", "cursor"]).nullable(),
+      provider: z.enum(["claude", "codex", "cursor", "grok"]).nullable(),
       login: z.string().nullable(),
       model: z.string().nullable(),
       project: z.string().nullable(),

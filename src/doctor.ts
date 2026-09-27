@@ -13,7 +13,8 @@ const gib = 1024 ** 3;
 const agents = [
   ["claude-agent-acp", "--version"],
   ["codex-acp", "--version"],
-  ["agent", "--version"],
+  ["cursor-agent", "--version"],
+  ["grok", "--version"],
   ["agent-browser", "--version"],
 ];
 
