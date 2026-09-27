@@ -11,6 +11,8 @@ export type QaSettings = { urls: Record<string, string>; ready: string; seed: st
 export type TargetRef = { repo: string; path: string; commit: string };
 export type ComposeService = {
   build: boolean;
+  image: string | null;
+  tags: string[];
   memLimit: number | null;
   networkMode: string | null;
   aliases: string[];
@@ -158,6 +160,7 @@ const buildSchema = z.object({
   ssh: z.array(z.string()).optional(),
   cache_from: z.array(z.string()).optional(),
   cache_to: z.array(z.string()).optional(),
+  tags: z.array(z.string()).optional(),
 });
 
 const composeSchema = z.object({
@@ -165,6 +168,7 @@ const composeSchema = z.object({
     z.string(),
     z.object({
       build: buildSchema.optional(),
+      image: z.string().optional(),
       container_name: z.string().optional(),
       network_mode: z.string().optional(),
       networks: z.record(z.string(), z.object({ aliases: z.array(z.string()).optional() }).nullable()).optional(),
@@ -542,6 +546,8 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
     const memory = entry.mem_limit ?? limits?.memory;
     services[name] = {
       build: entry.build !== undefined,
+      image: entry.image ?? null,
+      tags: entry.build?.tags ?? [],
       memLimit: memory === undefined ? null : bytes(memory, `The memory limit of service ${name}`),
       networkMode: entry.network_mode ?? null,
       aliases,
