@@ -394,6 +394,17 @@ networks:
     });
   });
 
+  test("reject an egress host that is the name or a network alias of a service", async () => {
+    const compose = 'services:\n  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: ["shop.example.test"]\n  api.example.test:\n    image: nginx:1.29-alpine\n';
+    const qa = { ...settings, egress: ["shop.example.test", "api.example.test", "api.pwnedpasswords.com"] };
+    const error = await load(await fixture(compose, devcontainer({}, qa))).catch((reason: unknown) => reason);
+    if (!(error instanceof Error)) throw new Error("loadTarget accepted an egress host that names a service");
+    expect(error.message.split("\n").filter((line) => line.startsWith("- "))).toEqual([
+      "- egress host shop.example.test is the name or a network alias of a service",
+      "- egress host api.example.test is the name or a network alias of a service",
+    ]);
+  });
+
   test("accept egress host names", async () => {
     const qa = { ...settings, egress: ["api.pwnedpasswords.com", "ai-gateway.vercel.sh", "xn--bcher-kva.example"] };
     const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n", devcontainer({}, qa)));

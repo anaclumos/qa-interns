@@ -35,6 +35,10 @@ function parse(data) {
 const server = createServer((socket) => {
   let data = Buffer.alloc(0);
   let upstream = null;
+  socket.setTimeout(10_000, () => {
+    socket.destroy();
+    upstream?.destroy();
+  });
   socket.on("error", () => upstream?.destroy());
   const read = (chunk) => {
     data = Buffer.concat([data, chunk]);
@@ -49,6 +53,7 @@ const server = createServer((socket) => {
     }
     console.log(`allow ${name}`);
     upstream = connect(443, name, () => {
+      socket.setTimeout(0);
       upstream.write(data);
       upstream.pipe(socket);
       socket.pipe(upstream);

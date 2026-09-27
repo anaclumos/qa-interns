@@ -259,6 +259,9 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
       active,
     };
   }
+  for (const host of parsed.data.customizations["qa-interns"].egress) {
+    if (tags.has(host) || aliasOwners.has(host)) violations.push(`egress host ${host} is the name or a network alias of a service`);
+  }
   for (const [kind, entries] of [
     ["volume", project.volumes ?? {}],
     ["network", project.networks ?? {}],

@@ -71,7 +71,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - `seed`: a shell command, run once in the dev container, that creates test accounts and data and prints them as one JSON document.
 - `focus` (optional): areas the project wants covered, added to the charter deck.
 - `offLimits` (optional): actions interns must not take.
-- `egress` (optional): outside hosts that the target services reach over HTTPS on port 443, for a service that has no local stand-in, such as a hosted model API. Each entry is an exact lowercase host name; a wildcard or an IP address is rejected.
+- `egress` (optional): outside hosts that the target services reach over TLS on port 443, such as HTTPS, for a service that has no local stand-in, such as a hosted model API. Each entry is an exact lowercase host name; a wildcard or an IP address is rejected.
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
 
@@ -81,6 +81,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - A `network_mode` other than `service:<name>`, including `host`.
 - A service named `qa-proxy`, `qa-relay`, or `qa-runner`.
 - A network alias that is the name of another service, `qa-proxy`, `qa-relay`, or `qa-runner`, or that two services declare.
+- An `egress` host that is the name or a network alias of a service.
 - Two services whose names differ only in case, since Docker's network names are case-insensitive and prebuilt image tags are lowercase.
 - `privileged: true`, `pid: host`, `ipc: host`, or `userns_mode: host`.
 - A `devices` entry, a `cap_add` entry, or a `security_opt` entry that contains `unconfined`.
@@ -145,7 +146,7 @@ A finding is confirmed when two or more interns reproduced it.
 - Every environment is its own Compose project with its networks in its own `/23` block of `10.213.0.0/16`. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. When the target lists `egress` hosts, the target services and the relay share a third internal network. Only the proxy and the relay join the network that reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
 - The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential file it was given, and that write reaches the store on the host.
 - The runner reaches the internet only through a proxy container that allows HTTPS to the model provider hosts and nothing else.
-- Target services cannot reach the proxy. They reach the internet only through a relay container, and only the `egress` hosts over HTTPS on port 443. Each target service resolves those hosts to the relay through its hosts file. The relay reads the host name from the TLS handshake, refuses any other host, and passes the encrypted connection through unchanged, so the application needs no proxy setting and checks the real server's certificate. Lifecycle commands that run in a target container, and application code, fail when they need any other host.
+- Target services cannot reach the proxy. They reach the internet only through a relay container, and only the `egress` hosts over TLS on port 443. Each target service resolves those hosts to the relay through its hosts file and starts after the relay accepts connections. The relay reads the host name from the TLS handshake, refuses any other host and any connection that does not start with a TLS handshake, and passes the encrypted connection through unchanged, so the application needs no proxy setting and checks the real server's certificate. The relay does not check which protocol runs inside TLS. Lifecycle commands that run in a target container, and application code, fail when they need any other host.
 - Every agent session starts with no MCP servers. Claude and Codex have their MCP sources blocked in `src/providers.ts`. A Cursor runner has no MCP source, because its home directory is an empty tmpfs and the Cursor store holds credentials only.
 - Chrome runs with `--no-sandbox`, because Docker's default seccomp profile blocks its sandbox, so the container is the boundary. A compromised renderer can read what the runner user can read, including that intern's login.
 

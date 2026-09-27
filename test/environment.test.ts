@@ -208,6 +208,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
       `services:
   api:
     build: ..
+    depends_on: ["db"]
     networks:
       default:
         aliases: ["shop"]
@@ -224,8 +225,13 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
 
     expect(Object.keys(config.services).sort()).toEqual(["api", "db", "metrics", "qa-proxy", "qa-relay", "qa-runner"]);
     const hosts = ["ai-gateway.vercel.sh=10.213.6.254", "api.pwnedpasswords.com=10.213.6.254"];
-    expect(config.services.api).toMatchObject({ networks: { qa_internal: { aliases: ["shop"] }, qa_relay: null }, extra_hosts: hosts });
-    expect(config.services.db).toMatchObject({ networks: { qa_internal: null, qa_relay: null }, extra_hosts: hosts });
+    const relayReady = { "qa-relay": { condition: "service_healthy" } };
+    expect(config.services.api).toMatchObject({
+      networks: { qa_internal: { aliases: ["shop"] }, qa_relay: null },
+      extra_hosts: hosts,
+      depends_on: { db: { condition: "service_started" }, ...relayReady },
+    });
+    expect(config.services.db).toMatchObject({ networks: { qa_internal: null, qa_relay: null }, extra_hosts: hosts, depends_on: relayReady });
     expect(config.services.metrics?.networks).toBeUndefined();
     expect(config.services.metrics?.extra_hosts).toBeUndefined();
 
@@ -234,6 +240,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
       command: ["node", "/opt/qa-interns/relay.mjs"],
       environment: { QA_RELAY_ALLOW: "api.pwnedpasswords.com,ai-gateway.vercel.sh" },
       networks: { qa_relay: { ipv4_address: "10.213.6.254" }, qa_egress: null },
+      healthcheck: { start_period: "30s", start_interval: "500ms" },
       init: true,
       read_only: true,
       cap_drop: ["ALL"],
@@ -434,8 +441,15 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         await execute([...compose, "up", "-d", "--wait", "app", "upstream", "qa-relay"]);
         const curl = [...compose, "exec", "-T", "app", "curl", "-sS", "--max-time", "10", "--cacert", "/certs/cert.pem"];
         expect(await execute([...curl, "--retry", "10", "--retry-all-errors", "--retry-delay", "1", "https://api.example.test/"])).toBe("upstream api.example.test");
-        expect((await capture([...curl, "--resolve", `blocked.example.test:443:10.213.${slot * 2}.254`, "https://blocked.example.test/"])).code).toBe(35);
+        const blocked = await capture([...curl, "--resolve", `blocked.example.test:443:10.213.${slot * 2}.254`, "https://blocked.example.test/"]);
+        expect(blocked.code).not.toBe(0);
+        const plain = await capture([...curl, "http://api.example.test:443/"]);
+        expect(plain.code).not.toBe(0);
+        expect(plain.code).not.toBe(28);
         expect((await capture([...curl, "https://blocked.example.test/"])).code).toBe(6);
+        const decisions = (await execute([...compose, "logs", "--no-log-prefix", "qa-relay"])).split("\n");
+        expect(decisions).toEqual(expect.arrayContaining(["allow api.example.test", 'deny "blocked.example.test"', "deny null"]));
+        expect(decisions.filter((line) => line.startsWith("allow ")).every((line) => line === "allow api.example.test")).toBe(true);
       } finally {
         await execute([...compose, "down", "-v", "--remove-orphans", "--timeout", "2"]);
       }

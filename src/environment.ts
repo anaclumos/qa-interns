@@ -27,6 +27,7 @@ const minute = 60_000;
 const readyTimeout = 5 * minute;
 const waitTimeoutSeconds = "600";
 const proxyUrl = "http://qa-proxy:3128";
+const relayProbe = "require('node:net').connect(443, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))";
 
 type Cidr = { address: number; bits: number };
 
@@ -123,7 +124,12 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     if (!service.networkMode?.startsWith("service:")) {
       const networks = { qa_internal: service.aliases.length > 0 ? { aliases: service.aliases } : null, ...(relayHosts.length > 0 ? { qa_relay: null } : {}) };
       lines.push(`    networks: !override ${y(networks)}`);
-      if (relayHosts.length > 0) lines.push(`    extra_hosts: ${y(Object.fromEntries(relayHosts.map((host) => [host, relayAddress])))}`);
+      if (relayHosts.length > 0) {
+        lines.push(
+          `    extra_hosts: ${y(Object.fromEntries(relayHosts.map((host) => [host, relayAddress])))}`,
+          `    depends_on: ${y({ "qa-relay": { condition: "service_healthy" } })}`,
+        );
+      }
     }
     const memory = service.memLimit === null ? "1g" : null;
     const cpus = service.hasCpus ? null : 2;
@@ -181,6 +187,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
       `    command: ${y(["node", "/opt/qa-interns/relay.mjs"])}`,
       `    environment: ${y({ QA_RELAY_ALLOW: relayHosts.join(",") })}`,
       `    networks: ${y({ qa_relay: { ipv4_address: relayAddress }, qa_egress: null })}`,
+      `    healthcheck: ${y({ test: ["CMD", "node", "-e", relayProbe], start_period: "30s", start_interval: "500ms" })}`,
       ...hardening,
       `    mem_limit: ${y("128m")}`,
       "    cpus: 0.5",
