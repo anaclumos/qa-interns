@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import path from "node:path";
 import { AgentError } from "../src/acp.ts";
 import { providers } from "../src/providers.ts";
 import type { Provider } from "../src/types.ts";
@@ -25,6 +26,23 @@ const codexInternal = new AgentError(-32603, "Internal error", { details: "works
 const codexUnauthorizedStructured = new AgentError(-32603, "Internal error", { message: "Provider returned 401", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 401 } } });
 const cursorInternal = new AgentError(-32603, "Internal error", [{ expected: "string", code: "invalid_type", path: ["sessionId"], message: "Invalid input" }]);
 const invalidParams = new AgentError(-32602, "Invalid params", { sessionId: { _errors: ["Invalid input: expected string, received undefined"] } });
+const grokAuthRequired = new AgentError(-32000, "Authentication required", "no auth method id provided");
+const grokRateLimit = new AgentError(-32003, "Rate limited", "API error (status 429 Too Many Requests): rate_limit_error: Rate limit exceeded");
+const grokUsageLimit = new AgentError(-32003, "Rate limited", "API error (status 429 Too Many Requests): usage_limit_reached: You have reached your usage limit");
+const grokNoCredits = new AgentError(-32603, "Internal error", {
+  message: "API error (status 402 Payment Required): insufficient_quota: You have run out of credits",
+  http_status: 402,
+});
+const grokRejectedAfterRefresh = new AgentError(-32603, "Internal error", {
+  message: "Auth recovery succeeded but 4 authenticated inference requests were still rejected (401); giving up after 3 retries. Turn ran 7s wall-clock.",
+  http_status: 401,
+});
+const grokForbidden = new AgentError(-32603, "Internal error", { message: "API error (status 403 Forbidden): permission_error: Forbidden", http_status: 403 });
+const grokRefreshFailed = new AgentError(
+  -32603,
+  "Internal error",
+  "Unauthorized (401) from https://cli-chat-proxy.grok.com/v1/responses: authentication_error: token expired\n\n  Model:     grok-4.6\n  Auth:      ApiKey\n  Version:   1.0.41\n  Available: grok-4.6, grok-4.5",
+);
 
 const cases: [Provider, string, AgentError, boolean][] = [
   ["claude", "authentication required", authRequired, true],
@@ -46,6 +64,17 @@ const cases: [Provider, string, AgentError, boolean][] = [
   ["cursor", "internal error with array data", cursorInternal, false],
   ["cursor", "the claude rate limit shape", claudeRateLimit, false],
   ["cursor", "the codex usage limit shape", codexUsageLimit, false],
+  ["grok", "authentication required", grokAuthRequired, true],
+  ["grok", "rate limit", grokRateLimit, true],
+  ["grok", "usage limit", grokUsageLimit, true],
+  ["grok", "no credits", grokNoCredits, true],
+  ["grok", "rejected after a refresh", grokRejectedAfterRefresh, true],
+  ["grok", "forbidden by policy", grokForbidden, false],
+  ["grok", "failed refresh with text data only", grokRefreshFailed, false],
+  ["grok", "the claude rate limit shape", claudeRateLimit, false],
+  ["grok", "the codex usage limit shape", codexUsageLimit, false],
+  ["claude", "the grok rate limit shape", grokRateLimit, false],
+  ["codex", "the grok no credits shape", grokNoCredits, false],
 ];
 
 describe("isLoginFailure", () => {
@@ -73,16 +102,23 @@ describe("mounts", () => {
     ]);
   });
 
-  test.each(["claude", "codex", "cursor"] as const)("%s rejects a relative store", (provider) => {
+  test("grok mounts the store directory and reads auth.json from it", () => {
+    const mounts = providers.grok.mounts("/srv/qa-logins/grok-1");
+    expect(mounts).toEqual([{ source: "/srv/qa-logins/grok-1", target: "/home/qa/.grok-login", readOnly: false }]);
+    expect(providers.grok.env.GROK_AUTH_PATH).toBe(path.join(mounts[0]?.target ?? "", "auth.json"));
+  });
+
+  test.each(["claude", "codex", "cursor", "grok"] as const)("%s rejects a relative store", (provider) => {
     expect(() => providers[provider].mounts("logins/one")).toThrow('login store must be an absolute path, got "logins/one"');
   });
 
-  test("every mount target sits under a path the provider env points at", () => {
-    for (const provider of ["claude", "codex", "cursor"] as const) {
+  test("the provider env points at or into every mount target", () => {
+    for (const provider of ["claude", "codex", "cursor", "grok"] as const) {
       const spec = providers[provider];
       const roots = Object.values(spec.env).filter((value) => value.startsWith("/"));
       for (const mount of [...spec.mounts("/srv/qa-logins/x"), ...spec.files]) {
-        expect(roots.some((root) => mount.target.startsWith(`${root}/`) || mount.target === root)).toBe(true);
+        const related = (root: string) => mount.target === root || mount.target.startsWith(`${root}/`) || root.startsWith(`${mount.target}/`);
+        expect(roots.some(related)).toBe(true);
       }
     }
   });
