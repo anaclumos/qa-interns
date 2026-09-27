@@ -524,6 +524,39 @@ describe("Scheduler", () => {
     releaseAll([one, two]);
   });
 
+  test("another process's lease blocks a lease whose mounted path contains or sits inside its own until that process ends", async () => {
+    const outer = join(dir, "nested", "outer");
+    const inner = join(outer, "inner");
+    const twin = join(dir, "nested", "outer-twin");
+    for (const store of [inner, twin]) await mkdir(store, { recursive: true });
+    for (const store of [outer, inner, twin]) await Bun.write(join(store, "auth.json"), "{}");
+    await Bun.write(join(inner, ".credentials.json"), "{}");
+    const cursor: Login = { id: "cursor-outer", provider: "cursor", store: outer, seat: null, concurrency: 1 };
+    const beside: Login = { id: "cursor-twin", provider: "cursor", store: twin, seat: null, concurrency: 1 };
+    const codex: Login = { id: "codex-inner", provider: "codex", store: inner, seat: null, concurrency: 1 };
+    const claude: Login = { id: "claude-inner", provider: "claude", store: inner, seat: null, concurrency: 1 };
+    const grok: Login = { id: "grok-inner", provider: "grok", store: inner, seat: null, concurrency: 1 };
+
+    const outside = await holder([cursor], 1);
+    expect(outside.count).toBe(1);
+    expect(await new Scheduler([codex]).acquire("u1", [])).toBeNull();
+    expect(await new Scheduler([claude]).acquire("u2", [])).toBeNull();
+    expect(await new Scheduler([grok]).acquire("u3", [])).toBeNull();
+    const next = held(await new Scheduler([beside]).acquire("u4", []));
+    outside.child.stdin.end();
+    await outside.child.exited;
+
+    const inside = await holder([codex], 1);
+    expect(inside.count).toBe(1);
+    const scheduler = new Scheduler([cursor]);
+    expect(await scheduler.acquire("u5", [])).toBeNull();
+    inside.child.kill("SIGKILL");
+    await inside.child.exited;
+    const lease = held(await scheduler.acquire("u6", []));
+    expect(lease.store).toBe(outer);
+    releaseAll([next, lease]);
+  });
+
   test("a seat command that cannot start throws and keeps no reservation", async () => {
     const scheduler = new Scheduler([login("codex-pool", "codex", 1, [join(dir, "missing-seat-command")])]);
     await expect(scheduler.acquire("i1", [])).rejects.toThrow("ENOENT");
