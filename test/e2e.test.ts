@@ -6,7 +6,7 @@ import { writeChromePolicy } from "../src/environment.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { newRunId, readState } from "../src/state.ts";
-import { execute } from "../src/target.ts";
+import { capture, execute } from "../src/target.ts";
 import type { RunState } from "../src/types.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
@@ -218,10 +218,17 @@ USER qa
   );
 
   test(
-    "ask returns the file the agent wrote and leaves nothing of its environment",
+    "ask returns the file the agent wrote, leaves nothing of its environment, and leaves other projects of the run alone",
     async () => {
       const runId = newRunId();
-      expect(await ask(await askOptions(runId, "score"))).toEqual({ groups: [] });
+      const other = `qair-f-e2e-other-${runId}`;
+      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${runId}-i1`, other]);
+      try {
+        expect(await ask(await askOptions(runId, "score"))).toEqual({ groups: [] });
+        expect((await capture(["docker", "network", "inspect", other])).code).toBe(0);
+      } finally {
+        await execute(["docker", "network", "rm", other]);
+      }
       expect(await leftovers(runId)).toEqual([]);
     },
     timeout,
@@ -236,7 +243,7 @@ USER qa
       await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=${project}`, held]);
       try {
         await execute(["docker", "run", "-d", "--rm", "--name", held, "--network", held, fakeImage]);
-        await expect(ask(await askOptions(runId, "score"))).rejects.toThrow(`Teardown of run ${runId} failed: score: docker compose down left objects of ${project} behind`);
+        await expect(ask(await askOptions(runId, "score"))).rejects.toThrow(`Teardown of ${project} failed: score: docker compose down left objects of ${project} behind`);
       } finally {
         await execute(["docker", "rm", "-f", held]);
         await execute(["docker", "network", "rm", held]);

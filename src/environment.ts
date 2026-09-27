@@ -326,16 +326,24 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   return { project, runner, devContainer, seed };
 }
 
-async function down(project: string): Promise<void> {
-  await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
+async function projectObjects(project: string): Promise<string[]> {
   const label = `label=com.docker.compose.project=${project}`;
   const left = await Promise.all([
     execute(["docker", "ps", "-aq", "--filter", label]),
     execute(["docker", "network", "ls", "-q", "--filter", label]),
     execute(["docker", "volume", "ls", "-q", "--filter", label]),
   ]);
-  const ids = left.join("\n").split("\n").filter((id) => id !== "");
+  return left.join("\n").split("\n").filter((id) => id !== "");
+}
+
+async function down(project: string): Promise<void> {
+  await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
+  const ids = await projectObjects(project);
   if (ids.length > 0) throw new Error(`docker compose down left objects of ${project} behind: ${ids.join(", ")}`);
+}
+
+export async function stopProject(project: string): Promise<void> {
+  if ((await projectObjects(project)).length > 0) await down(project);
 }
 
 async function removeImages(prefixes: string[]): Promise<void> {

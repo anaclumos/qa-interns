@@ -11,6 +11,7 @@ import {
   runnerEnv,
   startEnvironment,
   stopEnvironment,
+  stopProject,
   stopRun,
   writeChromePolicy,
   type Environment,
@@ -483,14 +484,15 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
 export async function ask(opts: AskOptions): Promise<unknown> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
   const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, async () => {});
+  const project = `qa-${opts.runId}-${opts.name}`;
   const finish = once(async (): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     try {
-      await stopRun(opts.runId);
+      await stopProject(project);
     } catch (reason) {
       teardowns.push(message(reason));
     }
-    return teardowns.length === 0 ? null : `Teardown of run ${opts.runId} failed: ${teardowns.join("; ")}`;
+    return teardowns.length === 0 ? null : `Teardown of ${project} failed: ${teardowns.join("; ")}`;
   });
   return guard(
     ctx,
