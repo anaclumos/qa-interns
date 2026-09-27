@@ -29,6 +29,7 @@ const waitTimeoutSeconds = "600";
 const proxyUrl = "http://qa-proxy:3128";
 const outLimit = gib;
 const outCheckMs = 1000;
+const fullBelow = 16 * mib;
 const diskSuffix = ".img";
 const createDiskScript =
   'if [ -e "$2" ] || mountpoint -q "$1"; then echo "$1 already has an output disk" >&2; exit 1; fi; { truncate -s "$4" "$2.new" && mkfs.ext4 -q -F -m 0 -E root_owner="$3" "$2.new" && mount -o loop "$2.new" /mnt && rmdir /mnt/lost+found && umount /mnt && mv "$2.new" "$2" && mount -o loop,nosuid,nodev "$2" "$1"; } || { rm -f "$2.new"; exit 1; }';
@@ -365,8 +366,8 @@ export async function watchOut(dir: string, signal: AbortSignal): Promise<string
   for (;;) {
     await Bun.sleep(outCheckMs);
     signal.throwIfAborted();
-    const { bavail, ffree } = await statfs(dir);
-    if (bavail === 0 || ffree === 0) return `${dir} filled its ${outLimit / gib} GiB disk`;
+    const { bavail, bsize, ffree } = await statfs(dir);
+    if (bavail * bsize < fullBelow || ffree === 0) return `${dir} filled its ${outLimit / gib} GiB disk`;
   }
 }
 
