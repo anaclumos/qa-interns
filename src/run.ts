@@ -9,6 +9,7 @@ import {
   freeSlots,
   removeCopies,
   runnerEnv,
+  saveDisks,
   startEnvironment,
   stopEnvironment,
   stopProject,
@@ -513,6 +514,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
     const teardowns = [...ctx.teardowns];
     try {
       await stopProject(project);
+      await saveDisks(opts.runDir, opts.name, project, opts.runnerImage);
     } catch (reason) {
       teardowns.push(message(reason));
     }
