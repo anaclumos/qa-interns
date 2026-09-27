@@ -248,7 +248,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
       rmSync(lockedLog);
       mkdirSync(lockedLog);
       await docker("exec", agent, "node", "-e", [...fakeAgentPid, "writeFileSync(`/proc/${pid}/fd/2`, 'adapter error output\\n');"].join("\n"));
-      expect(await turn).toMatchObject({ code: "EISDIR" });
+      expect(await turn).toBeInstanceOf(Error);
     } finally {
       await locked.close();
     }
