@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { cp, mkdir, readdir, rm } from "node:fs/promises";
+import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { runQa } from "../src/run.ts";
@@ -72,6 +72,12 @@ describe.skipIf(!dockerAvailable)("runQa end to end with the fake agent", () => 
   beforeAll(async () => {
     await mkdir(root);
     await cp(join(import.meta.dir, "..", "eval", "ledger"), target, { recursive: true, filter: (source) => basename(source) !== "node_modules" });
+    const feature = join(target, ".devcontainer", "probe-feature");
+    await mkdir(feature);
+    await Bun.write(join(feature, "devcontainer-feature.json"), JSON.stringify({ id: "probe-feature", version: "1.0.0", name: "Probe feature" }));
+    await Bun.write(join(feature, "install.sh"), "#!/bin/sh\nset -e\n");
+    const devcontainerFile = join(target, ".devcontainer", "devcontainer.json");
+    await Bun.write(devcontainerFile, JSON.stringify({ ...(await Bun.file(devcontainerFile).json()), features: { "./probe-feature": {} } }));
     const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
     await execute([...git, "init", "-q"]);
     await execute([...git, "add", "-A"]);
@@ -256,6 +262,67 @@ USER qa
         ["i1/out-2/fake-home", ["interns/i1/out-2/evidence/page.html"], { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-b" }],
       ]);
       expect(await Bun.file(join(runDir, "interns", "c1", "out-2", "confirmation.json")).exists()).toBe(false);
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an intern does not start when devcontainer up gives its dev container host access",
+    async () => {
+      const hostile = join(root, "hostile");
+      await cp(target, hostile, { recursive: true });
+      const file = join(hostile, ".devcontainer", "devcontainer.json");
+      const config = await Bun.file(file).json();
+      const hostileSettings = {
+        customizations: { "qa-interns": { ...config.customizations["qa-interns"], hostEnv: ["QA_PROBE_DIR"] } },
+        dockerComposeFile: ["compose.yml", "results.yml"],
+        capAdd: ["SYS_PTRACE"],
+        securityOpt: ["no-new-privileges:true\n    cgroup: host"],
+        mounts: ["source=${QA_PROBE_DIR},target=/probe\n  db:\n    cap_add: [NET_ADMIN],type=bind"],
+      };
+      await Bun.write(file, JSON.stringify({ ...config, ...hostileSettings }));
+      await Bun.write(join(hostile, ".devcontainer", "results.yml"), 'services:\n  web:\n    volumes: ["../results:/results"]\n');
+      await symlink("../../../interns", join(hostile, "results"));
+      const git = ["git", "-C", hostile, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Hostile Ledger"]);
+      const probe = join(root, "probe");
+      await mkdir(probe);
+      const loginsFile = await logins("hostile", [{ id: "claude-1", provider: "claude" }]);
+
+      const lines: string[] = [];
+      const previous = process.env.QA_PROBE_DIR;
+      process.env.QA_PROBE_DIR = probe;
+      let error: unknown = null;
+      try {
+        await runQa({ dir: hostile, rev: "HEAD", interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+      } catch (reason) {
+        error = reason;
+      } finally {
+        if (previous === undefined) delete process.env.QA_PROBE_DIR;
+        else process.env.QA_PROBE_DIR = previous;
+      }
+
+      expect(error).toBeInstanceOf(Error);
+      const runDir = lines[0] ?? "";
+      const state = await readState(runDir);
+      expect(state.phase).toBe("failed");
+      const failed = intern(state, "i1");
+      expect(failed.status).toBe("failed");
+      expect(failed.model).toBeNull();
+      expect(failed.detail).toContain(`The dev container that devcontainer up created for qa-${state.runId}-i1 cannot run as isolated copies`);
+      expect(failed.detail).toContain("devcontainer up changes cgroup of service web");
+      expect(failed.detail).toContain("devcontainer up changes service db");
+      expect(failed.detail).toContain("service db adds capability NET_ADMIN");
+      expect(failed.detail).toContain(`/results, which resolves to ${await realpath(runDir)}/interns, outside the target directory`);
+      expect(failed.detail).toContain("service web sets cgroup host");
+      expect(failed.detail).toContain("service web adds capability SYS_PTRACE");
+      expect(failed.detail).toContain(`service web mounts ${probe}, which resolves to ${await realpath(probe)}, outside the target directory`);
+      expect(await Bun.file(join(runDir, "interns", "i1", "transcript.jsonl")).exists()).toBe(false);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
