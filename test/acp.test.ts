@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { AgentError, openSession, type Session } from "../src/acp.ts";
@@ -28,6 +28,13 @@ const internPrompt = [
   "Accounts: {\"users\":[{\"email\":\"owner@example.test\",\"password\":\"correct horse\"}]}",
   "Write each finding as one JSON file in /qa/out/findings/ and keep evidence under /qa/out.",
 ].join("\n");
+
+const fakeAgentPid = [
+  "const { readdirSync, readFileSync, writeFileSync } = require('node:fs');",
+  "const pid = readdirSync('/proc')",
+  "  .filter((entry) => Number.isInteger(Number(entry)))",
+  "  .find((entry) => readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\\0')[1] === '/opt/qa/fake-agent.mjs');",
+];
 
 type Line = { t: string; from: "client" | "agent"; message: Record<string, unknown> };
 
@@ -202,10 +209,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     const floodLog = path.join(internDir, "flood-adapter.log");
     const floodTranscript = path.join(internDir, "flood-transcript.jsonl");
     const flood = [
-      "const { readdirSync, readFileSync, writeFileSync } = require('node:fs');",
-      "const pid = readdirSync('/proc')",
-      "  .filter((entry) => Number.isInteger(Number(entry)))",
-      "  .find((entry) => readFileSync(`/proc/${entry}/cmdline`, 'utf8').split('\\0')[1] === '/opt/qa/fake-agent.mjs');",
+      ...fakeAgentPid,
       "writeFileSync(`/proc/${pid}/fd/2`, 'x'.repeat(80 * 2 ** 20));",
       "const line = `${JSON.stringify({ jsonrpc: '2.0', method: 'flood', params: { pad: 'x'.repeat(2 ** 20) } })}\\n`;",
       "writeFileSync(`/proc/${pid}/fd/1`, line.repeat(80));",
@@ -230,4 +234,22 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     expect(lines.pop()).toBe("");
     for (const line of lines) expect(JSON.parse(line).message.jsonrpc).toBe("2.0");
   }, 60_000);
+
+  test("a failed adapter log write fails the session's pending prompt", async () => {
+    const lockedLog = path.join(internDir, "locked-adapter.log");
+    const locked = await openSession({
+      container: agent,
+      provider: { ...providers.claude, adapter: ["node", "/opt/qa/fake-agent.mjs"] },
+      transcript: path.join(internDir, "locked-transcript.jsonl"),
+      adapterLog: lockedLog,
+    });
+    try {
+      const turn = locked.prompt("SLOW: keep working until you are stopped.").catch((error: unknown) => error);
+      chmodSync(lockedLog, 0o444);
+      await docker("exec", agent, "node", "-e", [...fakeAgentPid, "writeFileSync(`/proc/${pid}/fd/2`, 'adapter error output\\n');"].join("\n"));
+      expect(await turn).toMatchObject({ cause: { code: "EACCES" } });
+    } finally {
+      await locked.close();
+    }
+  });
 });

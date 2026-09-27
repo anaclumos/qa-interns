@@ -53,10 +53,11 @@ function appender(path: string): (data: string | Uint8Array) => void {
 
 export async function openSession(opts: { container: string; provider: ProviderSpec; transcript: string; adapterLog: string }): Promise<Session> {
   const argv = ["docker", "exec", "-i", "-w", "/qa/out", opts.container, ...opts.provider.adapter];
+  const log = appender(opts.adapterLog);
+  const transcript = appender(opts.transcript);
   const child = spawn("docker", argv.slice(1), { stdio: "pipe" });
   const { stdin, stdout, stderr } = child;
   if (stdin === null || stdout === null || stderr === null) throw new Error(`${argv.join(" ")} started without stdio pipes`);
-  stderr.on("data", appender(opts.adapterLog));
   const exited = Promise.all([
     new Promise<void>((resolve) => {
       child.once("exit", () => resolve());
@@ -65,7 +66,6 @@ export async function openSession(opts: { container: string; provider: ProviderS
     new Promise<void>((resolve) => stderr.once("close", () => resolve())),
   ]);
 
-  const transcript = appender(opts.transcript);
   const record = (from: "client" | "agent", message: AnyMessage) =>
     transcript(`${JSON.stringify({ t: new Date().toISOString(), from, message })}\n`);
   const wire = ndJsonStream(Writable.toWeb(stdin), Readable.toWeb(stdout) as ReadableStream<Uint8Array>);
@@ -95,6 +95,13 @@ export async function openSession(opts: { container: string; provider: ProviderS
     })
     .connect(stream);
   child.once("error", (error) => connection.close(error));
+  stderr.on("data", (data: Buffer) => {
+    try {
+      log(data);
+    } catch (error) {
+      connection.close(error);
+    }
+  });
 
   let closing: Promise<void> | undefined;
   const close = () =>
