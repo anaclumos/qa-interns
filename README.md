@@ -87,6 +87,8 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 
 Published ports and build `tags` are allowed; QA Interns removes them.
 
+A restart policy applies only while an environment starts. Before the intern starts, QA Interns sets the restart policy of every container in the environment to `no`, so a service that stops while the intern tests stays stopped. Docker resolves the source of a bind mount each time it starts a container, and a service that writes to the directory that holds a bind source can replace that source with a symbolic link to a host path, which the next start would mount.
+
 The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint. The target project owns that guarantee.
 
 Compose and the Dev Container CLI run with the variables that `hostEnv` names and the ones they need to reach Docker: `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONTEXT`, `DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS`, `DOCKER_TLS_VERIFY`, and `DOCKER_API_VERSION`. QA Interns removes every other variable of its own environment before it runs them. Compose interpolation, an `environment` entry without a value, `${localEnv:...}` in `devcontainer.json`, and `initializeCommand` read from what remains.

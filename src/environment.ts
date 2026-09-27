@@ -320,7 +320,15 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   } catch (error) {
     throw new Error(`The seed command ${target.settings.seed} did not print one JSON document (${String(error)}); it printed: ${output.slice(0, 500)}`);
   }
+  await disableRestarts(project);
   return { project, runner, devContainer, seed };
+}
+
+async function disableRestarts(project: string): Promise<void> {
+  const label = `label=com.docker.compose.project=${project}`;
+  const containers = (await execute(["docker", "ps", "-aq", "--filter", label])).split("\n").filter((id) => id !== "");
+  await execute(["docker", "update", "--restart", "no", ...containers]);
+  while ((await execute(["docker", "ps", "-aq", "--filter", label, "--filter", "status=restarting"])).trim() !== "") await Bun.sleep(1000);
 }
 
 async function down(project: string): Promise<void> {
