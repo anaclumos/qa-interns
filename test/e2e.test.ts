@@ -269,7 +269,7 @@ USER qa
         dir: target,
         rev: "HEAD",
         interns: 1,
-        minutes: 0.5,
+        minutes: 5,
         confirmMinutes: 0.5,
         loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
         runnerImage: async () => fakeImage,
