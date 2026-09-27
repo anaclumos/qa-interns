@@ -68,7 +68,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - `urls`: named application URLs as seen from inside the environment network.
 - `ready`: an `http:` or `https:` URL that answers 2xx when the application is ready, or a shell command that exits 0 in the dev container.
 - `seed`: a shell command, run once in the dev container, that creates test accounts and data and prints them as one JSON document.
-- `focus` (optional): areas the project wants covered, added to the charter deck.
+- `focus` (optional): areas the project wants covered, dealt to interns before the built-in charters.
 - `offLimits` (optional): actions interns must not take.
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:

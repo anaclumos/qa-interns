@@ -42,17 +42,17 @@ const findings = [
 ];
 
 describe("deck", () => {
-  test("appends one prefixed charter per focus entry after the charters", () => {
+  test("puts one prefixed charter per focus entry before the charters", () => {
     const focus = ["How invoices calculate money across currencies.", "What viewers can change."];
     const cards = deck(focus);
-    expect(cards.slice(0, charters.length)).toEqual([...charters]);
-    expect(cards.slice(charters.length)).toEqual(["Project focus: How invoices calculate money across currencies.", "Project focus: What viewers can change."]);
+    expect(cards.slice(0, focus.length)).toEqual(["Project focus: How invoices calculate money across currencies.", "Project focus: What viewers can change."]);
+    expect(cards.slice(focus.length)).toEqual([...charters]);
     expect(deck([])).toEqual([...charters]);
   });
 });
 
 describe("internPrompt", () => {
-  const charter = deck(["What viewers can change."]).at(-1) ?? "";
+  const charter = deck(["What viewers can change."]).at(0) ?? "";
   const prompt = internPrompt(charter, env);
 
   test("carries the charter as its own Charter line", () => {
