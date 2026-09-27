@@ -3,10 +3,11 @@ import { readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { runQa } from "../src/run.ts";
+import { writeChromePolicy } from "../src/environment.ts";
+import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
-import { readState } from "../src/state.ts";
-import { execute } from "../src/target.ts";
+import { newRunId, readState } from "../src/state.ts";
+import { capture, execute } from "../src/target.ts";
 import type { Finding, Provider, RunState } from "../src/types.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
@@ -66,6 +67,22 @@ function intern(state: RunState, internId: string) {
   return found;
 }
 
+async function askOptions(runId: string, name: string): Promise<AskOptions> {
+  const runDir = join(root, "asks", runId);
+  await mkdir(runDir, { recursive: true });
+  await writeChromePolicy(runDir, {});
+  return {
+    runDir,
+    runId,
+    name,
+    loginsFile: await logins(`ask-${runId}`, [{ id: "claude-1", provider: "claude" }]),
+    runnerImage: fakeImage,
+    prompt: "Write /qa/out/groups.json.",
+    file: "groups.json",
+    parse: (raw) => JSON.parse(raw),
+  };
+}
+
 function internalSubnet(runDir: string, internId: string): string {
   const network = readFileSync(join(runDir, "envs", internId, "compose.qa.yml"), "utf8")
     .split("\n")
@@ -74,7 +91,7 @@ function internalSubnet(runDir: string, internId: string): string {
   return JSON.parse(network.slice("  qa_internal: !override ".length)).ipam.config[0].subnet;
 }
 
-describe.skipIf(!dockerAvailable)("runQa end to end with the fake agent", () => {
+describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   beforeAll(async () => {
     await mkdir(root);
     await cp(join(import.meta.dir, "..", "eval", "ledger"), target, { recursive: true, filter: (source) => basename(source) !== "node_modules" });
@@ -273,6 +290,42 @@ USER qa
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "ask returns the file the agent wrote, leaves nothing of its environment, and leaves other projects of the run alone",
+    async () => {
+      const runId = newRunId();
+      const other = `qair-f-e2e-other-${runId}`;
+      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${runId}-i1`, other]);
+      try {
+        expect(await ask(await askOptions(runId, "score"))).toEqual({ groups: [] });
+        expect((await capture(["docker", "network", "inspect", other])).code).toBe(0);
+      } finally {
+        if ((await capture(["docker", "network", "inspect", other])).code === 0) await execute(["docker", "network", "rm", other]);
+      }
+      expect(await leftovers(runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "ask fails when its environment cannot be torn down, after removing what it can",
+    async () => {
+      const runId = newRunId();
+      const project = `qa-${runId}-score`;
+      const held = `qair-f-e2e-held-${runId}`;
+      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=${project}`, held]);
+      try {
+        await execute(["docker", "run", "-d", "--rm", "--name", held, "--network", held, fakeImage]);
+        await expect(ask(await askOptions(runId, "score"))).rejects.toThrow(`Teardown of ${project} failed: score: docker compose down left objects of ${project} behind`);
+      } finally {
+        await execute(["docker", "rm", "-f", held]);
+        await execute(["docker", "network", "rm", held]);
+      }
+      expect(await leftovers(runId)).toEqual([]);
     },
     timeout,
   );
