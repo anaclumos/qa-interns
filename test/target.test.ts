@@ -129,6 +129,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
         "What owners, editors, and viewers can see and change, in the pages and in the API.",
       ],
       offLimits: ["Do not change the password of a seeded account."],
+      hostEnv: [],
       egress: [],
     });
     expect(target.composeFiles).toEqual(["compose.yml"]);
@@ -214,6 +215,18 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       tracing: false,
       mailer: false,
     });
+  });
+
+  test("resolve Compose variables from the host only for the names hostEnv lists", async () => {
+    process.env.QA_INTERNS_TEST_MOUNT = "/etc";
+    try {
+      const compose = 'services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: ["${QA_INTERNS_TEST_MOUNT:-./data}:/data"]\n';
+      expect(Object.keys((await load(await fixture(compose))).services)).toEqual(["web"]);
+      const listed = devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_MOUNT"] });
+      await expect(load(await fixture(compose, listed))).rejects.toThrow("service web mounts /etc, which resolves to /etc, outside the target directory");
+    } finally {
+      delete process.env.QA_INTERNS_TEST_MOUNT;
+    }
   });
 
   test("treat an unlimited pids_limit as no limit", async () => {
@@ -391,6 +404,7 @@ networks:
       seed: "node seed.mjs",
       focus: [],
       offLimits: [],
+      hostEnv: [],
       egress: [],
     });
   });
@@ -417,6 +431,7 @@ networks:
     ["no URLs", { ...settings, urls: {} }, "must name at least one URL"],
     ["a missing seed", { urls: settings.urls, ready: settings.ready }, "seed"],
     ["a misspelled key", { ...settings, offlimits: ["Do not delete teams."] }, "offlimits"],
+    ["a hostEnv name the host does not set", { ...settings, hostEnv: ["QA_INTERNS_TEST_UNSET"] }, "hostEnv names QA_INTERNS_TEST_UNSET, which the environment of qa-interns does not set"],
     ["a wildcard egress host", { ...settings, egress: ["*.vercel.sh"] }, "must be a lowercase host name"],
     ["an egress IP address", { ...settings, egress: ["203.0.113.7"] }, "must be a lowercase host name"],
     ["an egress IP address in short form", { ...settings, egress: ["169.16689662"] }, "must be a lowercase host name"],

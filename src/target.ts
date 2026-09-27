@@ -5,7 +5,7 @@ import { isIP } from "node:net";
 import { join, relative, resolve } from "node:path";
 import { z } from "zod";
 
-export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; egress: string[] };
+export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; hostEnv: string[]; egress: string[] };
 export type TargetRef = { repo: string; path: string; commit: string };
 export type ComposeService = {
   build: boolean;
@@ -62,6 +62,14 @@ export async function execute(cmd: string[], options: CommandOptions = {}): Prom
   return result.stdout;
 }
 
+const dockerEnv = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_API_VERSION"];
+
+export function targetEnv(hostEnv: string[]): Record<string, string | undefined> {
+  const missing = hostEnv.filter((name) => process.env[name] === undefined);
+  if (missing.length > 0) throw new Error(`customizations["qa-interns"].hostEnv names ${missing.join(", ")}, which the environment of qa-interns does not set`);
+  return Object.fromEntries([...dockerEnv, ...hostEnv].map((name) => [name, process.env[name]]));
+}
+
 export function isHttpUrl(value: string): boolean {
   return URL.canParse(value) && ["http:", "https:"].includes(new URL(value).protocol);
 }
@@ -88,6 +96,7 @@ const settingsSchema = z.strictObject({
   seed: z.string().min(1),
   focus: z.array(z.string().min(1)).default([]),
   offLimits: z.array(z.string().min(1)).default([]),
+  hostEnv: z.array(z.string().min(1)).default([]),
   egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
 });
 
@@ -175,7 +184,8 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   }
   const parsed = configSchema.safeParse(config);
   if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
-  const { dockerComposeFile, service, runServices } = parsed.data;
+  const { dockerComposeFile, service, runServices, customizations } = parsed.data;
+  const env = targetEnv(customizations["qa-interns"].hostEnv);
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
   const root = await realpath(sourceDir);
   for (const entry of composeFiles) {
@@ -186,7 +196,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   }
   const files = composeFiles.flatMap((entry) => ["-f", resolve(sourceDir, ".devcontainer", entry)]);
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
-  const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"]);
+  const output = await execute(["docker", "compose", "-p", checkProject, ...files, "--profile", "*", "config", "--format", "json"], { env });
   const project = composeSchema.parse(JSON.parse(output));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
 
@@ -274,5 +284,5 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   if (violations.length > 0) {
     throw new Error(`The Compose files of ${file} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
   }
-  return { ...ref, settings: parsed.data.customizations["qa-interns"], config, composeFiles, service, services };
+  return { ...ref, settings: customizations["qa-interns"], config, composeFiles, service, services };
 }

@@ -3,7 +3,19 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { buildImages, environmentMemory, freeSlot, renderOverride, runnerEnv, slotSubnets, writeChromePolicy, type EnvironmentSpec } from "../src/environment.ts";
+import {
+  buildImages,
+  environmentMemory,
+  freeSlot,
+  removeCopies,
+  renderOverride,
+  runnerEnv,
+  slotSubnets,
+  startEnvironment,
+  stopRun,
+  writeChromePolicy,
+  type EnvironmentSpec,
+} from "../src/environment.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 
@@ -401,6 +413,70 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     await writeChromePolicy(runDir, { app: "http://app:3000", api: "http://app:3000/api", dev: "http://dev:5173", admin: "https://admin.shop.test" });
     expect(await Bun.file(join(runDir, "chrome-policy.json")).json()).toEqual({ HSTSPolicyBypassList: ["app", "dev"] });
   });
+});
+
+describe.skipIf(!dockerAvailable)("startEnvironment", () => {
+  test(
+    "hand the target only the host variables that hostEnv names",
+    async () => {
+      const runId = crypto.randomUUID().slice(0, 8);
+      const runDir = await scratch();
+      const source = join(runDir, "source");
+      await Bun.write(join(source, "Dockerfile"), "FROM busybox:1.37\nARG BUILD_LISTED\nARG BUILD_UNLISTED\nENV BUILT_LISTED=$BUILD_LISTED BUILT_UNLISTED=$BUILD_UNLISTED\n");
+      await Bun.write(
+        join(source, ".devcontainer", "compose.yml"),
+        `services:
+  web:
+    build:
+      context: ..
+      args:
+        BUILD_LISTED: \${QA_INTERNS_TEST_LISTED}
+        BUILD_UNLISTED: \${QA_INTERNS_TEST_UNLISTED}
+    command: ["sleep", "86400"]
+    init: true
+    environment:
+      - QA_INTERNS_TEST_LISTED
+      - QA_INTERNS_TEST_UNLISTED
+      - INTERPOLATED_LISTED=\${QA_INTERNS_TEST_LISTED}/api
+      - INTERPOLATED_UNLISTED=\${QA_INTERNS_TEST_UNLISTED}/api
+`,
+      );
+      const seed = `printf '{"environment":["%s","%s"],"interpolation":["%s","%s"],"build":["%s","%s"],"containerEnv":["%s","%s"],"remoteEnv":["%s","%s"]}' "$QA_INTERNS_TEST_LISTED" "$QA_INTERNS_TEST_UNLISTED" "$INTERPOLATED_LISTED" "$INTERPOLATED_UNLISTED" "$BUILT_LISTED" "$BUILT_UNLISTED" "$LOCAL_LISTED" "$LOCAL_UNLISTED" "$REMOTE_LISTED" "$REMOTE_UNLISTED"`;
+      await Bun.write(
+        join(source, ".devcontainer", "devcontainer.json"),
+        JSON.stringify({
+          dockerComposeFile: "compose.yml",
+          service: "web",
+          containerEnv: { LOCAL_LISTED: "${localEnv:QA_INTERNS_TEST_LISTED}", LOCAL_UNLISTED: "${localEnv:QA_INTERNS_TEST_UNLISTED}" },
+          remoteEnv: { REMOTE_LISTED: "${localEnv:QA_INTERNS_TEST_LISTED}", REMOTE_UNLISTED: "${localEnv:QA_INTERNS_TEST_UNLISTED}" },
+          customizations: { "qa-interns": { urls: { app: "http://web:8080" }, ready: "true", seed, hostEnv: ["QA_INTERNS_TEST_LISTED"] } },
+        }),
+      );
+      const image = await ensureRunnerImage();
+      process.env.QA_INTERNS_TEST_LISTED = "listed";
+      process.env.QA_INTERNS_TEST_UNLISTED = "unlisted";
+      try {
+        const target = await loadTarget(ref, source);
+        const images = await buildImages(runId, target, source);
+        await writeChromePolicy(runDir, target.settings.urls);
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
+        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), images, runner }));
+        expect(environment.seed).toEqual({
+          environment: ["listed", ""],
+          interpolation: ["listed/api", "/api"],
+          build: ["listed", ""],
+          containerEnv: ["listed", ""],
+          remoteEnv: ["listed", ""],
+        });
+      } finally {
+        delete process.env.QA_INTERNS_TEST_LISTED;
+        delete process.env.QA_INTERNS_TEST_UNLISTED;
+        await stopRun(runId);
+        await removeCopies(runDir, runId, image);
+      }
+    },
+    20 * 60_000,
+  );
 });
 
 describe.skipIf(!dockerAvailable)("qa-relay", () => {
