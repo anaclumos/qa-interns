@@ -225,19 +225,21 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
   const teardown = () => stopEnvironment(ctx.runDir, id, project, ctx.runnerImage);
   try {
     await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, project, startedAt: now() });
-    slot = await freeSlot(ctx.reserved);
     for (let count = 1; ; count += 1) {
-      const spec = environmentSpec(ctx, id, slot, target, lease, count);
+      const current = lease;
       const env = await ctx.startups(async () => {
         checkStopping(ctx);
+        slot = await freeSlot(ctx.reserved);
         started = true;
-        return startEnvironment(spec);
+        return startEnvironment(environmentSpec(ctx, id, slot, target, current, count));
       });
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
       if (!(outcome instanceof AgentError)) return outcome;
       ctx.scheduler.exhaust(lease);
       await teardown();
       started = false;
+      if (slot !== undefined) ctx.reserved.delete(slot);
+      slot = undefined;
       lease.release();
       const next = await acquire(ctx, id, avoid);
       if (next === null) {
