@@ -200,7 +200,10 @@ function urlHosts(urls: Record<string, string>): string[] {
 
 export async function writeChromePolicy(runDir: string, urls: Record<string, string>): Promise<void> {
   const hosts = urlHosts(urls).filter((host) => !host.includes("."));
-  await Bun.write(join(runDir, "chrome-policy.json"), `${JSON.stringify({ HSTSPolicyBypassList: hosts }, null, 2)}\n`);
+  const parsed = Object.values(urls).map((url) => new URL(url));
+  const insecure = [...new Set(parsed.filter((url) => url.protocol === "http:").map((url) => url.origin))];
+  const policy = { HSTSPolicyBypassList: hosts, OverrideSecurityRestrictionsOnInsecureOrigin: insecure };
+  await Bun.write(join(runDir, "chrome-policy.json"), `${JSON.stringify(policy, null, 2)}\n`);
 }
 
 export function runnerEnv(urls: Record<string, string>): Record<string, string> {

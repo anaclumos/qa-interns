@@ -8,7 +8,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 
 - Linux on x86-64. Chrome for Testing has no Linux ARM64 build.
 - Docker Engine with Compose v2 and the `isolated` bridge gateway mode. `qa-interns doctor` checks both.
-- Bun 1.4 or later, and Git.
+- Bun 1.4 or later, Git, and `flock` from util-linux.
 - At least one agent login: Claude Code, Codex, Cursor, or Grok (see [Logins](#logins)).
 - Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, and each service's `mem_limit` (1 GiB when the service sets none) times its `scale` or `deploy.replicas`.
 
@@ -65,7 +65,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 }
 ```
 
-- `urls`: named application URLs as seen from inside the environment network.
+- `urls`: named application URLs as seen from inside the environment network. The interns' browser treats the origin of each `http:` URL as a secure context, so `crypto.subtle`, `crypto.randomUUID()`, and `navigator.clipboard` work as they do over HTTPS. An `http:` origin that `urls` does not name, such as another port on the same host, is not a secure context.
 - `ready`: an `http:` or `https:` URL that answers 2xx when the application is ready, or a shell command that exits 0 in the dev container.
 - `seed`: a shell command, run once in the dev container, that creates test accounts and data and prints them as one JSON document.
 - `focus` (optional): areas the project wants covered, dealt to interns before the built-in charters. A run with no more interns than focus entries deals no built-in charter; list fewer focus entries or raise `--interns` to get both.
@@ -118,7 +118,8 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 | `grok` | A directory with `auth.json`, mounted whole, because Grok replaces the file when it refreshes the token. A runner writes only `auth.json` and its lock file there. Use a directory that only QA Interns uses. | `GROK_HOME=<store> grok login` |
 
 - Each running intern holds one lease on one login. A Codex store has `concurrency` 1, because OpenAI states that one `auth.json` copy serves one machine or one serialized job stream ([Codex CI/CD auth](https://learn.chatgpt.com/docs/auth/ci-cd-auth)).
-- A seat command is an external program that hands out a store for one intern. It runs with `QA_INTERNS_INTERN` and `QA_INTERNS_LEASE_PID` in its environment and prints an absolute store path as its last line. `QA_INTERNS_LEASE_PID` is a process that lives exactly as long as the intern holds the store, and ends when the orchestrator ends, so a pool manager can hold the store until that process exits. A nonzero exit means the seat command has no store now.
+- A lease locks the real path of what the runner mounts until the lease ends: the credential file of a Claude or Codex store, and the whole store of a Cursor or Grok store. The locks live in `~/.local/state/qa-interns/locks/` (`$XDG_STATE_HOME` when set). Runs that share that directory hold, all together, no more leases on one credential than the highest `concurrency` any of them sets for it.
+- A seat command is an external program that hands out a store for one intern. It runs with `QA_INTERNS_INTERN` and `QA_INTERNS_LEASE_PID` in its environment and prints an absolute store path as its last line. `QA_INTERNS_LEASE_PID` is a process that lives exactly as long as the intern holds the store, and ends when the orchestrator ends, so a pool manager can hold the store until that process exits. A nonzero exit means the seat command has no store now. The printed store is checked like a configured store, against every configured store and every store an intern holds, and a store that fails a check counts as no store.
 - When an agent reports a usage limit or a failed login, the intern moves to another login with spare capacity and restarts its charter in a fresh environment with an empty `/qa/out`. The findings of the earlier attempt stay in the report, and `findings.json` records the provider and model of the attempt that wrote each one. A confirming intern that moves answers with the `confirmation.json` of its latest attempt that wrote a valid one, under that attempt's provider. Claude reports a usage limit as JSON-RPC error `-32603` with `data.errorKind` `rate_limit` or `billing_error`, and Codex as `-32603` with `data.codexErrorInfo` `usageLimitExceeded`. Grok reports a rate or usage limit as `-32003`, and spent credits or a rejected token as `-32603` with `data.http_status` 402 or 401. Cursor ends the turn with a chat message instead of an error, so a Cursor intern at its limit stops early and the report quotes its last message.
 
 ## What a run does
@@ -139,6 +140,8 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 - `findings.json`: the same data as JSON.
 - `interns/<id>/out/`: each intern's findings and evidence (screenshots, recordings, HAR files, console logs). After a move to another login, the next attempt writes to `interns/<id>/out-2/`, the one after it to `out-3/`, and so on. The id of a finding from such an attempt names its folder, as in `i1/out-2/<slug>`.
 - `interns/<id>/transcript.jsonl`: the agent traffic of each intern.
+- `interns/<id>/adapter.log`: the error output of each intern's agent.
+- Each transcript and error log stops growing at 64 MiB. Later traffic and output are not recorded.
 - `state.json`: the run's phase and every intern's status.
 
 A finding is confirmed when two or more interns reproduced it.
@@ -161,6 +164,8 @@ A finding is confirmed when two or more interns reproduced it.
 - The runner image is x86-64 only.
 - Two runs that start an environment at the same moment can pick the same subnet; the second fails to start that environment.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
+- An intern waits for a login only while its own run holds a lease. When other runs hold every login it could use, the intern ends as `limited`.
+- Credential locks and the store checks compare real paths, so two hard links to one credential file count as two credentials.
 - A Grok login whose token refresh fails during a turn ends the intern instead of moving it to another login, because Grok reports that failure as `-32603` with text data only.
 - A Grok login without a Grok subscription ends the intern instead of moving it to another login, because Grok reports it as `-32603` with `data.http_status` 403, the same shape as a content policy denial.
 - When a Grok token refresh fails for good, Grok deletes `auth.json` from the store, and the next run rejects the logins file until you log in to that store again.

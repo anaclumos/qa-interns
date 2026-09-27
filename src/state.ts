@@ -37,8 +37,12 @@ const stateSchema = z.object({
   ),
 });
 
+export function stateDir(): string {
+  return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "qa-interns");
+}
+
 export function runsDir(): string {
-  return join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "qa-interns", "runs");
+  return join(stateDir(), "runs");
 }
 
 export function processStart(pid: number): number {
