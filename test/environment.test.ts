@@ -9,6 +9,7 @@ import {
   buildImages,
   environmentMemory,
   freeSlot,
+  freeSlots,
   removeCopies,
   renderOverride,
   runnerEnv,
@@ -128,9 +129,12 @@ describe.skipIf(!dockerAvailable)("slots", () => {
     });
   });
 
-  test.each(["10.213.254.64/26", "10.213.254.192/26", "10.213.255.64/26", "10.213.255.192/26"])("skip a slot that overlaps the smaller Docker network %s", async (subnet) => {
+  test.each(["10.213.254.64/26", "10.213.254.192/26", "10.213.255.64/26", "10.213.255.192/26"])("skip and leave out of the count a slot that overlaps the smaller Docker network %s", async (subnet) => {
     await withNetwork(subnet, async () => {
-      const reserved = new Set(Array.from({ length: 127 }, (_, slot) => slot));
+      const reserved = new Set(Array.from({ length: 126 }, (_, slot) => slot));
+      expect(await freeSlots(reserved)).toBe(1);
+      expect(await freeSlot(reserved)).toBe(126);
+      expect(await freeSlots(reserved)).toBe(0);
       await expect(freeSlot(reserved)).rejects.toThrow("No free network slot");
     });
   });
