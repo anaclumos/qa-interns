@@ -12,7 +12,7 @@ const example = `{"logins": [{"id": "claude-1", "provider": "claude", "store": "
 
 const entrySchema = z.strictObject({
   id: z.string().min(1),
-  provider: z.enum(["claude", "codex", "cursor"]),
+  provider: z.enum(["claude", "codex", "cursor", "grok"]),
   store: z
     .string()
     .refine(isAbsolute, { error: (issue) => `${JSON.stringify(issue.input)} is not an absolute path`, abort: true })
@@ -135,7 +135,7 @@ async function seat(login: Login, intern: string): Promise<Seat | null> {
 
 export class Scheduler {
   private readonly slots: Slot[];
-  private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0 };
+  private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0, grok: 0 };
   private readonly exhaustedStores = new Set<string>();
   private readonly live = new Set<{ login: Login; store: string }>();
 

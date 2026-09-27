@@ -9,6 +9,7 @@ let dir: string;
 let claudeStore: string;
 let codexStore: string;
 let cursorStore: string;
+let grokStore: string;
 let emptyStore: string;
 let pool: string;
 
@@ -17,12 +18,14 @@ beforeAll(async () => {
   claudeStore = join(dir, "stores", "claude-1");
   codexStore = join(dir, "stores", "codex-1");
   cursorStore = join(dir, "stores", "cursor-1");
+  grokStore = join(dir, "stores", "grok-1");
   emptyStore = join(dir, "stores", "codex-empty");
   pool = join(dir, "pool");
-  for (const store of [claudeStore, join(dir, "stores", "claude-2"), codexStore, cursorStore, emptyStore, pool]) await mkdir(store, { recursive: true });
+  for (const store of [claudeStore, join(dir, "stores", "claude-2"), codexStore, cursorStore, grokStore, emptyStore, pool]) await mkdir(store, { recursive: true });
   await Bun.write(join(claudeStore, ".credentials.json"), "{}");
   await Bun.write(join(codexStore, "auth.json"), "{}");
   await Bun.write(join(cursorStore, "auth.json"), "{}");
+  await Bun.write(join(grokStore, "auth.json"), "{}");
   await Bun.write(
     join(dir, "seat.sh"),
     [
@@ -95,6 +98,7 @@ describe("loadLogins", () => {
         { id: "codex-1", provider: "codex", store: codexStore, concurrency: 1 },
         { id: "codex-pool", provider: "codex", seat: ["sh", "-c", "exec tokenmaxxing seat --codex \"$QA_INTERNS_LEASE_PID\""], concurrency: 2 },
         { id: "cursor-1", provider: "cursor", store: cursorStore },
+        { id: "grok-1", provider: "grok", store: grokStore },
       ],
     });
     expect(await loadLogins(file)).toEqual([
@@ -102,6 +106,7 @@ describe("loadLogins", () => {
       { id: "codex-1", provider: "codex", store: codexStore, seat: null, concurrency: 1 },
       { id: "codex-pool", provider: "codex", store: null, seat: ["sh", "-c", "exec tokenmaxxing seat --codex \"$QA_INTERNS_LEASE_PID\""], concurrency: 2 },
       { id: "cursor-1", provider: "cursor", store: cursorStore, seat: null, concurrency: 1 },
+      { id: "grok-1", provider: "grok", store: grokStore, seat: null, concurrency: 1 },
     ]);
   });
 
@@ -160,6 +165,11 @@ describe("loadLogins", () => {
   test("rejects a claude store without .credentials.json", async () => {
     const message = await failure("claude.json", { logins: [{ id: "claude-empty", provider: "claude", store: emptyStore }] });
     expect(message).toContain(`logins[0] "claude-empty": claude store ${emptyStore} has no .credentials.json`);
+  });
+
+  test("rejects a grok store without auth.json", async () => {
+    const message = await failure("grok.json", { logins: [{ id: "grok-empty", provider: "grok", store: emptyStore }] });
+    expect(message).toContain(`logins[0] "grok-empty": grok store ${emptyStore} has no auth.json`);
   });
 
   test("rejects two logins that name the same store after resolving the path", async () => {

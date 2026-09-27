@@ -18,7 +18,7 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 ## Invariants
 
 - An intern never fixes, suggests, ranks, or explains. Prompts, the report, and the finding format carry no field or instruction for any of those.
-- No MCP anywhere. Every `session/new` sends `mcpServers: []`. Claude and Codex have their MCP sources blocked in `src/providers.ts`, and a Cursor runner has no MCP source because its home is an empty tmpfs and the Cursor store holds credentials only. Adding a provider means finding and blocking its MCP sources first.
+- No MCP anywhere. Every `session/new` sends `mcpServers: []`. Claude and Codex have their MCP sources blocked in `src/providers.ts`, Grok has them blocked by the root-owned `/etc/grok/requirements.toml` that `runner/Dockerfile` writes, and a Cursor runner has no MCP source because its home is an empty tmpfs and `CURSOR_CONFIG_DIR` points Cursor's settings and sessions into that home, out of the store. Adding a provider means finding and blocking its MCP sources first.
 - The runner container holds no source, no Docker socket, and no credential beyond its own login store. Egress goes only through the proxy allowlist in `src/providers.ts`.
 - Target services reach outside hosts only through `qa-relay`, and only the target's `egress` hosts. The runner and the target never share a proxy: the runner does not join `qa_relay`, and target services join neither `qa_agent` nor `qa_egress`.
 - Usage-limit detection is structural: JSON-RPC `code` and `data` fields only, never message text.
