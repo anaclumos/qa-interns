@@ -416,6 +416,44 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     expect(config.services.other?.pull_policy).toBeUndefined();
   });
 
+  test("reject a service without build whose image two built services produce, before building", async () => {
+    const source = await scratch();
+    const runId = crypto.randomUUID().slice(0, 8);
+    const scope = `qair-t-twice-${runId}/`;
+    await Bun.write(join(source, "Dockerfile"), "FROM scratch\nCOPY Dockerfile /Dockerfile\n");
+    await Bun.write(
+      join(source, ".devcontainer", "devcontainer.json"),
+      JSON.stringify({
+        dockerComposeFile: "compose.yml",
+        service: "web",
+        customizations: { "qa-interns": { urls: { app: "http://web:3000" }, ready: "http://web:3000/health", seed: "node seed.mjs" } },
+      }),
+    );
+    await Bun.write(
+      join(source, ".devcontainer", "compose.yml"),
+      `services:
+  web:
+    build: ..
+    image: ${scope}app
+  api:
+    build:
+      context: ..
+      tags: ["${scope}app:latest"]
+  worker:
+    image: ${scope}app
+`,
+    );
+    const failure = await buildImages(runId, await loadTarget(ref, source), source).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const listed = (await execute(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])).split("\n");
+    const created = listed.filter((image) => [`qa-${runId}-`, scope].some((prefix) => image.startsWith(prefix)));
+    if (created.length > 0) await execute(["docker", "image", "rm", ...created]);
+    expect(String(failure)).toContain(`Services api and web both build the image ${scope}app that service worker runs`);
+    expect(created).toEqual([]);
+  });
+
   test("route every environment host around the proxy and allow only those hosts in the browser", () => {
     const env = runnerEnv({ app: "http://web:3000", admin: "https://admin.shop.test:8443/login", api: "http://web:3000/api" });
     expect(env).toEqual({

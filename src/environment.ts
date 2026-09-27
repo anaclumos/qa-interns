@@ -227,8 +227,9 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   const images = Object.fromEntries(services.map((name) => [name, image(name)]));
   for (const [name, service] of Object.entries(target.services)) {
     const wanted = service.build || service.image === null ? null : imageReference(service.image);
-    const builder = built.find(([, other]) => [other.image, ...other.tags].some((ref) => ref !== null && imageReference(ref) === wanted));
-    if (builder !== undefined) images[name] = image(builder[0]);
+    const builders = built.filter(([, other]) => [other.image, ...other.tags].some((ref) => ref !== null && imageReference(ref) === wanted)).map(([other]) => other);
+    if (builders.length > 1) throw new Error(`Services ${builders.join(" and ")} both build the image ${service.image} that service ${name} runs, so which build it runs is undefined`);
+    if (builders[0] !== undefined) images[name] = image(builders[0]);
   }
   if (services.length === 0) return images;
   const dir = await mkdtemp(join(tmpdir(), "qa-interns-tags-"));
