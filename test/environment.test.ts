@@ -398,6 +398,9 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     image: ${scope}tagged:v1
   other:
     image: ${scope}app:v2
+  tool:
+    image: ${scope}app
+    profiles: ["tools"]
   db:
     image: postgres:17-alpine
 `,
