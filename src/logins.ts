@@ -2,7 +2,7 @@ import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { providers } from "./providers.ts";
 import { stateDir } from "./state.ts";
@@ -126,7 +126,10 @@ type Grant = { store: string; credential: string; mounted: string; where: string
 type Slot = { login: Login; active: number; exhausted: boolean; store: Grant | null };
 
 function mountedPath(provider: Provider, store: string): string {
-  return providers[provider].mounts(store).map((mount) => realpathSync(mount.source)).join("\n");
+  const mounts = providers[provider].mounts(store);
+  const [mount] = mounts;
+  if (mount === undefined || mounts.length > 1) throw new Error(`A lease locks one mount source, but a ${provider} store mounts ${mounts.length}`);
+  return realpathSync(mount.source);
 }
 
 const lockHeld = 75;
@@ -147,25 +150,64 @@ async function seatStore(command: string[], leasePid: number, intern: string): P
   return exitCode === 0 && store !== undefined && isAbsolute(store) && isDirectory(store) ? store : null;
 }
 
+function flock(file: string, ...options: string[]): number | null {
+  const fd = openSync(file, "a", 0o600);
+  let code: number;
+  try {
+    code = Bun.spawnSync(["flock", ...options, "--conflict-exit-code", String(lockHeld), "3"], { stdio: ["ignore", "ignore", "inherit", fd] }).exitCode;
+  } catch (error) {
+    closeSync(fd);
+    throw error;
+  }
+  if (code === 0) return fd;
+  closeSync(fd);
+  if (code !== lockHeld) throw new Error(`flock on ${file} exited with ${code}`);
+  return null;
+}
+
+function ancestors(path: string): string[] {
+  const found: string[] = [];
+  for (let current = path; current !== "/"; ) {
+    current = dirname(current);
+    found.push(current);
+  }
+  return found;
+}
+
 function lock(mounted: string, slots: number): (() => void) | null {
   const dir = join(stateDir(), "locks");
   mkdirSync(dir, { recursive: true });
-  const key = createHash("sha256").update(mounted).digest("hex");
-  for (let slot = 0; slot < slots; slot++) {
-    const file = join(dir, `${key}-${slot}.lock`);
-    const fd = openSync(file, "a", 0o600);
-    let code: number;
-    try {
-      code = Bun.spawnSync(["flock", "--nonblock", "--conflict-exit-code", String(lockHeld), "3"], { stdio: ["ignore", "ignore", "inherit", fd] }).exitCode;
-    } catch (error) {
+  const file = (path: string, kind: string) => join(dir, `${createHash("sha256").update(path).digest("hex")}-${kind}.lock`);
+  const take = (lockFile: string, ...options: string[]) => {
+    const fd = flock(lockFile, ...options);
+    if (fd === null) throw new Error(`${lockFile} is locked by a process that does not hold ${join(dir, "acquire.lock")}`);
+    return fd;
+  };
+  const above = ancestors(mounted);
+  const held: number[] = [];
+  const release = () => {
+    for (const fd of held) closeSync(fd);
+  };
+  const mutex = take(join(dir, "acquire.lock"), "--exclusive");
+  try {
+    for (const test of [file(mounted, "under"), ...above.map((path) => file(path, "at"))]) {
+      const fd = flock(test, "--exclusive", "--nonblock");
+      if (fd === null) return null;
       closeSync(fd);
-      throw error;
     }
-    if (code === 0) return () => closeSync(fd);
-    closeSync(fd);
-    if (code !== lockHeld) throw new Error(`flock on ${file} exited with ${code}`);
+    for (let slot = 0; slot < slots && held.length === 0; slot++) {
+      const fd = flock(file(mounted, String(slot)), "--exclusive", "--nonblock");
+      if (fd !== null) held.push(fd);
+    }
+    if (held.length === 0) return null;
+    for (const share of [file(mounted, "at"), ...above.map((path) => file(path, "under"))]) held.push(take(share, "--shared", "--nonblock"));
+  } catch (error) {
+    release();
+    throw error;
+  } finally {
+    closeSync(mutex);
   }
-  return null;
+  return release;
 }
 
 export class Scheduler {
