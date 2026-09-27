@@ -4,7 +4,7 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { capture, devContainerViolations, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
+import { capture, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
 import type { GeneratedFile, Mount } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
@@ -295,7 +295,7 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
     const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(images[name])}`, "    build:", "      tags: !reset []"]);
     await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
     await execute(["docker", "compose", "-p", projectName(runId, "build"), ...sourceComposeArgs(target, sourceDir), "-f", tags, "build", ...services], {
-      env: targetEnv(target.settings.hostEnv),
+      env: await targetEnv(target.settings.hostEnv, dir),
       timeout: 30 * minute,
     });
   } finally {
@@ -366,17 +366,16 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const log = join(dir, "env.log");
   await writeFiles(spec);
   await createDisk(spec.runner.out, spec.runner.image, project);
+  const tmp = join(dir, "tmp");
   if (spec.target === null) {
-    await execute(["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds], { log });
+    await execute(["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds], { env: { ...process.env, DOCKER_CONFIG: await dockerConfig(tmp) }, log });
     return { project, runner: await runnerId(project), out: spec.runner.out, devContainer: null, seed: null };
   }
   const target = spec.target;
-  const env = targetEnv(target.settings.hostEnv);
+  const env = await targetEnv(target.settings.hostEnv, tmp);
   const workspace = join(dir, project);
   const config = join(dir, "devcontainer.json");
-  const tmp = join(dir, "tmp");
   await execute(["cp", "-a", "--reflink=auto", join(spec.runDir, "source"), workspace]);
-  await mkdir(tmp, { recursive: true });
   await Bun.write(config, `${JSON.stringify(overrideConfig(target, join(dir, "compose.qa.yml")), null, 2)}\n`);
 
   const upEnv = { ...env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp };

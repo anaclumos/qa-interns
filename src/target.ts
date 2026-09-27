@@ -1,7 +1,8 @@
 import type { Subprocess } from "bun";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, realpath } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 import { errorCode } from "./findings.ts";
@@ -65,12 +66,46 @@ export async function execute(cmd: string[], options: CommandOptions = {}): Prom
   return result.stdout;
 }
 
-const dockerEnv = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_API_VERSION"];
+const dockerEnv = ["PATH", "HOME", "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CERT_PATH", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_API_VERSION"];
 
-export function targetEnv(hostEnv: string[]): Record<string, string | undefined> {
+async function withoutProxies(file: string): Promise<string> {
+  const text = existsSync(file) ? await readFile(file, "utf8") : "";
+  if (text.trim() === "") return "{}";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${file} is not valid JSON (${String(error)})`);
+  }
+  const config = z.record(z.string(), z.unknown()).nullable().safeParse(parsed);
+  if (!config.success) throw new Error(`${file} is not a JSON object`);
+  return JSON.stringify(Object.fromEntries(Object.entries(config.data ?? {}).filter(([key]) => key.toUpperCase() !== "PROXIES")));
+}
+
+export async function dockerConfig(dir: string): Promise<string> {
+  const source = resolve(process.env.DOCKER_CONFIG || join(homedir(), ".docker"));
+  const config = join(dir, "docker");
+  await mkdir(config, { recursive: true, mode: 0o700 });
+  for (const entry of existsSync(source) ? await readdir(source) : []) {
+    if (entry.toLowerCase() !== "config.json") await symlink(join(source, entry), join(config, entry));
+  }
+  await writeFile(join(config, "config.json"), await withoutProxies(join(source, "config.json")), { mode: 0o600 });
+  return config;
+}
+
+export async function targetEnv(hostEnv: string[], dir: string): Promise<Record<string, string | undefined>> {
   const missing = hostEnv.filter((name) => process.env[name] === undefined);
   if (missing.length > 0) throw new Error(`customizations["qa-interns"].hostEnv names ${missing.join(", ")}, which the environment of qa-interns does not set`);
-  return Object.fromEntries([...dockerEnv, ...hostEnv].map((name) => [name, process.env[name]]));
+  return { ...Object.fromEntries([...dockerEnv, ...hostEnv].map((name) => [name, process.env[name]])), DOCKER_CONFIG: await dockerConfig(dir) };
+}
+
+async function withTargetEnv<T>(hostEnv: string[], work: (env: Record<string, string | undefined>) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), "qa-interns-check-"));
+  try {
+    return await work(await targetEnv(hostEnv, dir));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 export function isHttpUrl(value: string): boolean {
@@ -463,7 +498,6 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const parsed = configSchema.safeParse(config);
   if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
   const { dockerComposeFile, service, runServices, customizations } = parsed.data;
-  const env = targetEnv(customizations["qa-interns"].hostEnv);
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
   const root = await realpath(sourceDir);
   const paths = composeFiles.map((entry) => resolve(sourceDir, ".devcontainer", entry));
@@ -475,12 +509,15 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   await checkComposeReferences(root, paths);
   await composeVersion();
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
-  const project = composeSchema.parse(await render(checkProject, paths, env));
+  const hostEnv = customizations["qa-interns"].hostEnv;
+  const project = composeSchema.parse(await withTargetEnv(hostEnv, (env) => render(checkProject, paths, env)));
   if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
   const files = paths.flatMap((path) => ["-f", path]);
-  const selection = await execute(
-    ["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", "--no-env-resolution", ...(runServices === undefined ? [] : [service, ...runServices])],
-    { env },
+  const selection = await withTargetEnv(hostEnv, (env) =>
+    execute(
+      ["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", "--no-env-resolution", ...(runServices === undefined ? [] : [service, ...runServices])],
+      { env },
+    ),
   );
   const started = composeSchema.parse(JSON.parse(selection)).services;
   const violations = await projectEnvViolations(root, paths);

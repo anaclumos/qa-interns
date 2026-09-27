@@ -286,6 +286,17 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     }
   });
 
+  test("resolve DOCKER_CONFIG in Compose files to the Docker client configuration copy that builds and environments get", async () => {
+    const hostConfig = process.env.DOCKER_CONFIG;
+    delete process.env.DOCKER_CONFIG;
+    try {
+      const compose = 'services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: ["${DOCKER_CONFIG:-./data}:/data"]\n';
+      await expect(load(await fixture(compose))).rejects.toThrow("service web mounts ");
+    } finally {
+      if (hostConfig !== undefined) process.env.DOCKER_CONFIG = hostConfig;
+    }
+  });
+
   test("treat an unlimited pids_limit as no limit", async () => {
     const compose = `services:
   web:
