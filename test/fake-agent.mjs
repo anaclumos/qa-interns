@@ -144,7 +144,7 @@ const prompt = (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  if (JSON.parse(readFileSync(`${process.env.CLAUDE_CONFIG_DIR}/.credentials.json`, "utf8")).limit === true) {
+  if (JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8")).limit === true) {
     return { error: { code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } } };
   }
   if (text.includes("/qa/out/groups.json")) return groupsTurn(text);

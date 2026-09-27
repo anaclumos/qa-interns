@@ -6,7 +6,7 @@ import { runQa } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { readState } from "../src/state.ts";
 import { execute } from "../src/target.ts";
-import type { RunState } from "../src/types.ts";
+import type { Provider, RunState } from "../src/types.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -19,13 +19,13 @@ const timeout = 20 * 60_000;
 const title = "Home page shows the fake defect";
 let built = false;
 
-async function logins(name: string, entries: { id: string; limit: boolean }[]): Promise<string> {
+async function logins(name: string, entries: { id: string; provider: Provider; limit: boolean }[]): Promise<string> {
   const list = [];
   for (const entry of entries) {
     const store = join(root, "stores", name, entry.id);
     await mkdir(store, { recursive: true });
-    await Bun.write(join(store, ".credentials.json"), JSON.stringify({ limit: entry.limit }));
-    list.push({ id: entry.id, provider: "claude", store });
+    await Bun.write(join(store, entry.provider === "claude" ? ".credentials.json" : "auth.json"), JSON.stringify({ limit: entry.limit }));
+    list.push({ id: entry.id, provider: entry.provider, store });
   }
   const file = join(root, `${name}-logins.json`);
   await Bun.write(file, JSON.stringify({ logins: list }));
@@ -75,9 +75,11 @@ describe.skipIf(!dockerAvailable)("runQa end to end with the fake agent", () => 
       `FROM ${base}
 USER root
 COPY fake-agent.mjs /opt/qa-fake/fake-agent.mjs
-RUN rm /usr/local/bin/claude-agent-acp \\
- && printf '#!/bin/sh\\nexec node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/claude-agent-acp \\
- && chmod 755 /usr/local/bin/claude-agent-acp
+RUN rm /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok \\
+ && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$CLAUDE_CONFIG_DIR/.credentials.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/claude-agent-acp \\
+ && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$XDG_CONFIG_HOME/cursor/auth.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/cursor-agent \\
+ && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$GROK_AUTH_PATH" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/grok \\
+ && chmod 755 /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok
 USER qa
 `,
     );
@@ -97,7 +99,7 @@ USER qa
   }, timeout);
 
   test(
-    "two interns report one defect, the judge groups it, and a confirmation reproduces it",
+    "two interns on Grok and Cursor logins report one defect, the judge groups it, and a confirmation reproduces it",
     async () => {
       const lines: string[] = [];
       const runDir = await runQa({
@@ -107,8 +109,8 @@ USER qa
         minutes: 0.5,
         confirmMinutes: 0.5,
         loginsFile: await logins("pair", [
-          { id: "claude-1", limit: false },
-          { id: "claude-2", limit: false },
+          { id: "grok-1", provider: "grok", limit: false },
+          { id: "cursor-1", provider: "cursor", limit: false },
         ]),
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
@@ -127,6 +129,8 @@ USER qa
         ["c1", "confirm", "done", 0, "fake-model-1"],
       ]);
       expect(intern(state, "i1").detail).toBe('stopped at minute 0: "Nothing more to test."');
+      expect(["i1", "i2"].map((internId) => intern(state, internId).provider).sort()).toEqual(["cursor", "grok"]);
+      expect(intern(state, "judge").provider).toBe("grok");
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups).toHaveLength(1);
@@ -134,13 +138,13 @@ USER qa
         id: "g1",
         confirmed: true,
         reproductions: ["i1", "i2", "c1"],
-        confirmation: { intern: "c1", provider: "claude", result: { reproduced: true, observed: "fake reproduction", evidence: [] }, error: null },
+        confirmation: { intern: "c1", provider: "cursor", result: { reproduced: true, observed: "fake reproduction", evidence: [] }, error: null },
       });
       expect(report.groups[0].findings.map((finding: { id: string }) => finding.id)).toEqual(["i1/fake-home", "i2/fake-home"]);
       expect(report.groups[0].findings[0]).toMatchObject({
         title,
         evidence: ["interns/i1/out/evidence/page.html"],
-        environment: { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-1" },
+        environment: { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: intern(state, "i1").provider, model: "fake-model-1" },
       });
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "page.html")).text()).toContain("<form");
 
@@ -166,8 +170,8 @@ USER qa
         minutes: 0.5,
         confirmMinutes: 0.5,
         loginsFile: await logins("limit", [
-          { id: "claude-limited", limit: true },
-          { id: "claude-spare", limit: false },
+          { id: "claude-limited", provider: "claude", limit: true },
+          { id: "claude-spare", provider: "claude", limit: false },
         ]),
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
