@@ -641,6 +641,47 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
   );
 
   test(
+    "leave a target container that stops after the environment starts stopped, so Docker never resolves its bind sources again",
+    async () => {
+      const runId = crypto.randomUUID().slice(0, 8);
+      const runDir = await scratch();
+      const source = join(runDir, "source");
+      const host = join(runDir, "host");
+      await Bun.write(join(host, "marker"), "host only\n");
+      await mkdir(join(source, "uploads"), { recursive: true });
+      await Bun.write(
+        join(source, ".devcontainer", "compose.yml"),
+        `services:
+  web:
+    image: busybox:1.37
+    restart: always
+    command: ["sh", "-c", "until [ -e /app/stop ]; do sleep 1; done; rm /app/stop"]
+    volumes: ["..:/app", "../uploads:/uploads"]
+`,
+      );
+      await Bun.write(
+        join(source, ".devcontainer", "devcontainer.json"),
+        JSON.stringify({ dockerComposeFile: "compose.yml", service: "web", customizations: { "qa-interns": { urls: { app: "http://web:8080" }, ready: "true", seed: "echo {}" } } }),
+      );
+      const image = await ensureRunnerImage();
+      try {
+        const target = await loadTarget(ref, source);
+        await writeChromePolicy(runDir, target.settings.urls);
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
+        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), runner }));
+        const web = (await execute(["docker", "compose", "-p", environment.project, "ps", "-q", "web"])).trim();
+        await execute(["docker", "exec", web, "sh", "-c", `rmdir /app/uploads && ln -s ${host} /app/uploads && touch /app/stop`]);
+        await execute(["docker", "wait", web]);
+        expect((await execute(["docker", "inspect", "--format", "{{.State.Status}} {{.RestartCount}}", web])).trim()).toBe("exited 0");
+      } finally {
+        await stopRun(runId);
+        await removeCopies(runDir, runId, image);
+      }
+    },
+    20 * 60_000,
+  );
+
+  test(
     "keep two log files of 10 MB for the runner and for the proxy, whatever a process in the runner writes",
     async () => {
       const file = 10_000_000;
