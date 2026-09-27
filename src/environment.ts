@@ -219,7 +219,7 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   const dir = await mkdtemp(join(tmpdir(), "qa-interns-tags-"));
   try {
     const tags = join(dir, "tags.yml");
-    const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(images[name])}`]);
+    const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(images[name])}`, "    build:", "      tags: !reset []"]);
     await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
     await execute(["docker", "compose", "-p", projectName(runId, "build"), ...sourceComposeArgs(target, sourceDir), "-f", tags, "build", ...services], {
       env: targetEnv(target.settings.hostEnv),

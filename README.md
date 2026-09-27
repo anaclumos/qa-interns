@@ -9,7 +9,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 - Linux on x86-64. Chrome for Testing has no Linux ARM64 build.
 - Docker Engine with Compose v2 and the `isolated` bridge gateway mode. `qa-interns doctor` checks both.
 - Bun 1.4 or later, and Git.
-- At least one agent login: Claude Code, Codex, or Cursor (see [Logins](#logins)).
+- At least one agent login: Claude Code, Codex, Cursor, or Grok (see [Logins](#logins)).
 - Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, and each service's `mem_limit` (1 GiB when the service sets none).
 
 ## Install
@@ -85,7 +85,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - A `devices` entry, a `cap_add` entry, or a `security_opt` entry that contains `unconfined`.
 - A bind mount whose source lies outside the target directory. A source that exists is checked after its symbolic links are resolved, so a Docker socket is rejected whether it is mounted directly or through a symbolic link.
 
-Published ports are allowed; QA Interns removes them.
+Published ports and build `tags` are allowed; QA Interns removes them.
 
 The environment runs on test credentials only: sandbox payment keys, a local mail catcher, no production endpoint. The target project owns that guarantee.
 
@@ -113,11 +113,12 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 | --- | --- | --- |
 | `claude` | A directory with `.credentials.json`. Only `.credentials.json` is mounted into the runner. | `CLAUDE_CONFIG_DIR=<store> claude /login` |
 | `codex` | A directory with `auth.json`. Only `auth.json` is mounted into the runner. | `CODEX_HOME=<store> codex login` |
-| `cursor` | A Cursor credential directory with `auth.json`, mounted whole as `$XDG_CONFIG_HOME/cursor`. Use a directory that only QA Interns uses. | `XDG_CONFIG_HOME=<parent of store> agent login`, with the store named `cursor` |
+| `cursor` | A Cursor credential directory with `auth.json`, mounted whole as `$XDG_CONFIG_HOME/cursor`. Use a directory that only QA Interns uses. | `XDG_CONFIG_HOME=<parent of store> cursor-agent login`, with the store named `cursor` |
+| `grok` | A directory with `auth.json`, mounted whole, because Grok replaces the file when it refreshes the token. A runner writes only `auth.json` and its lock file there. Use a directory that only QA Interns uses. | `GROK_HOME=<store> grok login` |
 
 - Each running intern holds one lease on one login. A Codex store has `concurrency` 1, because OpenAI states that one `auth.json` copy serves one machine or one serialized job stream ([Codex CI/CD auth](https://learn.chatgpt.com/docs/auth/ci-cd-auth)).
 - A seat command is an external program that hands out a store for one intern. It runs with `QA_INTERNS_INTERN` and `QA_INTERNS_LEASE_PID` in its environment and prints an absolute store path as its last line. `QA_INTERNS_LEASE_PID` is a process that lives exactly as long as the intern holds the store, and ends when the orchestrator ends, so a pool manager can hold the store until that process exits. A nonzero exit means the seat command has no store now.
-- When an agent reports a usage limit or a failed login, the intern moves to another login with spare capacity and restarts its charter in a fresh environment with an empty `/qa/out`. The findings of the earlier attempt stay in the report, and `findings.json` records the provider and model of the attempt that wrote each one. A confirming intern that moves answers with the `confirmation.json` of its latest attempt that wrote a valid one, under that attempt's provider. Claude reports a usage limit as JSON-RPC error `-32603` with `data.errorKind` `rate_limit` or `billing_error`, and Codex as `-32603` with `data.codexErrorInfo` `usageLimitExceeded`. Cursor ends the turn with a chat message instead of an error, so a Cursor intern at its limit stops early and the report quotes its last message.
+- When an agent reports a usage limit or a failed login, the intern moves to another login with spare capacity and restarts its charter in a fresh environment with an empty `/qa/out`. The findings of the earlier attempt stay in the report, and `findings.json` records the provider and model of the attempt that wrote each one. A confirming intern that moves answers with the `confirmation.json` of its latest attempt that wrote a valid one, under that attempt's provider. Claude reports a usage limit as JSON-RPC error `-32603` with `data.errorKind` `rate_limit` or `billing_error`, and Codex as `-32603` with `data.codexErrorInfo` `usageLimitExceeded`. Grok reports a rate or usage limit as `-32003`, and spent credits or a rejected token as `-32603` with `data.http_status` 402 or 401. Cursor ends the turn with a chat message instead of an error, so a Cursor intern at its limit stops early and the report quotes its last message.
 
 ## What a run does
 
@@ -144,11 +145,11 @@ A finding is confirmed when two or more interns reproduced it.
 ## Isolation
 
 - Every environment is its own Compose project with three networks in its own `/23` block of `10.213.0.0/16`. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. Only the proxy joins the third network, which reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
-- The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential file it was given, and that write reaches the store on the host.
+- The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential it was given, which is the credential file for Claude and Codex and the whole store directory for Cursor and Grok, and that write reaches the store on the host.
 - `/qa/out` is the intern's `interns/<id>/out` directory on the host. The runner cannot write a file larger than 1 GiB anywhere. While the agent runs, the orchestrator walks `/qa/out` once a second and stops the runner when it holds more than 1 GiB. The intern then ends as failed, and the findings it wrote stay in the report.
 - The runner reaches the internet only through a proxy container that allows HTTPS to the model provider hosts and nothing else.
 - Target services have no internet access and cannot reach the proxy. Lifecycle commands that run in a target container, and application code, fail when they need the network.
-- Every agent session starts with no MCP servers. Claude and Codex have their MCP sources blocked in `src/providers.ts`. A Cursor runner has no MCP source, because its home directory is an empty tmpfs and the Cursor store holds credentials only.
+- Every agent session starts with no MCP servers. Claude and Codex have their MCP sources blocked in `src/providers.ts`. Grok has them blocked by the root-owned `/etc/grok/requirements.toml` in the runner image. A Cursor runner has no MCP source, because its home directory is an empty tmpfs and `CURSOR_CONFIG_DIR` keeps Cursor's settings and sessions in that home, out of the store.
 - Chrome runs with `--no-sandbox`, because Docker's default seccomp profile blocks its sandbox, so the container is the boundary. A compromised renderer can read what the runner user can read, including that intern's login.
 
 ## Known limits
@@ -157,6 +158,9 @@ A finding is confirmed when two or more interns reproduced it.
 - The runner image is x86-64 only.
 - Two runs started at the same moment can pick the same subnet; the second fails to start that environment.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
+- A Grok login whose token refresh fails during a turn ends the intern instead of moving it to another login, because Grok reports that failure as `-32603` with text data only.
+- A Grok login without a Grok subscription ends the intern instead of moving it to another login, because Grok reports it as `-32603` with `data.http_status` 403, the same shape as a content policy denial.
+- When a Grok token refresh fails for good, Grok deletes `auth.json` from the store, and the next run rejects the logins file until you log in to that store again.
 - Compose and the Dev Container CLI get only the variables the [target environment contract](#target-environment-contract) lists. A Docker credential helper that needs another variable, such as `DBUS_SESSION_BUS_ADDRESS`, fails the image pull with `error getting credentials`, and the Dev Container CLI downloads features without the proxy variables. A target that needs one of them lists it in `hostEnv`.
 - The 1 GiB total of `/qa/out` comes from a directory walk, not a quota. A runner can write past it in files of up to 1 GiB each: before the next walk finishes, after the agent's session ends, and in files it deletes while they are still open ([#22](https://github.com/anaclumos/qa-interns/issues/22)).
 
