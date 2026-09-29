@@ -1,5 +1,8 @@
+import { join } from "node:path";
+import { z } from "zod";
 import { stripControl } from "./findings.ts";
-import type { Group, InternState, Rejected, RunState } from "./types.ts";
+import { readState } from "./state.ts";
+import { kinds, type Finding, type Group, type InternState, type Rejected, type Replay, type RunState } from "./types.ts";
 
 export function reproductions(group: Group): string[] {
   const interns = new Set(group.findings.map((finding) => finding.intern));
@@ -52,14 +55,12 @@ function confirmation(group: Group) {
   ];
 }
 
-function section(group: Group, interns: string[]) {
-  const [first, ...others] = group.findings;
-  if (first === undefined) throw new Error(`group ${group.id} has no findings`);
+function reported(first: Finding, fact: string) {
   const lines = [
     `### ${inline(first.title)}`,
     "",
     `- Kind: ${first.kind}`,
-    `- Reproductions: ${interns.length} (${interns.join(", ")})`,
+    fact,
     "- Conditions:",
     `  - Account: ${inline(first.conditions.account)}`,
     `  - Data: ${inline(first.conditions.data)}`,
@@ -77,6 +78,19 @@ function section(group: Group, interns: string[]) {
     "",
   ];
   if (first.contradicts !== null) lines.push("Contradicts:", "", ...quote(first.contradicts), "");
+  return lines;
+}
+
+function lead(group: Group) {
+  const [first] = group.findings;
+  if (first === undefined) throw new Error(`group ${group.id} has no findings`);
+  return first;
+}
+
+function section(group: Group, interns: string[]) {
+  const first = lead(group);
+  const others = group.findings.slice(1);
+  const lines = reported(first, `- Reproductions: ${interns.length} (${interns.join(", ")})`);
   lines.push("Evidence:", "", ...paths(first.evidence), "");
   if (others.length > 0) {
     lines.push("Other reports:", "");
@@ -87,11 +101,36 @@ function section(group: Group, interns: string[]) {
   return lines;
 }
 
+function role(state: RunState, name: InternState["role"]) {
+  return state.interns.filter((intern) => intern.role === name).length;
+}
+
+function providersOf(state: RunState) {
+  return [...new Set(state.interns.flatMap((intern) => (intern.provider === null ? [] : [intern.provider])))];
+}
+
+function ran(state: RunState) {
+  return [
+    `- Target: \`${state.target.repo}\`, path \`${state.target.path || "."}\``,
+    `- Commit: \`${state.target.commit}\``,
+    `- Ran: ${state.startedAt}${state.endedAt === null ? "" : ` to ${state.endedAt}`}`,
+  ];
+}
+
+function internTable(state: RunState) {
+  const lines = ["## Interns", ""];
+  if (state.interns.length === 0) return [...lines, "No intern ran."];
+  lines.push("| Id | Role | Provider | Model | Status | Findings | Detail |", "| --- | --- | --- | --- | --- | --- | --- |");
+  for (const intern of state.interns) {
+    lines.push(`| ${[intern.id, intern.role, intern.provider, intern.model, intern.status, intern.findings, intern.detail].map(cell).join(" | ")} |`);
+  }
+  return lines;
+}
+
 export function renderReport(state: RunState, groups: Group[], rejected: Rejected[]): { markdown: string; json: unknown } {
   const rows = groups.map((group) => ({ group, interns: reproductions(group) }));
   const confirmed = rows.filter((row) => row.interns.length >= 2);
   const seenOnce = rows.filter((row) => row.interns.length < 2);
-  const role = (name: InternState["role"]) => state.interns.filter((intern) => intern.role === name).length;
   const summary = {
     runId: state.runId,
     target: state.target,
@@ -99,8 +138,8 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
     error: state.error,
     startedAt: state.startedAt,
     endedAt: state.endedAt,
-    interns: { testing: role("intern"), confirming: role("confirm"), judging: role("judge") },
-    providers: [...new Set(state.interns.flatMap((intern) => (intern.provider === null ? [] : [intern.provider])))],
+    interns: { testing: role(state, "intern"), confirming: role(state, "confirm"), judging: role(state, "judge") },
+    providers: providersOf(state),
     confirmedGroups: confirmed.length,
     seenOnceGroups: seenOnce.length,
     rejectedFiles: rejected.length,
@@ -109,9 +148,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
   const lines = [
     `# QA Interns run ${state.runId}`,
     "",
-    `- Target: \`${state.target.repo}\`, path \`${state.target.path || "."}\``,
-    `- Commit: \`${state.target.commit}\``,
-    `- Ran: ${state.startedAt}${state.endedAt === null ? "" : ` to ${state.endedAt}`}`,
+    ...ran(state),
     `- Interns: ${summary.interns.testing} testing, ${summary.interns.confirming} confirming, ${summary.interns.judging} judging`,
     `- Providers: ${summary.providers.length > 0 ? summary.providers.join(", ") : "none"}`,
     `- Confirmed groups: ${summary.confirmedGroups}`,
@@ -128,16 +165,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
   lines.push("## Rejected finding files", "");
   if (rejected.length === 0) lines.push("No finding file was rejected.");
   for (const entry of rejected) lines.push(`- ${inline(entry.file)}: ${inline(entry.reason)}`);
-  lines.push("", "## Interns", "");
-  if (state.interns.length === 0) lines.push("No intern ran.");
-  else {
-    lines.push("| Id | Role | Provider | Model | Status | Findings | Detail |", "| --- | --- | --- | --- | --- | --- | --- |");
-    for (const intern of state.interns) {
-      lines.push(
-        `| ${[intern.id, intern.role, intern.provider, intern.model, intern.status, intern.findings, intern.detail].map(cell).join(" | ")} |`,
-      );
-    }
-  }
+  lines.push("", ...internTable(state));
 
   return {
     markdown: stripControl(`${lines.join("\n")}\n`),
@@ -154,4 +182,127 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
       interns: state.interns,
     },
   };
+}
+
+function outcome(group: Group) {
+  return group.confirmation?.result?.reproduced ?? null;
+}
+
+export function renderReplay(state: RunState, replay: Replay): { markdown: string; json: unknown } {
+  const reproduced = replay.groups.filter((group) => outcome(group) === true);
+  const notReproduced = replay.groups.filter((group) => outcome(group) === false);
+  const unchecked = replay.groups.filter((group) => outcome(group) === null);
+  const summary = {
+    runId: state.runId,
+    replay: { runId: replay.runId, commit: replay.target.commit },
+    target: state.target,
+    phase: state.phase,
+    error: state.error,
+    startedAt: state.startedAt,
+    endedAt: state.endedAt,
+    interns: { confirming: role(state, "confirm") },
+    providers: providersOf(state),
+    reproducedGroups: reproduced.length,
+    notReproducedGroups: notReproduced.length,
+    uncheckedGroups: unchecked.length,
+  };
+
+  const lines = [
+    `# QA Interns run ${state.runId}`,
+    "",
+    `- Replay of: run \`${replay.runId}\` at commit \`${replay.target.commit}\``,
+    ...ran(state),
+    `- Interns: ${summary.interns.confirming} confirming`,
+    `- Providers: ${summary.providers.length > 0 ? summary.providers.join(", ") : "none"}`,
+    `- Groups reproduced: ${summary.reproducedGroups}`,
+    `- Groups not reproduced: ${summary.notReproducedGroups}`,
+    `- Groups not checked: ${summary.uncheckedGroups}`,
+  ];
+  if (state.error !== null) lines.push(`- Error: ${inline(state.error)}`);
+  lines.push("");
+  const sections = [
+    ["Reproduced", "No group was reproduced.", reproduced],
+    ["Not reproduced", "No intern reported a group as not reproduced.", notReproduced],
+    ["Not checked", "Every group was checked.", unchecked],
+  ] as const;
+  for (const [heading, none, list] of sections) {
+    lines.push(`## ${heading}`, "");
+    if (list.length === 0) lines.push(none, "");
+    for (const group of list) lines.push(...reported(lead(group), `- Group: ${inline(group.id)} in run ${inline(replay.runId)}`), ...confirmation(group), "");
+  }
+  lines.push(...internTable(state));
+
+  return {
+    markdown: stripControl(`${lines.join("\n")}\n`),
+    json: {
+      run: summary,
+      groups: [...reproduced, ...notReproduced, ...unchecked].map((group) => ({
+        id: group.id,
+        reproduced: outcome(group),
+        finding: lead(group),
+        confirmation: group.confirmation,
+      })),
+      interns: state.interns,
+    },
+  };
+}
+
+const storedSchema = z.object({
+  run: z.object({ replay: z.object({ runId: z.string() }).optional() }),
+  groups: z.array(
+    z.object({
+      id: z.string().min(1),
+      confirmed: z.boolean(),
+      findings: z
+        .array(
+          z.object({
+            id: z.string(),
+            intern: z.string(),
+            title: z.string(),
+            kind: z.enum(kinds),
+            conditions: z.object({ account: z.string(), data: z.string(), viewport: z.string(), browser: z.string(), network: z.string() }),
+            steps: z.array(z.string()).min(1),
+            observed: z.string(),
+            contradicts: z.string().nullable(),
+            evidence: z.array(z.string()),
+            environment: z.object({
+              commit: z.string(),
+              environment: z.string(),
+              provider: z.enum(["claude", "codex", "cursor", "grok"]),
+              model: z.string().nullable(),
+            }),
+          }),
+        )
+        .min(1),
+    }),
+  ),
+});
+
+export async function readReplay(runDir: string, only: string[]): Promise<Replay> {
+  const state = await readState(runDir);
+  const file = join(runDir, "findings.json");
+  const handle = Bun.file(file);
+  if (!(await handle.exists())) throw new Error(`Run ${state.runId} has no findings.json yet. Its phase is ${state.phase}.`);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(await handle.text());
+  } catch (error) {
+    throw new Error(`${file} is not valid JSON: ${String(error)}`);
+  }
+  const parsed = storedSchema.safeParse(raw);
+  if (!parsed.success) {
+    const problems = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
+    throw new Error(`${file} does not hold the groups of a run: ${problems.join("; ")}`);
+  }
+  const { run, groups } = parsed.data;
+  if (run.replay !== undefined) throw new Error(`Run ${state.runId} is a replay of run ${run.replay.runId}. Replay run ${run.replay.runId} instead.`);
+  const confirmed = groups.filter((group) => group.confirmed);
+  const ids = confirmed.map((group) => group.id);
+  const missing = only.filter((id) => !ids.includes(id));
+  if (missing.length > 0) {
+    throw new Error(`Run ${state.runId} has no confirmed group ${missing.join(", ")}. Its confirmed groups are ${ids.length > 0 ? ids.join(", ") : "none"}.`);
+  }
+  const chosen = only.length === 0 ? confirmed : confirmed.filter((group) => only.includes(group.id));
+  if (chosen.length === 0) throw new Error(`Run ${state.runId} has no confirmed group to replay.`);
+  return { runId: state.runId, target: state.target, groups: chosen.map((group) => ({ id: group.id, findings: group.findings, confirmation: null })) };
 }

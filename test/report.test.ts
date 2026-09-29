@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { renderReport, reproductions } from "../src/report.ts";
+import { renderReplay, renderReport, reproductions } from "../src/report.ts";
 import type { Finding, Group, InternState, Provider, RunState } from "../src/types.ts";
 
 function intern(id: string, role: InternState["role"], provider: Provider | null, status: InternState["status"], findings: number, detail: string | null): InternState {
@@ -180,5 +180,68 @@ describe("renderReport", () => {
       expect(body).toHaveLength(1);
       expect(body[0]?.startsWith("#")).toBe(false);
     }
+  });
+});
+
+describe("renderReplay", () => {
+  const replayState: RunState = {
+    ...state,
+    runId: "9b4d2f61",
+    target: { ...state.target, commit: "a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9" },
+    options: { interns: 0, minutes: 0, confirmMinutes: 10, concurrency: 3 },
+    interns: state.interns.filter((entry) => entry.role === "confirm"),
+  };
+  const replay = { runId: state.runId, target: state.target, groups: [exportTotal, overlap, negative] };
+  const { markdown, json } = renderReplay(replayState, replay);
+  const between = (text: string, start: string, end: string) => text.slice(text.indexOf(start), text.indexOf(end));
+
+  test("sorts the groups into reproduced, not reproduced, and not checked, under the ids of the earlier run", () => {
+    expect(markdown.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Reproduced", "## Not reproduced", "## Not checked", "## Interns"]);
+    expect(markdown).toContain(`- Replay of: run \`7c1e9a04\` at commit \`${state.target.commit}\`\n`);
+    expect(markdown).toContain(`- Commit: \`${replayState.target.commit}\`\n`);
+    expect(markdown).toContain("- Groups reproduced: 1\n- Groups not reproduced: 1\n- Groups not checked: 1\n");
+    const reproduced = between(markdown, "## Reproduced", "## Not reproduced");
+    expect(reproduced).toContain(`### ${overlap.findings[0]!.title}`);
+    expect(reproduced).toContain("- Group: g1 in run 7c1e9a04\n");
+    expect(reproduced).toContain("1. Sign in as owner@acme.test with the password acme-owner-pass.");
+    expect(reproduced).toContain("Confirmation: c1 (codex) reproduced it.");
+    expect(reproduced).not.toContain("i2/page-two-repeats");
+    expect(reproduced).not.toContain("interns/i1/out/evidence/pagination-overlap.png");
+    const notReproduced = between(markdown, "## Not reproduced", "## Not checked");
+    expect(notReproduced).toContain(`### ${exportTotal.findings[0]!.title}`);
+    expect(notReproduced).toContain("> The detail page at /invoices/2 shows €5,770.60.");
+    expect(notReproduced).toContain("Confirmation: c2 (codex) did not reproduce it.");
+    const unchecked = between(markdown, "## Not checked", "## Interns");
+    expect(unchecked).toContain(`### ${negative.findings[0]!.title}`);
+    expect(unchecked).toContain("Confirmation: c3 failed: no login with spare capacity");
+  });
+
+  test("the JSON form names the earlier run and carries each group's result, the finding the intern followed, and its confirmation", () => {
+    const data = json as { run: unknown; groups: { id: string; reproduced: boolean | null; finding: { id: string }; confirmation: unknown }[]; interns: unknown };
+    expect(data.run).toMatchObject({
+      runId: "9b4d2f61",
+      replay: { runId: "7c1e9a04", commit: state.target.commit },
+      target: replayState.target,
+      interns: { confirming: 3 },
+      providers: ["codex"],
+      reproducedGroups: 1,
+      notReproducedGroups: 1,
+      uncheckedGroups: 1,
+    });
+    expect(data.groups.map((group) => [group.id, group.reproduced, group.finding.id])).toEqual([
+      ["g1", true, "i1/pagination-overlap"],
+      ["g2", false, "i3/export-total"],
+      ["g3", null, "i3/negative-quantity"],
+    ]);
+    expect(data.groups[0]!.confirmation).toEqual(overlap.confirmation);
+    expect(data.interns).toEqual(replayState.interns);
+    expect(JSON.parse(JSON.stringify(json))).toEqual(json);
+  });
+
+  test("a group without a confirmation is not checked", () => {
+    const text = renderReplay(replayState, { ...replay, groups: [{ ...overlap, confirmation: null }] }).markdown;
+    expect(between(text, "## Reproduced", "## Not reproduced")).toContain("No group was reproduced.");
+    expect(between(text, "## Not reproduced", "## Not checked")).toContain("No intern reported a group as not reproduced.");
+    expect(between(text, "## Not checked", "## Interns")).toContain("Confirmation: not attempted.");
   });
 });
