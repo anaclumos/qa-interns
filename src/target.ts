@@ -44,14 +44,22 @@ export type Target = TargetRef & {
 type CommandOptions = { env?: Record<string, string | undefined>; log?: string; timeout?: number };
 
 const running = new Set<Subprocess>();
+const groups = new Set<Subprocess>();
 
 export function killCommands(): void {
   for (const proc of running) proc.kill();
+  for (const proc of groups) process.kill(-proc.pid, "SIGTERM");
 }
 
 export function track<T extends Subprocess>(proc: T): T {
   running.add(proc);
   proc.exited.then(() => running.delete(proc));
+  return proc;
+}
+
+export function trackGroup<T extends Subprocess>(proc: T): T {
+  groups.add(proc);
+  proc.exited.then(() => groups.delete(proc));
   return proc;
 }
 
