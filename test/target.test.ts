@@ -819,8 +819,8 @@ describe.skipIf(!dockerAvailable)("validate", () => {
     });
   });
 
-  test("reject a checked setting that depends on an unset hostEnv variable, and check it with the value when it is set", async () => {
-    const compose = 'services:\n  web:\n    image: nginx:1.29-alpine\n    environment:\n      API_KEY: ${QA_INTERNS_TEST_KEY}\n    volumes: ["${QA_INTERNS_TEST_DIR}/data:/data"]\n';
+  test("reject a checked setting that depends on an unset hostEnv variable through a parent directory, and check it with the value when it is set", async () => {
+    const compose = 'services:\n  web:\n    image: nginx:1.29-alpine\n    environment:\n      API_KEY: ${QA_INTERNS_TEST_KEY}\n    volumes: ["${QA_INTERNS_TEST_DIR}/../data:/data"]\n';
     const root = await fixture(compose, devcontainer({}, hostEnv));
     expect(await validate(root)).toEqual({
       code: 1,
@@ -828,9 +828,9 @@ describe.skipIf(!dockerAvailable)("validate", () => {
       stderr:
         'qa-interns: customizations["qa-interns"].hostEnv names QA_INTERNS_TEST_KEY, QA_INTERNS_TEST_DIR, which the environment of qa-interns does not set, and these checked settings depend on one or more of them:\n- volumes of service web\n',
     });
-    const outside = await validate(root, { QA_INTERNS_TEST_DIR: "/etc" });
+    const outside = await validate(root, { QA_INTERNS_TEST_DIR: "/etc/app" });
     expect(outside.code).toBe(1);
-    expect(outside.stderr).toContain("- service web mounts /etc/data, which resolves to /etc/data, outside the target directory");
+    expect(outside.stderr).toContain("- service web mounts /etc/app/../data, which resolves to /etc/data, outside the target directory");
   });
 
   test("reject unsafe Compose settings while a hostEnv variable is unset", async () => {
@@ -838,5 +838,12 @@ describe.skipIf(!dockerAvailable)("validate", () => {
     const result = await validate(await fixture(compose, devcontainer({}, hostEnv)));
     expect(result.code).toBe(1);
     expect(result.stderr).toContain("- service web sets container_name shop-web");
+  });
+
+  test("reject a service whose image two built services produce", async () => {
+    const compose = 'services:\n  web:\n    build: ..\n    image: qair-validate/app\n  api:\n    build:\n      context: ..\n      tags: ["qair-validate/app:latest"]\n  worker:\n    image: qair-validate/app\n';
+    const result = await validate(await fixture(compose));
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Services api and web both build the image qair-validate/app that service worker runs");
   });
 });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor } from "./doctor.ts";
-import { removeCopies, stopRun } from "./environment.ts";
+import { imageBuilders, removeCopies, stopRun } from "./environment.ts";
 import { errorCode, stripControl } from "./findings.ts";
 import { defaultLoginsPath } from "./logins.ts";
 import { runQa, startCopy } from "./run.ts";
@@ -90,9 +90,10 @@ async function main(args: string[]): Promise<number> {
       const source = await mkdtemp(join(tmpdir(), "qa-interns-validate-"));
       try {
         await exportTree(ref, source);
-        const { settings } = await loadTarget(ref, source, true);
+        const target = await loadTarget(ref, source, true);
+        imageBuilders(target);
         print(`${join(ref.repo, ref.path)} at ${ref.commit} passes the checks that run makes before it builds images.`);
-        const unset = settings.hostEnv.filter((name) => process.env[name] === undefined);
+        const unset = target.settings.hostEnv.filter((name) => process.env[name] === undefined);
         if (unset.length > 0) print(`hostEnv names ${unset.join(", ")}, which the environment of qa-interns does not set. No checked setting depends on them.`);
       } finally {
         await rm(source, { recursive: true, force: true });
