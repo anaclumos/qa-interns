@@ -214,7 +214,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
       `    image: ${y(spec.runner.image)}`,
       `    pull_policy: ${y("never")}`,
       `    command: ${y(["node", "/opt/qa-interns/relay.mjs"])}`,
-      `    environment: ${y({ QA_RELAY_ALLOW: relayHosts.join(",") })}`,
+      `    environment: ${y({ QA_RELAY_ALLOW: relayHosts.join(","), QA_RELAY_LIMITS: JSON.stringify(spec.target?.settings.connectionLimits ?? {}) })}`,
       `    networks: ${y({ qa_relay: { ipv4_address: relayAddress }, qa_egress: null })}`,
       `    healthcheck: ${y({ test: ["CMD", "node", "-e", relayProbe], start_period: "30s", start_interval: "500ms" })}`,
       ...hardening,
@@ -489,6 +489,18 @@ async function removeImages(prefixes: string[]): Promise<void> {
 
 async function removeAsRoot(dir: string, image: string, paths: string[]): Promise<void> {
   await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
+}
+
+export async function refusedConnections(project: string): Promise<Record<string, number>> {
+  const labels = ["--filter", `label=com.docker.compose.project=${project}`, "--filter", "label=com.docker.compose.service=qa-relay"];
+  const [relay] = (await execute(["docker", "ps", "-aq", ...labels])).split("\n").filter((id) => id !== "");
+  if (relay === undefined) return {};
+  await execute(["docker", "stop", relay]);
+  const last = (await execute(["docker", "logs", "--tail", "1", relay])).trim();
+  if (last === "") return {};
+  if (!last.startsWith("refused ")) throw new Error(`The relay of ${project} ended before teardown, so its refused connections are unknown. Its last line is: ${last}`);
+  const counts = z.record(z.string(), z.int().nonnegative()).parse(JSON.parse(last.slice("refused ".length)));
+  return Object.fromEntries(Object.entries(counts).filter(([, count]) => count > 0));
 }
 
 export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<void> {

@@ -7,7 +7,18 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { z } from "zod";
 import { errorCode } from "./findings.ts";
 
-export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; knownGaps: string[]; hostEnv: string[]; egress: string[] };
+export type ConnectionLimits = { concurrent?: number; perMinute?: number; total?: number };
+export type QaSettings = {
+  urls: Record<string, string>;
+  ready: string;
+  seed: string;
+  focus: string[];
+  offLimits: string[];
+  knownGaps: string[];
+  hostEnv: string[];
+  egress: string[];
+  connectionLimits: Record<string, ConnectionLimits>;
+};
 export type TargetRef = { repo: string; path: string; commit: string };
 export type ComposeService = {
   build: boolean;
@@ -127,18 +138,29 @@ function isHostName(value: string): boolean {
   );
 }
 
-const settingsSchema = z.strictObject({
-  urls: z
-    .record(z.string(), z.string().refine(isHttpUrl, "must be an http: or https: URL"))
-    .refine((urls) => Object.keys(urls).length > 0, "must name at least one URL"),
-  ready: z.string().min(1),
-  seed: z.string().min(1),
-  focus: z.array(z.string().min(1)).default([]),
-  offLimits: z.array(z.string().min(1)).default([]),
-  knownGaps: z.array(z.string().min(1)).default([]),
-  hostEnv: z.array(z.string().min(1)).default([]),
-  egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
-});
+const connectionLimitsSchema = z
+  .strictObject({ concurrent: z.int().positive().optional(), perMinute: z.int().positive().optional(), total: z.int().positive().optional() })
+  .refine((limits) => Object.keys(limits).length > 0, "must set concurrent, perMinute, or total");
+
+const settingsSchema = z
+  .strictObject({
+    urls: z
+      .record(z.string(), z.string().refine(isHttpUrl, "must be an http: or https: URL"))
+      .refine((urls) => Object.keys(urls).length > 0, "must name at least one URL"),
+    ready: z.string().min(1),
+    seed: z.string().min(1),
+    focus: z.array(z.string().min(1)).default([]),
+    offLimits: z.array(z.string().min(1)).default([]),
+    knownGaps: z.array(z.string().min(1)).default([]),
+    hostEnv: z.array(z.string().min(1)).default([]),
+    egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
+    connectionLimits: z.record(z.string(), connectionLimitsSchema).default({}),
+  })
+  .superRefine((settings, ctx) => {
+    for (const host of Object.keys(settings.connectionLimits)) {
+      if (!settings.egress.includes(host)) ctx.addIssue({ code: "custom", path: ["connectionLimits", host], message: `names ${host}, which egress does not list` });
+    }
+  });
 
 const configSchema = z.object({
   dockerComposeFile: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),

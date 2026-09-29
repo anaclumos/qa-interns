@@ -7,6 +7,7 @@ import {
   environmentMemory,
   freeSlot,
   freeSlots,
+  refusedConnections,
   removeCopies,
   runnerEnv,
   saveDisks,
@@ -26,7 +27,7 @@ import { providers } from "./providers.ts";
 import { renderReport } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target, type TargetRef } from "./target.ts";
-import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
+import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Refused, Rejected, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
   dir: string;
@@ -73,6 +74,7 @@ type Context = {
   sessions: Set<Session>;
   startups: Limit;
   teardowns: string[];
+  refused: Refused[];
   held: number;
   waiting: (() => void)[];
   stopping: boolean;
@@ -152,6 +154,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     sessions: new Set(),
     startups: limit(4),
     teardowns: [],
+    refused: [],
     held: 0,
     waiting: [],
     stopping: false,
@@ -243,8 +246,13 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
   if (lease === null) return null;
   const project = `qa-${ctx.runId}-${id}`;
   let slot: number | undefined;
-  let started = false;
-  const teardown = () => stopEnvironment(ctx.runDir, id, project, ctx.runnerImage);
+  let started = null as number | null;
+  const teardown = async (count: number) => {
+    const [refused] = await Promise.allSettled([refusedConnections(project)]);
+    await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage);
+    if (refused.status === "rejected") throw refused.reason;
+    ctx.refused.push(...Object.entries(refused.value).map(([host, connections]) => ({ intern: id, attempt: count, host, connections })));
+  };
   try {
     await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, project, startedAt: now() });
     for (let count = 1; ; count += 1) {
@@ -252,14 +260,14 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
       const env = await ctx.startups(async () => {
         checkStopping(ctx);
         slot = await freeSlot(ctx.reserved);
-        started = true;
+        started = count;
         return startEnvironment(environmentSpec(ctx, id, slot, target, current, count));
       });
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
       if (!(outcome instanceof AgentError)) return outcome;
       ctx.scheduler.exhaust(lease);
-      await teardown();
-      started = false;
+      await teardown(count);
+      started = null;
       if (slot !== undefined) ctx.reserved.delete(slot);
       slot = undefined;
       lease.release();
@@ -274,7 +282,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
     }
   } finally {
     try {
-      if (started) await teardown();
+      if (started !== null) await teardown(started);
     } catch (error) {
       ctx.teardowns.push(`${id}: ${message(error)}`);
       await note(`teardown failed: ${message(error)}`);
@@ -673,7 +681,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
-    const report = renderReport(state, groups ?? singles, rejected);
+    const report = renderReport(state, groups ?? singles, rejected, ctx.refused);
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await save();

@@ -1,5 +1,5 @@
 import { stripControl } from "./findings.ts";
-import type { Group, InternState, Rejected, RunState } from "./types.ts";
+import type { Group, InternState, Refused, Rejected, RunState } from "./types.ts";
 
 export function reproductions(group: Group): string[] {
   const interns = new Set(group.findings.map((finding) => finding.intern));
@@ -87,7 +87,7 @@ function section(group: Group, interns: string[]) {
   return lines;
 }
 
-export function renderReport(state: RunState, groups: Group[], rejected: Rejected[]): { markdown: string; json: unknown } {
+export function renderReport(state: RunState, groups: Group[], rejected: Rejected[], refused: Refused[]): { markdown: string; json: unknown } {
   const rows = groups.map((group) => ({ group, interns: reproductions(group) }));
   const confirmed = rows.filter((row) => row.interns.length >= 2);
   const seenOnce = rows.filter((row) => row.interns.length < 2);
@@ -104,6 +104,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
     confirmedGroups: confirmed.length,
     seenOnceGroups: seenOnce.length,
     rejectedFiles: rejected.length,
+    refusedConnections: refused.reduce((sum, entry) => sum + entry.connections, 0),
   };
 
   const lines = [
@@ -117,6 +118,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
     `- Confirmed groups: ${summary.confirmedGroups}`,
     `- Groups seen once: ${summary.seenOnceGroups}`,
     `- Rejected finding files: ${summary.rejectedFiles}`,
+    `- Refused connections: ${summary.refusedConnections}`,
   ];
   if (state.error !== null) lines.push(`- Error: ${inline(state.error)}`);
   lines.push("", "## Confirmed", "");
@@ -128,6 +130,12 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
   lines.push("## Rejected finding files", "");
   if (rejected.length === 0) lines.push("No finding file was rejected.");
   for (const entry of rejected) lines.push(`- ${inline(entry.file)}: ${inline(entry.reason)}`);
+  lines.push("", "## Refused connections", "");
+  if (refused.length === 0) lines.push("The relay refused no connection for a connection limit.");
+  else {
+    lines.push("| Intern | Attempt | Host | Refused connections |", "| --- | --- | --- | --- |");
+    for (const entry of refused) lines.push(`| ${[entry.intern, entry.attempt, entry.host, entry.connections].map(cell).join(" | ")} |`);
+  }
   lines.push("", "## Interns", "");
   if (state.interns.length === 0) lines.push("No intern ran.");
   else {
@@ -151,6 +159,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
         confirmation: row.group.confirmation,
       })),
       rejected,
+      refused,
       interns: state.interns,
     },
   };

@@ -82,6 +82,14 @@ const negative: Group = {
 
 const rejected = [{ intern: "i2", file: "interns/i2/out/findings/slow-export.json", reason: "steps must have at least one entry" }];
 
+const refused = [
+  { intern: "i1", attempt: 1, host: "api.openai.com", connections: 12 },
+  { intern: "i1", attempt: 1, host: "api.pwnedpasswords.com", connections: 1 },
+  { intern: "c1", attempt: 2, host: "api.openai.com", connections: 3 },
+];
+
+const headings = ["## Confirmed", "## Seen once", "## Rejected finding files", "## Refused connections", "## Interns"];
+
 describe("reproductions", () => {
   test("counts distinct reporters plus the confirming intern only when it reproduced", () => {
     expect(reproductions(overlap)).toEqual(["i1", "i2", "c1"]);
@@ -92,11 +100,10 @@ describe("reproductions", () => {
 });
 
 describe("renderReport", () => {
-  const { markdown, json } = renderReport(state, [exportTotal, overlap, negative], rejected);
+  const { markdown, json } = renderReport(state, [exportTotal, overlap, negative], rejected, refused);
 
-  test("orders the sections: confirmed, seen once, rejected files, interns", () => {
-    const headings = markdown.split("\n").filter((line) => line.startsWith("## "));
-    expect(headings).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"]);
+  test("orders the sections: confirmed, seen once, rejected files, refused connections, interns", () => {
+    expect(markdown.split("\n").filter((line) => line.startsWith("## "))).toEqual(headings);
     const at = (text: string) => markdown.indexOf(text);
     expect(at("## Confirmed")).toBeLessThan(at(`### ${overlap.findings[0]!.title}`));
     expect(at(`### ${overlap.findings[0]!.title}`)).toBeLessThan(at("## Seen once"));
@@ -104,7 +111,20 @@ describe("renderReport", () => {
     expect(at("## Seen once")).toBeLessThan(at(`### ${negative.findings[0]!.title}`));
     expect(at(`### ${negative.findings[0]!.title}`)).toBeLessThan(at("## Rejected finding files"));
     expect(at("## Rejected finding files")).toBeLessThan(at(rejected[0]!.file));
-    expect(at(rejected[0]!.file)).toBeLessThan(at("## Interns"));
+    expect(at(rejected[0]!.file)).toBeLessThan(at("## Refused connections"));
+    expect(at("## Refused connections")).toBeLessThan(at("## Interns"));
+  });
+
+  test("the summary counts every refused connection, and the table has one row per attempt and host", () => {
+    expect(markdown).toContain("- Refused connections: 16\n");
+    const rows = markdown.slice(markdown.indexOf("## Refused connections"), markdown.indexOf("## Interns")).split("\n").filter((line) => line.startsWith("| "));
+    expect(rows).toEqual([
+      "| Intern | Attempt | Host | Refused connections |",
+      "| --- | --- | --- | --- |",
+      "| i1 | 1 | api.openai.com | 12 |",
+      "| i1 | 1 | api.pwnedpasswords.com | 1 |",
+      "| c1 | 2 | api.openai.com | 3 |",
+    ]);
   });
 
   test("a confirmed group lists its reproduction count and interns", () => {
@@ -123,15 +143,22 @@ describe("renderReport", () => {
     expect(rows.find((row) => row.startsWith("| i2 |"))).toContain("I found \\| nothing else");
   });
 
-  test("the JSON form carries the same groups, rejected files, and interns", () => {
-    const data = json as { run: { confirmedGroups: number; seenOnceGroups: number; rejectedFiles: number; providers: string[] }; groups: { id: string; confirmed: boolean; reproductions: string[] }[]; rejected: unknown; interns: unknown };
-    expect(data.run).toMatchObject({ confirmedGroups: 1, seenOnceGroups: 2, rejectedFiles: 1, providers: ["claude", "codex"] });
+  test("the JSON form carries the same groups, rejected files, refused connections, and interns", () => {
+    const data = json as {
+      run: { confirmedGroups: number; seenOnceGroups: number; rejectedFiles: number; refusedConnections: number; providers: string[] };
+      groups: { id: string; confirmed: boolean; reproductions: string[] }[];
+      rejected: unknown;
+      refused: unknown;
+      interns: unknown;
+    };
+    expect(data.run).toMatchObject({ confirmedGroups: 1, seenOnceGroups: 2, rejectedFiles: 1, refusedConnections: 16, providers: ["claude", "codex"] });
     expect(data.groups.map((group) => [group.id, group.confirmed, group.reproductions])).toEqual([
       ["g1", true, ["i1", "i2", "c1"]],
       ["g2", false, ["i3"]],
       ["g3", false, ["i3"]],
     ]);
     expect(data.rejected).toEqual(rejected);
+    expect(data.refused).toEqual(refused);
     expect(data.interns).toEqual(state.interns);
     expect(JSON.parse(JSON.stringify(json))).toEqual(json);
   });
@@ -142,20 +169,20 @@ describe("renderReport", () => {
       findings: [{ ...finding("i1/bidi", "Totals \u{202e}disagree", "Row \u001b[31mred\u001b[0m"), evidence: ["interns/i1/out/evidence/a\u0007.png"] }],
       confirmation: { intern: "c1", provider: "codex", result: null, error: "adapter said \u009bno" },
     };
-    const text = renderReport(state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }]).markdown;
+    const text = renderReport(state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }], []).markdown;
     for (const char of ["\u{202e}", "\u001b", "\u0007", "\u009b", "\u{2066}", "\u0000"]) expect(text.includes(char)).toBe(false);
     expect(text).toContain("### Totals disagree\n");
     expect(text).toContain("> Row \\[31mred\\[0m\n");
     expect(text).toContain("- interns/i1/out/evidence/a.png\n");
     expect(text).toContain("Confirmation: c1 (codex) failed: adapter said no\n");
     expect(text).toContain("- interns/i2/out/findings/xy.json: bad input\n");
-    expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"]);
+    expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(headings);
   });
 
   test("agent text cannot add a heading or inline HTML", () => {
     const base = finding("i1/forged", "Totals disagree", "Row <script>alert(1)</script>\n## Interns");
     const forged: Group = { id: "g1", findings: [{ ...base, conditions: { ...base.conditions, account: "x\n\n## Interns" } }], confirmation: null };
-    const text = renderReport(state, [forged], []).markdown;
+    const text = renderReport(state, [forged], [], []).markdown;
     expect(text.split("\n").filter((line) => line.trimStart().startsWith("## Interns"))).toEqual(["## Interns"]);
     expect(text).not.toContain("<script>");
     expect(text).toContain("  - Account: x  \\#\\# Interns\n");
@@ -164,15 +191,14 @@ describe("renderReport", () => {
 
   test("agent text cannot add links or images", () => {
     const linked = finding("i1/linked", "See ![x](http://attacker.test/p.png)", "Click [here](http://attacker.test)");
-    const text = renderReport(state, [{ id: "g1", findings: [linked], confirmation: null }], []).markdown;
+    const text = renderReport(state, [{ id: "g1", findings: [linked], confirmation: null }], [], []).markdown;
     expect(text).toContain("### See \\!\\[x\\](http://attacker.test/p.png)\n");
     expect(text).toContain("> Click \\[here\\](http://attacker.test)\n");
   });
 
   test("a run with nothing to report still has a line in every section", () => {
-    const empty = renderReport({ ...state, interns: [] }, [], []).markdown;
+    const empty = renderReport({ ...state, interns: [] }, [], [], []).markdown;
     const lines = empty.split("\n");
-    const headings = ["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"];
     for (const heading of headings) {
       const start = lines.indexOf(heading);
       const next = lines.findIndex((line, index) => index > start && line.startsWith("## "));

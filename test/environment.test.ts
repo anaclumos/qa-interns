@@ -9,6 +9,7 @@ import {
   environmentMemory,
   freeSlot,
   freeSlots,
+  refusedConnections,
   removeCopies,
   renderOverride,
   runnerEnv,
@@ -217,6 +218,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
             ready: "http://api:8080/ready",
             seed: "node seed.mjs",
             egress: ["api.pwnedpasswords.com", "ai-gateway.vercel.sh"],
+            connectionLimits: { "ai-gateway.vercel.sh": { concurrent: 2, total: 300 } },
           },
         },
       }),
@@ -260,7 +262,7 @@ networks:
     expect(config.services["qa-relay"]).toMatchObject({
       image: "qa-interns-runner:0.1.0",
       command: ["node", "/opt/qa-interns/relay.mjs"],
-      environment: { QA_RELAY_ALLOW: "api.pwnedpasswords.com,ai-gateway.vercel.sh" },
+      environment: { QA_RELAY_ALLOW: "api.pwnedpasswords.com,ai-gateway.vercel.sh", QA_RELAY_LIMITS: '{"ai-gateway.vercel.sh":{"concurrent":2,"total":300}}' },
       networks: { qa_relay: { ipv4_address: "10.213.6.254" }, qa_egress: null },
       healthcheck: { start_period: "30s", start_interval: "500ms" },
       logging: { driver: "local", options: { "max-size": "10m", "max-file": "2" } },
@@ -917,7 +919,7 @@ ${sleeper}    profiles: ["mail"]
 
 describe.skipIf(!dockerAvailable)("qa-relay", () => {
   test(
-    "carry HTTPS from a target service to its egress hosts and to no other host",
+    "carry HTTPS from a target service to its egress hosts and to no other host, and refuse connections past a host's connection limits",
     async () => {
       const image = await ensureRunnerImage();
       const source = await scratch();
@@ -926,14 +928,17 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       await execute([
         "docker", "run", "--rm", "--network", "none", "-v", `${certs}:/certs`, image,
         "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=api.example.test",
-        "-addext", "subjectAltName=DNS:api.example.test,DNS:blocked.example.test", "-keyout", "/certs/key.pem", "-out", "/certs/cert.pem",
+        "-addext", "subjectAltName=DNS:api.example.test,DNS:blocked.example.test,DNS:limited.example.test,DNS:rate.example.test", "-keyout", "/certs/key.pem", "-out", "/certs/cert.pem",
       ]);
+      const connectionLimits = { "limited.example.test": { concurrent: 1, total: 3 }, "rate.example.test": { perMinute: 2 } };
       await Bun.write(
         join(source, ".devcontainer", "devcontainer.json"),
         JSON.stringify({
           dockerComposeFile: "compose.yml",
           service: "app",
-          customizations: { "qa-interns": { urls: { app: "http://app:3000" }, ready: "true", seed: "true", egress: ["api.example.test"] } },
+          customizations: {
+            "qa-interns": { urls: { app: "http://app:3000" }, ready: "true", seed: "true", egress: ["api.example.test", "limited.example.test", "rate.example.test"], connectionLimits },
+          },
         }),
       );
       await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, volumes: ["../certs:/certs:ro"] } } }));
@@ -947,9 +952,42 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       const upstream = join(runDir, "upstream.yml");
       await Bun.write(
         upstream,
-        JSON.stringify({ services: { upstream: { image, command: ["node", "-e", server], volumes: [`${certs}:/certs:ro`], networks: { qa_egress: { aliases: ["api.example.test", "blocked.example.test"] } } } } }),
+        JSON.stringify({
+          services: {
+            upstream: {
+              image,
+              command: ["node", "-e", server],
+              volumes: [`${certs}:/certs:ro`],
+              networks: { qa_egress: { aliases: ["api.example.test", "blocked.example.test", "limited.example.test", "rate.example.test"] } },
+            },
+          },
+        }),
       );
-      const compose = ["docker", "compose", "-p", `qair-relay-${crypto.randomUUID().slice(0, 8)}`, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const project = `qair-relay-${crypto.randomUUID().slice(0, 8)}`;
+      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const probe = `
+const tls = require("node:tls");
+const ca = require("node:fs").readFileSync("/certs/cert.pem");
+const open = (host) => new Promise((resolve) => {
+  const socket = tls.connect({ host, port: 443, servername: host, ca });
+  socket.once("secureConnect", () => resolve(socket));
+  socket.once("error", () => resolve(null));
+  socket.once("close", () => resolve(null));
+});
+const close = (socket) => { socket.destroy(); return new Promise((resolve) => setTimeout(resolve, 1000)); };
+(async () => {
+  const opened = [];
+  const first = await open("limited.example.test");
+  opened.push(first !== null, (await open("limited.example.test")) !== null);
+  await close(first);
+  for (const host of ["limited.example.test", "limited.example.test", "limited.example.test", "rate.example.test", "rate.example.test", "rate.example.test"]) {
+    const socket = await open(host);
+    opened.push(socket !== null);
+    if (socket !== null) await close(socket);
+  }
+  console.log(JSON.stringify(opened));
+})();
+`;
       try {
         await execute([...compose, "up", "-d", "--wait", "app", "upstream", "qa-relay"]);
         const curl = [...compose, "exec", "-T", "app", "curl", "-sS", "--max-time", "10", "--cacert", "/certs/cert.pem"];
@@ -960,9 +998,27 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         expect(plain.code).not.toBe(0);
         expect(plain.code).not.toBe(28);
         expect((await capture([...curl, "https://blocked.example.test/"])).code).toBe(6);
+        expect(JSON.parse(await execute([...compose, "exec", "-T", "app", "node", "-e", probe]))).toEqual([true, false, true, true, false, true, true, false]);
         const decisions = (await execute([...compose, "logs", "--no-log-prefix", "qa-relay"])).split("\n");
-        expect(decisions).toEqual(expect.arrayContaining(["allow api.example.test", 'deny "blocked.example.test"', "deny null"]));
-        expect(decisions.filter((line) => line.startsWith("allow ")).every((line) => line === "allow api.example.test")).toBe(true);
+        expect(decisions).toEqual(
+          expect.arrayContaining([
+            "allow api.example.test",
+            'deny "blocked.example.test"',
+            "deny null",
+            "refuse limited.example.test concurrent",
+            "refuse limited.example.test total",
+            "refuse rate.example.test perMinute",
+          ]),
+        );
+        const allowed = ["allow api.example.test", "allow limited.example.test", "allow rate.example.test"];
+        expect(decisions.filter((line) => line.startsWith("allow ")).every((line) => allowed.includes(line))).toBe(true);
+        expect(await refusedConnections(project)).toEqual({ "limited.example.test": 2, "rate.example.test": 1 });
+        expect(await refusedConnections(project)).toEqual({ "limited.example.test": 2, "rate.example.test": 1 });
+
+        await execute([...compose, "start", "qa-relay"]);
+        expect(await execute([...curl, "--retry", "10", "--retry-all-errors", "--retry-delay", "1", "https://api.example.test/"])).toBe("upstream api.example.test");
+        await execute(["docker", "kill", (await execute([...compose, "ps", "-q", "qa-relay"])).trim()]);
+        await expect(refusedConnections(project)).rejects.toThrow("ended before teardown, so its refused connections are unknown. Its last line is: allow api.example.test");
       } finally {
         await execute([...compose, "down", "-v", "--remove-orphans", "--timeout", "2"]);
       }

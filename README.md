@@ -63,7 +63,8 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
       "seed": "bun run src/seed.ts",
       "focus": ["How invoices calculate and show money."],
       "offLimits": ["Do not change the password of a seeded account."],
-      "egress": ["api.pwnedpasswords.com"]
+      "egress": ["api.pwnedpasswords.com"],
+      "connectionLimits": { "api.pwnedpasswords.com": { "concurrent": 2, "perMinute": 30, "total": 300 } }
     }
   }
 }
@@ -77,6 +78,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - `knownGaps` (optional): known gaps of the test environment, such as a feature that has no local stand-in. The testing intern prompt lists them as areas not to report. The confirming intern prompt leaves them out, so a confirmation states only whether a finding reproduces. A finding that an intern writes about a known gap appears in the report like any other finding.
 - `hostEnv` (optional): names of variables the target takes from the environment that runs `qa-interns`. `run` fails when one of them is not set.
 - `egress` (optional): outside hosts that the target services reach over TLS on port 443, such as HTTPS, for a service that has no local stand-in, such as a hosted model API. Each entry is an exact lowercase host name; a wildcard or an IP address is rejected. When such a host needs a credential, a target service takes it from a variable that `hostEnv` names.
+- `connectionLimits` (optional): limits on the TLS connections that target services open to an `egress` host, keyed by that host. `concurrent` is the most connections open at once, `perMinute` the most connections opened in any 60 seconds, and `total` the most connections opened in one environment. Each limit is a whole number of at least 1, and a host sets at least one of them. The limits count the connections of each environment on its own, lifecycle commands and the seed included. A run starts one environment per testing intern, one per confirmation, and one more for each move to another login, and runs at most `--interns` of them at once. The relay refuses a connection past a limit by closing it, so the application sees a closed connection, and the report counts each refused connection. One TLS connection carries any number of HTTP requests, one after another or, over HTTP/2, at once, so these limits do not limit HTTP requests.
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
 
@@ -154,7 +156,7 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when set):
 
-- `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the interns.
+- `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the connections the relay refused for a connection limit by intern, attempt, and host, then the interns.
 - `findings.json`: the same data as JSON.
 - `interns/<id>/out/`: each intern's findings and evidence (screenshots, recordings, HAR files, console logs). After a move to another login, the next attempt writes to `interns/<id>/out-2/`, the one after it to `out-3/`, and so on. The id of a finding from such an attempt names its folder, as in `i1/out-2/<slug>`.
 - `interns/<id>/transcript.jsonl`: the agent traffic of each intern.
@@ -172,7 +174,7 @@ A finding is confirmed when two or more interns reproduced it.
 - The orchestrator keeps an agent's output in memory until a newline arrives. An intern fails when its agent prints more than 64 MiB without a newline, or when the orchestrator's messages to the agent pass 64 MiB in total.
 - The runner reaches the internet only through a proxy container that allows HTTPS to the model provider hosts and nothing else.
 - Docker keeps the log of every container in an environment, the target services included, with the `local` log driver, whatever log driver and options the Docker daemon or the target's Compose files set. Each log is a current file and the previous file. Docker starts a new current file once the current file holds 10 MB, and then compresses the previous file. A log of data that does not compress takes up to about 20 MB, and up to about 30 MB while that compression runs.
-- Target services cannot reach the proxy. They reach the internet only through a relay container, and only the `egress` hosts over TLS on port 443. Each target service resolves those hosts to the relay through its hosts file and starts after the relay accepts connections. The relay reads the host name from the TLS handshake, refuses any other host and any connection that does not start with a TLS handshake, and passes the encrypted connection through unchanged, so the application needs no proxy setting and checks the real server's certificate. The relay does not check which protocol runs inside TLS. Lifecycle commands that run in a target container, and application code, fail when they need any other host.
+- Target services cannot reach the proxy. They reach the internet only through a relay container, and only the `egress` hosts over TLS on port 443. Each target service resolves those hosts to the relay through its hosts file and starts after the relay accepts connections. The relay reads the host name from the TLS handshake, refuses any other host, any connection that does not start with a TLS handshake, and any connection past a connection limit of its host, and passes the encrypted connection through unchanged, so the application needs no proxy setting and checks the real server's certificate. The relay does not check which protocol runs inside TLS. Lifecycle commands that run in a target container, and application code, fail when they need any other host.
 - Every agent session starts with no MCP servers. Claude and Codex have their MCP sources blocked in `src/providers.ts`. Grok has them blocked by the root-owned `/etc/grok/requirements.toml` in the runner image. A Cursor runner has no MCP source, because its home directory is an empty tmpfs and `CURSOR_CONFIG_DIR` keeps Cursor's settings and sessions in that home, out of the store.
 - Chrome runs with `--no-sandbox`, because Docker's default seccomp profile blocks its sandbox, so the container is the boundary. A compromised renderer can read what the runner user can read, including that intern's login.
 

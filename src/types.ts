@@ -62,6 +62,8 @@ export type Finding = {
 
 export type Rejected = { intern: string; file: string; reason: string };
 
+export type Refused = { intern: string; attempt: number; host: string; connections: number };
+
 export type Confirmation = { reproduced: boolean; observed: string; evidence: string[] };
 
 export type Group = {
