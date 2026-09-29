@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { removeCopies, writeChromePolicy } from "../src/environment.ts";
+import { readRelayLogs, removeCopies, writeChromePolicy } from "../src/environment.ts";
 import { errorCode } from "../src/findings.ts";
 import { readReplay } from "../src/report.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
@@ -23,7 +23,6 @@ const timeout = 20 * 60_000;
 const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
 const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
-const limitedHost = "limited.example.test";
 let built = false;
 
 type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true };
@@ -113,15 +112,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     await Bun.write(join(feature, "install.sh"), "#!/bin/sh\nset -e\n");
     const devcontainerFile = join(target, ".devcontainer", "devcontainer.json");
     const ledger = await Bun.file(devcontainerFile).json();
-    const connect = `bun -e "await fetch('https://${limitedHost}/').catch(() => {})"`;
-    const qa = {
-      ...ledger.customizations["qa-interns"],
-      seed: `${connect} && ${connect} && ${connect} && ${ledger.customizations["qa-interns"].seed}`,
-      knownGaps: [knownGap],
-      egress: [limitedHost],
-      connectionLimits: { [limitedHost]: { total: 1 } },
-    };
-    await Bun.write(devcontainerFile, JSON.stringify({ ...ledger, customizations: { "qa-interns": qa }, features: { "./probe-feature": {} } }));
+    const customizations = { "qa-interns": { ...ledger.customizations["qa-interns"], knownGaps: [knownGap] } };
+    await Bun.write(devcontainerFile, JSON.stringify({ ...ledger, customizations, features: { "./probe-feature": {} } }));
     const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
     await execute([...git, "init", "-q"]);
     await execute([...git, "add", "-A"]);
@@ -207,6 +199,7 @@ USER qa
       expect(confirmationPrompt).not.toContain(knownGap);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.egress).toEqual([]);
       expect(report.groups).toHaveLength(1);
       expect(report.groups[0]).toMatchObject({
         id: "g1",
@@ -233,16 +226,73 @@ USER qa
         clipboard: "object",
       });
 
-      expect(report.run.refusedConnections).toBe(6);
-      expect(report.refused).toHaveLength(3);
-      expect(report.refused).toEqual(expect.arrayContaining(["i1", "i2", "c1"].map((internId) => ({ intern: internId, attempt: 1, host: limitedHost, connections: 2 }))));
-
       const markdown = await Bun.file(join(runDir, "report.md")).text();
       const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Seen once"));
       expect(confirmed).toContain(`### ${title}`);
       expect(confirmed).toContain("- Reproductions: 3 (i1, i2, c1)");
-      expect(markdown).toContain("- Refused connections: 6\n");
-      expect(markdown).toContain(`| c1 | 1 | ${limitedHost} | 2 |\n`);
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "the report counts the connections that target services open through the relay, per egress host and outcome, with the ones a connection limit refused",
+    async () => {
+      const relayed = join(root, "relayed");
+      await cp(target, relayed, { recursive: true });
+      const file = join(relayed, ".devcontainer", "devcontainer.json");
+      const config = await Bun.file(file).json();
+      const settings = config.customizations["qa-interns"];
+      const calls = "for (const url of ['https://api.example.test/', 'http://api.example.test:443/', 'https://api.example.test/']) await fetch(url).catch(() => {});";
+      const qa = {
+        ...settings,
+        egress: ["api.example.test", "silent.example.test"],
+        connectionLimits: { "api.example.test": { total: 1 } },
+        seed: `bun -e "${calls}" && ${settings.seed}`,
+      };
+      await Bun.write(file, JSON.stringify({ ...config, customizations: { "qa-interns": qa } }));
+      const git = ["git", "-C", relayed, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Relayed Ledger"]);
+
+      const runDir = await runQa({
+        dir: relayed,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("relayed", [{ id: "claude-1", provider: "claude" }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state.phase).toBe("done");
+      expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([
+        ["i1", "done"],
+        ["c1", "done"],
+      ]);
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.egress).toEqual([
+        { host: "api.example.test", outcome: "failed", error: "ENOTFOUND", connections: 2, interns: ["i1", "c1"] },
+        { host: "api.example.test", outcome: "refused", error: "total", connections: 2, interns: ["i1", "c1"] },
+        { host: "silent.example.test", outcome: null, error: null, connections: 0, interns: [] },
+        { host: null, outcome: "denied", error: null, connections: 2, interns: ["i1", "c1"] },
+      ]);
+      const markdown = await Bun.file(join(runDir, "report.md")).text();
+      expect(markdown).toContain("| api.example.test | failed | ENOTFOUND | 2 | i1, c1 |\n");
+      expect(markdown).toContain("| api.example.test | refused | total | 2 | i1, c1 |\n");
+      expect(markdown).toContain("| silent.example.test | no connection |  | 0 |  |\n");
+      for (const internId of ["i1", "c1"]) {
+        const logs = await readRelayLogs(join(runDir, "interns", internId));
+        expect(logs.map((records) => records.map((entry) => entry.n))).toEqual([[1, 2, 3]]);
+      }
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
@@ -291,8 +341,7 @@ USER qa
       expect(prompts[0]).toContain(title);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
-      expect(report.run).toMatchObject({ replay: { runId: source.runId, commit: source.target.commit }, reproducedGroups: 1, notReproducedGroups: 0, uncheckedGroups: 0, refusedConnections: 2 });
-      expect(report.refused).toEqual([{ intern: "c1", attempt: 1, host: limitedHost, connections: 2 }]);
+      expect(report.run).toMatchObject({ replay: { runId: source.runId, commit: source.target.commit }, reproducedGroups: 1, notReproducedGroups: 0, uncheckedGroups: 0 });
       expect(report.groups).toHaveLength(1);
       expect(report.groups[0]).toMatchObject({
         id: "g1",
@@ -415,61 +464,10 @@ USER qa
         ["i1/out-2/fake-home", ["interns/i1/out-2/evidence/page.html"], { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-b" }],
       ]);
       expect(await Bun.file(join(runDir, "interns", "c1", "out-2", "confirmation.json")).exists()).toBe(false);
-      expect(report.refused).toHaveLength(4);
-      expect(report.refused).toEqual(
-        expect.arrayContaining([
-          { intern: "i1", attempt: 1, host: limitedHost, connections: 2 },
-          { intern: "i1", attempt: 2, host: limitedHost, connections: 2 },
-          { intern: "c1", attempt: 1, host: limitedHost, connections: 2 },
-          { intern: "c1", attempt: 2, host: limitedHost, connections: 2 },
-        ]),
-      );
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
-    },
-    timeout,
-  );
-
-  test(
-    "a relay that ends before teardown fails the run, and the environment of its intern is gone when the intern ends",
-    async () => {
-      const lines: string[] = [];
-      const left: string[][] = [];
-      const docker = (args: string[]) => Bun.spawnSync(["docker", ...args]).stdout.toString().split("\n").filter((line) => line !== "");
-      const project = () => `qa-${basename(lines[0] ?? "")}-i1`;
-      const error = await runQa({
-        dir: target,
-        rev: "HEAD",
-        dirty: false,
-        interns: 1,
-        minutes: 0.5,
-        confirmMinutes: 0.5,
-        loginsFile: await logins("relay", [{ id: "claude-relay", provider: "claude" }]),
-        replay: null,
-        runnerImage: async () => fakeImage,
-        print: (line) => {
-          lines.push(line);
-          const labels = ["--filter", `label=com.docker.compose.project=${project()}`];
-          if (line.startsWith("i1 testing ")) docker(["kill", ...docker(["ps", "-q", ...labels, "--filter", "label=com.docker.compose.service=qa-relay"])]);
-          if (line.startsWith("i1 done")) left.push(docker(["ps", "-aq", ...labels]));
-        },
-      }).catch((reason: unknown) => reason);
-
-      const runDir = lines[0] ?? "";
-      const state = await readState(runDir);
-      expect(error).toBeInstanceOf(Error);
-      expect(String(error)).toContain(
-        `Teardown of run ${state.runId} failed: i1: The relay of ${project()} ended before teardown, so its refused connections are unknown. Its last line is: refuse ${limitedHost} total`,
-      );
-      expect(left).toEqual([[]]);
-      expect(state.phase).toBe("failed");
-      expect(intern(state, "i1").detail).toContain(`teardown failed: The relay of ${project()} ended before teardown`);
-      expect(intern(state, "c1")).toMatchObject({ status: "done", detail: "reproduced" });
-      const report = await Bun.file(join(runDir, "findings.json")).json();
-      expect(report.refused).toEqual([{ intern: "c1", attempt: 1, host: limitedHost, connections: 2 }]);
-      expect(await leftovers(state.runId)).toEqual([]);
     },
     timeout,
   );
@@ -621,7 +619,7 @@ USER qa
       await cp(target, relayed, { recursive: true });
       const file = join(relayed, ".devcontainer", "devcontainer.json");
       const config = await Bun.file(file).json();
-      config.customizations["qa-interns"].egress = [...config.customizations["qa-interns"].egress, "api.pwnedpasswords.com"];
+      config.customizations["qa-interns"].egress = ["api.pwnedpasswords.com"];
       await Bun.write(file, JSON.stringify(config));
       const git = ["git", "-C", relayed, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
       await execute([...git, "init", "-q"]);

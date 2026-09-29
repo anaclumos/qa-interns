@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
@@ -9,18 +9,20 @@ import {
   environmentMemory,
   freeSlot,
   freeSlots,
-  refusedConnections,
+  readRelayLogs,
   removeCopies,
   renderOverride,
   runnerEnv,
   slotSubnets,
   startEnvironment,
+  stopProject,
   stopRun,
   writeChromePolicy,
   type EnvironmentSpec,
 } from "../src/environment.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
+import type { RelayRecord } from "../src/types.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -670,7 +672,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         const environment = await startEnvironment(spec(runDir, null, { runId, slot: await freeSlot(new Set()), runner }));
         await execute(["docker", "exec", environment.runner, "sh", "-c", "mkdir /qa/out/findings && echo '{}' > /qa/out/findings/left.json"]);
       } finally {
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
       expect(await Bun.file(join(out, "findings", "left.json")).text()).toBe("{}\n");
@@ -735,7 +737,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       } finally {
         delete process.env.QA_INTERNS_TEST_LISTED;
         delete process.env.QA_INTERNS_TEST_UNLISTED;
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -790,7 +792,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       } finally {
         if (hostConfig === undefined) delete process.env.DOCKER_CONFIG;
         else process.env.DOCKER_CONFIG = hostConfig;
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -831,7 +833,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         await execute(["docker", "wait", web]);
         expect((await execute(["docker", "inspect", "--format", "{{.State.Status}} {{.RestartCount}}", web])).trim()).toBe("exited 0");
       } finally {
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -867,7 +869,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
           expect(kept).toBeLessThanOrEqual(2 * file);
         }
       } finally {
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -901,7 +903,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
           expect(kept).toBeLessThanOrEqual(2 * file);
         }
       } finally {
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -955,7 +957,7 @@ ${sleeper}    profiles: ["mail"]
         const running = (await execute(["docker", "compose", "-p", environment.project, "ps", "--services"])).split("\n").filter((name) => name !== "");
         expect(running.sort()).toEqual([...expected, "qa-proxy", "qa-runner"].sort());
       } finally {
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -963,9 +965,23 @@ ${sleeper}    profiles: ["mail"]
   );
 });
 
+function u16(value: number): Buffer {
+  const buffer = Buffer.alloc(2);
+  buffer.writeUInt16BE(value);
+  return buffer;
+}
+
+function clientHello(name: Buffer): Buffer {
+  const entry = Buffer.concat([Buffer.from([0]), u16(name.length), name]);
+  const extension = Buffer.concat([u16(0), u16(entry.length + 2), u16(entry.length), entry]);
+  const body = Buffer.concat([Buffer.from([3, 3]), Buffer.alloc(32), Buffer.from([0]), u16(2), Buffer.from([0x13, 0x01]), Buffer.from([1, 0]), u16(extension.length), extension]);
+  const handshake = Buffer.concat([Buffer.from([1, body.length >> 16, (body.length >> 8) & 255, body.length & 255]), body]);
+  return Buffer.concat([Buffer.from([22, 3, 1]), u16(handshake.length), handshake]);
+}
+
 describe.skipIf(!dockerAvailable)("qa-relay", () => {
   test(
-    "carry HTTPS from a target service to its egress hosts and to no other host, and refuse connections past a host's connection limits",
+    "carry HTTPS from a target service to its egress hosts and to no other host, and record each connection's outcome through teardown",
     async () => {
       const image = await ensureRunnerImage();
       const source = await scratch();
@@ -974,20 +990,18 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       await execute([
         "docker", "run", "--rm", "--network", "none", "-v", `${certs}:/certs`, image,
         "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=api.example.test",
-        "-addext", "subjectAltName=DNS:api.example.test,DNS:blocked.example.test,DNS:limited.example.test,DNS:rate.example.test", "-keyout", "/certs/key.pem", "-out", "/certs/cert.pem",
+        "-addext", "subjectAltName=DNS:api.example.test,DNS:blocked.example.test", "-keyout", "/certs/key.pem", "-out", "/certs/cert.pem",
       ]);
-      const connectionLimits = { "limited.example.test": { concurrent: 1, total: 3 }, "rate.example.test": { perMinute: 2 } };
       await Bun.write(
         join(source, ".devcontainer", "devcontainer.json"),
         JSON.stringify({
           dockerComposeFile: "compose.yml",
           service: "app",
-          customizations: {
-            "qa-interns": { urls: { app: "http://app:3000" }, ready: "true", seed: "true", egress: ["api.example.test", "limited.example.test", "rate.example.test"], connectionLimits },
-          },
+          customizations: { "qa-interns": { urls: { app: "http://app:3000" }, ready: "true", seed: "true", egress: ["api.example.test", "gone.example.test"] } },
         }),
       );
-      await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, volumes: ["../certs:/certs:ro"] } } }));
+      const onStop = 'process.on("SIGTERM", () => require("node:net").connect(443, "api.example.test", function () { this.write("GET / HTTP/1.1\\r\\n\\r\\n"); }).on("close", () => process.exit(0))); setInterval(() => {}, 60000)';
+      await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, command: ["node", "-e", onStop], volumes: ["../certs:/certs:ro"] } } }));
       const target = await loadTarget(ref, source);
       const runDir = await scratch();
       const slot = await freeSlot(new Set());
@@ -998,19 +1012,84 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       const upstream = join(runDir, "upstream.yml");
       await Bun.write(
         upstream,
-        JSON.stringify({
-          services: {
-            upstream: {
-              image,
-              command: ["node", "-e", server],
-              volumes: [`${certs}:/certs:ro`],
-              networks: { qa_egress: { aliases: ["api.example.test", "blocked.example.test", "limited.example.test", "rate.example.test"] } },
-            },
-          },
-        }),
+        JSON.stringify({ services: { upstream: { image, command: ["node", "-e", server], volumes: [`${certs}:/certs:ro`], networks: { qa_egress: { aliases: ["api.example.test", "blocked.example.test"] } } } } }),
       );
       const project = `qair-relay-${crypto.randomUUID().slice(0, 8)}`;
       const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const saved = join(runDir, "interns", "i1");
+      try {
+        await execute([...compose, "up", "-d", "--wait", "app", "upstream", "qa-relay"]);
+        const curl = [...compose, "exec", "-T", "app", "curl", "-sS", "--max-time", "10", "--cacert", "/certs/cert.pem"];
+        expect(await execute([...curl, "--retry", "10", "--retry-all-errors", "--retry-delay", "1", "https://api.example.test/"])).toBe("upstream api.example.test");
+        const blocked = await capture([...curl, "--resolve", `blocked.example.test:443:10.213.${slot * 2}.254`, "https://blocked.example.test/"]);
+        expect(blocked.code).not.toBe(0);
+        const plain = await capture([...curl, "http://api.example.test:443/"]);
+        expect(plain.code).not.toBe(0);
+        expect(plain.code).not.toBe(28);
+        expect((await capture([...curl, "https://blocked.example.test/"])).code).toBe(6);
+        await execute([...compose, "exec", "-T", "app", "node", "-e", "require('node:net').connect(443, 'api.example.test').on('connect', function () { this.end(); })"]);
+        expect((await capture([...curl, "https://gone.example.test/"])).code).not.toBe(0);
+        const hello = clientHello(Buffer.alloc(30_000, 1)).toString("hex");
+        await execute([...compose, "exec", "-T", "app", "node", "-e", "require('node:net').connect(443, 'api.example.test', function () { this.end(Buffer.from(process.argv[1], 'hex')); })", hello]);
+      } finally {
+        await stopProject(project, saved);
+      }
+      const [records = [], ...others] = await readRelayLogs(saved);
+      expect(others).toEqual([]);
+      expect(records.map((entry) => entry.n)).toEqual(records.map((_, index) => index + 1));
+      const retries = (entry: RelayRecord) => entry.host === "api.example.test" && entry.outcome === "failed";
+      expect(records.filter((entry) => !retries(entry)).map((entry) => [entry.host, entry.outcome, entry.error])).toEqual([
+        ["api.example.test", "connected", null],
+        ["blocked.example.test", "denied", null],
+        [null, "denied", null],
+        [null, "incomplete", null],
+        ["gone.example.test", "failed", "ENOTFOUND"],
+        ["\u0001".repeat(253), "denied", null],
+        [null, "denied", null],
+      ]);
+      const [file = ""] = (await readdir(saved)).filter((name) => name.startsWith("relay-"));
+      const lines = (await Bun.file(join(saved, file)).text()).split("\n");
+      expect(Math.max(...lines.map((line) => Buffer.byteLength(line) + 1))).toBeLessThanOrEqual(4096);
+    },
+    20 * 60_000,
+  );
+
+  test(
+    "refuse a connection past a connection limit of its egress host and record the limit",
+    async () => {
+      const image = await ensureRunnerImage();
+      const source = await scratch();
+      const certs = join(source, "certs");
+      await mkdir(certs);
+      await execute([
+        "docker", "run", "--rm", "--network", "none", "-v", `${certs}:/certs`, image,
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=limited.example.test",
+        "-addext", "subjectAltName=DNS:limited.example.test,DNS:rate.example.test", "-keyout", "/certs/key.pem", "-out", "/certs/cert.pem",
+      ]);
+      const connectionLimits = { "limited.example.test": { concurrent: 1, total: 3 }, "rate.example.test": { perMinute: 2 } };
+      await Bun.write(
+        join(source, ".devcontainer", "devcontainer.json"),
+        JSON.stringify({
+          dockerComposeFile: "compose.yml",
+          service: "app",
+          customizations: { "qa-interns": { urls: { app: "http://app:3000" }, ready: "true", seed: "true", egress: ["limited.example.test", "rate.example.test"], connectionLimits } },
+        }),
+      );
+      await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, volumes: ["../certs:/certs:ro"] } } }));
+      const target = await loadTarget(ref, source);
+      const runDir = await scratch();
+      const base = spec(runDir, target, { slot: await freeSlot(new Set()) });
+      const override = join(runDir, "compose.qa.yml");
+      await Bun.write(override, renderOverride({ ...base, runner: { ...base.runner, image } }, 1000, 1000));
+      const server = 'require("node:https").createServer({ key: require("node:fs").readFileSync("/certs/key.pem"), cert: require("node:fs").readFileSync("/certs/cert.pem") }, (req, res) => res.end("upstream")).listen(443)';
+      const upstream = join(runDir, "upstream.yml");
+      await Bun.write(
+        upstream,
+        JSON.stringify({ services: { upstream: { image, command: ["node", "-e", server], volumes: [`${certs}:/certs:ro`], networks: { qa_egress: { aliases: ["limited.example.test", "rate.example.test"] } } } } }),
+      );
+      const project = `qair-relay-${crypto.randomUUID().slice(0, 8)}`;
+      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const saved = join(runDir, "interns", "i1");
       const probe = `
 const tls = require("node:tls");
 const ca = require("node:fs").readFileSync("/certs/cert.pem");
@@ -1036,38 +1115,22 @@ const close = (socket) => { socket.destroy(); return new Promise((resolve) => se
 `;
       try {
         await execute([...compose, "up", "-d", "--wait", "app", "upstream", "qa-relay"]);
-        const curl = [...compose, "exec", "-T", "app", "curl", "-sS", "--max-time", "10", "--cacert", "/certs/cert.pem"];
-        expect(await execute([...curl, "--retry", "10", "--retry-all-errors", "--retry-delay", "1", "https://api.example.test/"])).toBe("upstream api.example.test");
-        const blocked = await capture([...curl, "--resolve", `blocked.example.test:443:10.213.${slot * 2}.254`, "https://blocked.example.test/"]);
-        expect(blocked.code).not.toBe(0);
-        const plain = await capture([...curl, "http://api.example.test:443/"]);
-        expect(plain.code).not.toBe(0);
-        expect(plain.code).not.toBe(28);
-        expect((await capture([...curl, "https://blocked.example.test/"])).code).toBe(6);
         expect(JSON.parse(await execute([...compose, "exec", "-T", "app", "node", "-e", probe]))).toEqual([true, false, true, true, false, true, true, false]);
-        const decisions = (await execute([...compose, "logs", "--no-log-prefix", "qa-relay"])).split("\n");
-        expect(decisions).toEqual(
-          expect.arrayContaining([
-            "allow api.example.test",
-            'deny "blocked.example.test"',
-            "deny null",
-            "refuse limited.example.test concurrent",
-            "refuse limited.example.test total",
-            "refuse rate.example.test perMinute",
-          ]),
-        );
-        const allowed = ["allow api.example.test", "allow limited.example.test", "allow rate.example.test"];
-        expect(decisions.filter((line) => line.startsWith("allow ")).every((line) => allowed.includes(line))).toBe(true);
-        expect(await refusedConnections(project)).toEqual({ "limited.example.test": 2, "rate.example.test": 1 });
-        expect(await refusedConnections(project)).toEqual({ "limited.example.test": 2, "rate.example.test": 1 });
-
-        await execute([...compose, "start", "qa-relay"]);
-        expect(await execute([...curl, "--retry", "10", "--retry-all-errors", "--retry-delay", "1", "https://api.example.test/"])).toBe("upstream api.example.test");
-        await execute(["docker", "kill", (await execute([...compose, "ps", "-q", "qa-relay"])).trim()]);
-        await expect(refusedConnections(project)).rejects.toThrow("ended before teardown, so its refused connections are unknown. Its last line is: allow api.example.test");
       } finally {
-        await execute([...compose, "down", "-v", "--remove-orphans", "--timeout", "2"]);
+        await stopProject(project, saved);
       }
+      const [records = [], ...others] = await readRelayLogs(saved);
+      expect(others).toEqual([]);
+      expect(records.map((entry) => [entry.n, entry.host, entry.outcome, entry.error])).toEqual([
+        [1, "limited.example.test", "connected", null],
+        [2, "limited.example.test", "refused", "concurrent"],
+        [3, "limited.example.test", "connected", null],
+        [4, "limited.example.test", "connected", null],
+        [5, "limited.example.test", "refused", "total"],
+        [6, "rate.example.test", "connected", null],
+        [7, "rate.example.test", "connected", null],
+        [8, "rate.example.test", "refused", "perMinute"],
+      ]);
     },
     20 * 60_000,
   );

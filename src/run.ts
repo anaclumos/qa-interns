@@ -8,7 +8,7 @@ import {
   freeSlot,
   freeSlots,
   networkRange,
-  refusedConnections,
+  readRelayLogs,
   removeCopies,
   runnerEnv,
   saveDisks,
@@ -28,7 +28,7 @@ import { providers } from "./providers.ts";
 import { renderReplay, renderReport } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
-import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Refused, Rejected, Replay, RunPhase, RunState } from "./types.ts";
+import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
   dir: string;
@@ -78,7 +78,6 @@ type Context = {
   sessions: Set<Session>;
   startups: Limit;
   teardowns: string[];
-  refused: Refused[];
   held: number;
   waiting: (() => void)[];
   stopping: boolean;
@@ -158,7 +157,6 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     sessions: new Set(),
     startups: limit(4),
     teardowns: [],
-    refused: [],
     held: 0,
     waiting: [],
     stopping: false,
@@ -250,13 +248,8 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
   if (lease === null) return null;
   const project = `qa-${ctx.runId}-${id}`;
   let slot: number | undefined;
-  let started = null as number | null;
-  const teardown = async (count: number) => {
-    const [refused] = await Promise.allSettled([refusedConnections(project)]);
-    await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage);
-    if (refused.status === "rejected") throw refused.reason;
-    ctx.refused.push(...Object.entries(refused.value).map(([host, connections]) => ({ intern: id, attempt: count, host, connections })));
-  };
+  let started = false;
+  const teardown = () => stopEnvironment(ctx.runDir, id, project, ctx.runnerImage);
   try {
     await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, project, startedAt: now() });
     for (let count = 1; ; count += 1) {
@@ -264,14 +257,14 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
       const env = await ctx.startups(async () => {
         checkStopping(ctx);
         slot = await freeSlot(ctx.reserved);
-        started = count;
+        started = true;
         return startEnvironment(environmentSpec(ctx, id, slot, target, current, count));
       });
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
       if (!(outcome instanceof AgentError)) return outcome;
       ctx.scheduler.exhaust(lease);
-      await teardown(count);
-      started = null;
+      await teardown();
+      started = false;
       if (slot !== undefined) ctx.reserved.delete(slot);
       slot = undefined;
       lease.release();
@@ -286,7 +279,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
     }
   } finally {
     try {
-      if (started !== null) await teardown(started);
+      if (started) await teardown();
     } catch (error) {
       ctx.teardowns.push(`${id}: ${message(error)}`);
       await note(`teardown failed: ${message(error)}`);
@@ -533,7 +526,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
   const finish = once(async (): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     try {
-      await stopProject(project);
+      await stopProject(project, join(opts.runDir, "interns", opts.name));
       await saveDisks(opts.runDir, opts.name, project, opts.runnerImage);
     } catch (reason) {
       teardowns.push(message(reason));
@@ -596,7 +589,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
   };
   const finish = once(async (error: string): Promise<void> => {
     const problems = [error];
-    for (const step of [() => stopRun(runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
+    for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
         await step();
       } catch (reason) {
@@ -670,10 +663,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let findings: Finding[] = [];
   let rejected: Rejected[] = [];
   let groups: Group[] | null = opts.replay?.groups ?? null;
+  let egress: string[] = [];
 
   const finish = once(async (error: string | null): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
-    for (const step of [() => stopRun(runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
+    for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
         await step();
       } catch (reason) {
@@ -685,7 +679,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
-    const report = opts.replay === null ? renderReport(state, groups ?? singles, rejected, ctx.refused) : renderReplay(state, opts.replay, ctx.refused);
+    const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
+    const traffic = { hosts: egress, relays: logs.flat() };
+    const report = opts.replay === null ? renderReport(state, groups ?? singles, rejected, traffic) : renderReplay(state, opts.replay, traffic);
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await save();
@@ -697,6 +693,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await exportTree(ref, source);
     ctx.runnerImage = await opts.runnerImage();
     const target = await loadTarget(ref, source);
+    egress = target.settings.egress;
     const memory = environmentMemory(target);
     const free = freemem();
     const slots = await freeSlots(ctx.reserved);

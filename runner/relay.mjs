@@ -10,7 +10,7 @@ if (limits === null || typeof limits !== "object" || Array.isArray(limits) || Ob
   console.error(`QA_RELAY_LIMITS must be a JSON object keyed by hosts of QA_RELAY_ALLOW, got ${JSON.stringify(process.env.QA_RELAY_LIMITS ?? null)}`);
   process.exit(1);
 }
-const budgets = new Map(Object.entries(limits).map(([host, limit]) => [host, { limit, open: 0, opened: [], total: 0, refused: 0 }]));
+const budgets = new Map(Object.entries(limits).map(([host, limit]) => [host, { limit, open: 0, opened: [], total: 0 }]));
 
 function exceeded(budget, now) {
   while (budget.opened.length > 0 && budget.opened[0] <= now - 60_000) budget.opened.shift();
@@ -18,6 +18,14 @@ function exceeded(budget, now) {
   if (budget.limit.concurrent !== undefined && budget.open >= budget.limit.concurrent) return "concurrent";
   if (budget.limit.perMinute !== undefined && budget.opened.length >= budget.limit.perMinute) return "perMinute";
   return null;
+}
+
+const maxName = 253;
+let count = 0;
+
+function record(host, outcome, error) {
+  count += 1;
+  console.log(JSON.stringify({ n: count, host: host === null ? null : host.slice(0, maxName), outcome, error }));
 }
 
 function serverName(data) {
@@ -47,29 +55,46 @@ function parse(data) {
 }
 
 const server = createServer((socket) => {
+  if (socket.localAddress === "127.0.0.1") {
+    socket.destroy();
+    return;
+  }
   let data = Buffer.alloc(0);
+  let host = null;
   let upstream = null;
-  socket.setTimeout(10_000, () => socket.destroy());
+  let recorded = false;
+  const settle = (outcome, error) => {
+    if (recorded) return;
+    recorded = true;
+    record(host, outcome, error);
+  };
+  const end = (error) => settle(upstream === null ? "incomplete" : "failed", error);
+  socket.setTimeout(10_000, () => {
+    end("timeout");
+    socket.destroy();
+  });
   socket.on("error", () => socket.destroy());
-  socket.on("close", () => upstream?.destroy());
+  socket.on("close", () => {
+    upstream?.destroy();
+    end(null);
+  });
   const read = (chunk) => {
     data = Buffer.concat([data, chunk]);
     if (data[0] === 22 && (data.length < 5 || data.length < 5 + data.readUInt16BE(3))) return;
     socket.off("data", read);
     socket.pause();
-    const name = parse(data);
-    if (name === null || !allow.includes(name)) {
-      console.log(`deny ${JSON.stringify(name)}`);
+    host = parse(data);
+    if (host === null || !allow.includes(host)) {
+      settle("denied", null);
       socket.destroy();
       return;
     }
-    const budget = budgets.get(name);
+    const budget = budgets.get(host);
     if (budget !== undefined) {
       const now = Date.now();
       const limit = exceeded(budget, now);
       if (limit !== null) {
-        budget.refused += 1;
-        console.log(`refuse ${name} ${limit}`);
+        settle("refused", limit);
         socket.destroy();
         return;
       }
@@ -80,21 +105,19 @@ const server = createServer((socket) => {
         budget.open -= 1;
       });
     }
-    console.log(`allow ${name}`);
-    upstream = connect(443, name, () => {
+    upstream = connect(443, host, () => {
+      settle("connected", null);
       socket.setTimeout(0);
       upstream.write(data);
       upstream.pipe(socket);
       socket.pipe(upstream);
     });
-    upstream.on("error", () => socket.destroy());
+    upstream.on("error", (error) => {
+      settle("failed", error.code ?? error.message);
+      socket.destroy();
+    });
   };
   socket.on("data", read);
 });
 
-process.on("SIGTERM", () => {
-  console.log(`refused ${JSON.stringify(Object.fromEntries([...budgets].map(([host, budget]) => [host, budget.refused])))}`);
-  process.exit(0);
-});
-
-server.listen(443);
+server.listen(443, "0.0.0.0");

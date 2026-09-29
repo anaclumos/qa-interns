@@ -62,9 +62,11 @@ export type Finding = {
 
 export type Rejected = { intern: string; file: string; reason: string };
 
-export type Refused = { intern: string; attempt: number; host: string; connections: number };
-
 export type Confirmation = { reproduced: boolean; observed: string; evidence: string[] };
+
+export const relayOutcomes = ["connected", "failed", "denied", "refused", "incomplete"] as const;
+
+export type RelayRecord = { n: number; host: string | null; outcome: (typeof relayOutcomes)[number]; error: string | null };
 
 export type Group = {
   id: string;
