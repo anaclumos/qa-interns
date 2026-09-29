@@ -11,7 +11,7 @@ import { ensureRunnerImage } from "../src/runner.ts";
 import { redact } from "../src/secrets.ts";
 import { newRunId, readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
-import type { Finding, Provider, RunState } from "../src/types.ts";
+import type { EnvironmentStats, Finding, Provider, RunState } from "../src/types.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -227,10 +227,25 @@ USER qa
         clipboard: "object",
       });
 
+      const environments: EnvironmentStats[] = report.environments;
+      expect(environments.map((entry) => `${entry.intern}/${entry.attempt}`).sort()).toEqual(["c1/1", "i1/1", "i2/1", "judge/1"]);
+      for (const entry of environments) {
+        expect(Date.parse(entry.readyAt ?? "")).toBeGreaterThan(Date.parse(entry.startedAt));
+        expect(entry.containers?.filter((container) => container.state !== "running" || container.oomKilled || container.restarts !== 0 || (container.memoryPeak ?? 0) <= 0)).toEqual([]);
+      }
+      const services = (internId: string) => environments.find((entry) => entry.intern === internId)?.containers?.map((container) => container.service);
+      expect(services("i1")).toEqual(["db", "qa-proxy", "qa-runner", "web"]);
+      expect(services("judge")).toEqual(["qa-proxy", "qa-runner"]);
+
       const markdown = await Bun.file(join(runDir, "report.md")).text();
       const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Seen once"));
       expect(confirmed).toContain(`### ${title}`);
       expect(confirmed).toContain("- Reproductions: 3 (i1, i2, c1)");
+      const usage = markdown.slice(markdown.indexOf("## Environments"));
+      expect(usage).toContain("### judge, attempt 1\n\n- Started: ");
+      const web = usage.split("\n").filter((line) => line.startsWith("| web-1 | running | "));
+      expect(web).toHaveLength(3);
+      for (const line of web) expect(line).toEndWith(" MiB | no | 0 |");
 
       const draft = join(runDir, "tickets", "g1");
       expect(await readdir(join(runDir, "tickets"))).toEqual(["g1"]);
@@ -350,6 +365,9 @@ USER qa
         finding: { id: "i1/fake-home", title, environment: { commit: source.target.commit, environment: `qa-${source.runId}-i1` } },
         confirmation: { intern: "c1", provider: "claude", result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] }, error: null },
       });
+      expect(report.environments.map((entry: EnvironmentStats) => [entry.intern, entry.attempt, entry.readyAt === null, entry.containers?.map((container) => container.service)])).toEqual([
+        ["c1", 1, false, ["db", "qa-proxy", "qa-runner", "web"]],
+      ]);
       const markdown = await Bun.file(join(runDir, "report.md")).text();
       expect(markdown).toContain(`- Replay of: run \`${source.runId}\` at commit \`${source.target.commit}\`\n`);
       const reproduced = markdown.slice(markdown.indexOf("## Reproduced"), markdown.indexOf("## Not reproduced"));
@@ -465,6 +483,13 @@ USER qa
         ["i1/out-2/fake-home", ["interns/i1/out-2/evidence/page.html"], { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-b" }],
       ]);
       expect(await Bun.file(join(runDir, "interns", "c1", "out-2", "confirmation.json")).exists()).toBe(false);
+      const attempts = report.environments
+        .filter((entry: EnvironmentStats) => entry.intern === "i1")
+        .map((entry: EnvironmentStats) => [entry.attempt, entry.readyAt === null, entry.containers?.map((container) => container.service)]);
+      expect(attempts).toEqual([
+        [1, false, ["db", "qa-proxy", "qa-runner", "web"]],
+        [2, false, ["db", "qa-proxy", "qa-runner", "web"]],
+      ]);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
@@ -605,6 +630,10 @@ USER qa
       expect(failed.detail).toContain("service web adds capability SYS_PTRACE");
       expect(failed.detail).toContain(`service web mounts ${probe}, which resolves to ${await realpath(probe)}, outside the target directory`);
       expect(await Bun.file(join(runDir, "interns", "i1", "transcript.jsonl")).exists()).toBe(false);
+      const [environment, ...others] = (await Bun.file(join(runDir, "findings.json")).json()).environments as EnvironmentStats[];
+      expect(others).toEqual([]);
+      expect(environment).toMatchObject({ intern: "i1", attempt: 1, readyAt: null });
+      expect(environment?.containers?.map((container) => container.service)).toContain("web");
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);

@@ -3,7 +3,7 @@ import { arch, freemem, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { createDisk, environmentMemory, freeSlot, saveDisk, slotSubnets } from "./environment.ts";
+import { createDisk, environmentMemory, freeSlot, memoryPeak, saveDisk, slotSubnets } from "./environment.ts";
 import { loadLogins, Scheduler } from "./logins.ts";
 import { ensureRunnerImage } from "./runner.ts";
 import { runsDir } from "./state.ts";
@@ -82,6 +82,18 @@ async function checkDisk(image: string): Promise<string> {
   }
 }
 
+async function checkMemoryPeak(image: string): Promise<string> {
+  const id = (await execute(["docker", "run", "-d", "--name", `qa-interns-doctor-${process.pid}-memory`, "--network", "none", image, "sleep", "60"])).trim();
+  try {
+    const pid = Number((await execute(["docker", "inspect", "--type", "container", "--format", "{{.State.Pid}}", id])).trim());
+    const peak = await memoryPeak(id, pid);
+    if (peak === null) throw new Error(`the peak memory of running container ${id} is not readable from /proc/${pid}/cgroup and /sys/fs/cgroup`);
+    return `read a peak of ${(peak / 1024 ** 2).toFixed(1)} MiB from the cgroup of a running container`;
+  } finally {
+    await execute(["docker", "rm", "-f", id]);
+  }
+}
+
 async function checkNetwork(): Promise<string> {
   const name = `qa-interns-doctor-${process.pid}`;
   const reserved = new Set<number>();
@@ -130,6 +142,10 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
   await check("output disk", async () => {
     if (image === null) throw new Error("the runner image is not available");
     return checkDisk(image);
+  });
+  await check("peak memory", async () => {
+    if (image === null) throw new Error("the runner image is not available");
+    return checkMemoryPeak(image);
   });
   await check("logins", async () => {
     const logins = await loadLogins(loginsFile);

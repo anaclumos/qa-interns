@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { linkEvidence, stripControl } from "./findings.ts";
 import { readState } from "./state.ts";
-import { kinds, type Finding, type Group, type InternState, type RelayRecord, type Rejected, type Replay, type RunState } from "./types.ts";
+import { kinds, type EnvironmentStats, type Finding, type Group, type InternState, type RelayRecord, type Rejected, type Replay, type RunState } from "./types.ts";
 
 export type Egress = { hosts: string[]; relays: { intern: string; records: RelayRecord[] }[] };
 
@@ -245,7 +245,26 @@ function egressTable(connections: EgressRow[]) {
   return lines;
 }
 
-export function renderReport(state: RunState, groups: Group[], rejected: Rejected[], egress: Egress): { markdown: string; json: unknown; tickets: Ticket[] } {
+function usage(environment: EnvironmentStats) {
+  const ready = environment.readyAt === null ? "not reached" : `after ${((Date.parse(environment.readyAt) - Date.parse(environment.startedAt)) / 1000).toFixed(1)} s`;
+  const lines = [`### ${environment.intern}, attempt ${environment.attempt}`, "", `- Started: ${environment.startedAt}`, `- Ready: ${ready}`, ""];
+  if (environment.containers === null) return [...lines, "No container was read before teardown."];
+  lines.push("| Container | State | Peak memory | Out-of-memory kill | Restarts |", "| --- | --- | --- | --- | --- |");
+  for (const container of environment.containers) {
+    const peak = container.memoryPeak === null ? "not read" : `${(container.memoryPeak / 1024 ** 2).toFixed(1)} MiB`;
+    lines.push(`| ${[`${container.service}-${container.number}`, container.state, peak, container.oomKilled ? "yes" : "no", container.restarts].map(cell).join(" | ")} |`);
+  }
+  return lines;
+}
+
+function environmentSection(environments: EnvironmentStats[]) {
+  const lines = ["## Environments"];
+  if (environments.length === 0) return [...lines, "", "No environment started."];
+  for (const environment of environments) lines.push("", ...usage(environment));
+  return lines;
+}
+
+export function renderReport(state: RunState, groups: Group[], rejected: Rejected[], egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown; tickets: Ticket[] } {
   const rows = groups.map((group) => ({ group, interns: reproductions(group) }));
   const connections = egressRows(egress);
   const confirmed = rows.filter((row) => row.interns.length >= 2);
@@ -284,7 +303,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
   lines.push("## Rejected finding files", "");
   if (rejected.length === 0) lines.push("No finding file was rejected.");
   for (const entry of rejected) lines.push(`- ${inline(entry.file)}: ${inline(entry.reason)}`);
-  lines.push("", ...internTable(state), "", ...egressTable(connections));
+  lines.push("", ...internTable(state), "", ...egressTable(connections), "", ...environmentSection(environments));
 
   return {
     markdown: stripControl(`${lines.join("\n")}\n`),
@@ -300,6 +319,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
       rejected,
       interns: state.interns,
       egress: connections,
+      environments,
     },
     tickets: confirmed.map((row) => ticket(state, row.group, row.interns)),
   };
@@ -309,7 +329,7 @@ function outcome(group: Group) {
   return group.confirmation?.result?.reproduced ?? null;
 }
 
-export function renderReplay(state: RunState, replay: Replay, egress: Egress): { markdown: string; json: unknown } {
+export function renderReplay(state: RunState, replay: Replay, egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown } {
   const connections = egressRows(egress);
   const reproduced = replay.groups.filter((group) => outcome(group) === true);
   const notReproduced = replay.groups.filter((group) => outcome(group) === false);
@@ -352,7 +372,7 @@ export function renderReplay(state: RunState, replay: Replay, egress: Egress): {
     if (list.length === 0) lines.push(none, "");
     for (const group of list) lines.push(...reported(lead(group), `- Group: ${inline(group.id)} in run ${inline(replay.runId)}`), ...confirmation(group), "");
   }
-  lines.push(...internTable(state), "", ...egressTable(connections));
+  lines.push(...internTable(state), "", ...egressTable(connections), "", ...environmentSection(environments));
 
   return {
     markdown: stripControl(`${lines.join("\n")}\n`),
@@ -366,6 +386,7 @@ export function renderReplay(state: RunState, replay: Replay, egress: Egress): {
       })),
       interns: state.interns,
       egress: connections,
+      environments,
     },
   };
 }

@@ -6,6 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import {
   buildImages,
+  containerStats,
   environmentMemory,
   freeSlot,
   freeSlots,
@@ -15,6 +16,7 @@ import {
   runnerEnv,
   slotSubnets,
   startEnvironment,
+  stopEnvironment,
   stopProject,
   stopRun,
   writeChromePolicy,
@@ -865,6 +867,63 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         await execute(["docker", "exec", web, "sh", "-c", `rmdir /app/uploads && ln -s ${host} /app/uploads && touch /app/stop`]);
         await execute(["docker", "wait", web]);
         expect((await execute(["docker", "inspect", "--format", "{{.State.Status}} {{.RestartCount}}", web])).trim()).toBe("exited 0");
+      } finally {
+        await stopRun(runDir, runId);
+        await removeCopies(runDir, runId, image);
+      }
+    },
+    20 * 60_000,
+  );
+
+  test(
+    "read each container's state, peak memory, out-of-memory kill, and restarts after the ready check passed",
+    async () => {
+      const runId = `btest-${crypto.randomUUID().slice(0, 8)}`;
+      const runDir = await scratch();
+      const source = join(runDir, "source");
+      const service = (command: string, extra = "") => `    image: busybox:1.37\n    init: true\n    command: ["sh", "-c", ${JSON.stringify(command)}]\n${extra}`;
+      await Bun.write(
+        join(source, ".devcontainer", "compose.yml"),
+        `services:
+  web:
+${service("exec sleep 86400")}  hog:
+${service("tail /dev/zero; exec sleep 86400", "    mem_limit: 32m\n")}  worker:
+${service("until [ -e /tmp/stop ]; do sleep 1; done")}  flaky:
+${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", "    restart: on-failure\n")}`,
+      );
+      await Bun.write(
+        join(source, ".devcontainer", "devcontainer.json"),
+        JSON.stringify({ dockerComposeFile: "compose.yml", service: "web", customizations: { "qa-interns": { urls: { app: "http://web:8080" }, ready: "true", seed: "echo {}" } } }),
+      );
+      const image = await ensureRunnerImage();
+      try {
+        const target = await loadTarget(ref, source);
+        await writeChromePolicy(runDir, target.settings.urls);
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
+        let ready = false;
+        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), runner }), () => {
+          ready = true;
+        });
+        expect(ready).toBe(true);
+        const worker = (await execute(["docker", "compose", "-p", environment.project, "ps", "-q", "worker"])).trim();
+        await execute(["docker", "exec", worker, "touch", "/tmp/stop"]);
+        await execute(["docker", "wait", worker]);
+
+        const stats = await containerStats(environment.project);
+        await stopEnvironment(runDir, "i1", environment.project, image);
+        expect(stats.map(({ memoryPeak, ...rest }) => rest)).toEqual([
+          { service: "flaky", number: 1, state: "running", oomKilled: false, restarts: 1 },
+          { service: "hog", number: 1, state: "running", oomKilled: true, restarts: 0 },
+          { service: "qa-proxy", number: 1, state: "running", oomKilled: false, restarts: 0 },
+          { service: "qa-runner", number: 1, state: "running", oomKilled: false, restarts: 0 },
+          { service: "web", number: 1, state: "running", oomKilled: false, restarts: 0 },
+          { service: "worker", number: 1, state: "exited", oomKilled: false, restarts: 0 },
+        ]);
+        const peaks = Object.fromEntries(stats.map((entry) => [entry.service, entry.memoryPeak]));
+        expect(peaks.hog).toBe(32 * 1024 ** 2);
+        expect(peaks.worker).toBeNull();
+        for (const name of ["flaky", "qa-proxy", "qa-runner", "web"]) expect(peaks[name]).toBeGreaterThan(0);
+        expect((await execute(["docker", "ps", "-aq", "--filter", `label=com.docker.compose.project=${environment.project}`])).trim()).toBe("");
       } finally {
         await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
