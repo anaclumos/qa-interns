@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import os from "node:os";
 import path from "node:path";
 import { forgetSecrets, keepHostSecrets, keepSeedSecrets, redact, redactAcross, redactFiles, redactJson } from "../src/secrets.ts";
+import { stripControl } from "../src/findings.ts";
 import { capture, CommandTimeout, failure } from "../src/target.ts";
 
 const asRoot = process.getuid?.() === 0;
@@ -123,8 +124,38 @@ describe("redactAcross", () => {
   test("replace a value that spans parts with one marker in the part where it starts", () => {
     keepSeedSecrets({ key: "sk_split_4f9a1c2e7b" }, ["key"]);
     const parts = [{ text: "Signed in with sk_spl" }, { text: "it_4f9a" }, { text: "1c2e7b and done." }, { text: " Nothing else." }];
-    redactAcross(parts);
+    redactAcross(parts, parts.map((part) => part.text).join("").length);
     expect(parts.map((part) => part.text)).toEqual(["Signed in with [redacted]", "", " and done.", " Nothing else."]);
+  });
+
+  test("leave text raw where no final value starts, so a longer value that shares a prefix can still match", () => {
+    keepSeedSecrets({ keys: ["test-password", "test-password-extended"] }, ["keys"]);
+    const parts = [{ text: "Key test-password" }];
+    redactAcross(parts, 0);
+    expect(parts.map((part) => part.text)).toEqual(["Key test-password"]);
+    parts.push({ text: "-extended in use." });
+    redactAcross(parts, "Key test-password-extended in use.".length);
+    expect(parts.map((part) => part.text)).toEqual(["Key [redacted]", " in use."]);
+  });
+
+  test("cut from later parts what a value that starts in a final part covers", () => {
+    keepSeedSecrets({ key: "sk_final_4f9a1c2e7b" }, ["key"]);
+    const parts = [{ text: "Key sk_final_4f9a" }, { text: "1c2e7b and more" }];
+    redactAcross(parts, "Key sk_final_4f9a".length);
+    expect(parts.map((part) => part.text)).toEqual(["Key [redacted]", " and more"]);
+  });
+});
+
+describe("replace", () => {
+  test("remove every character of values that overlap", () => {
+    keepSeedSecrets({ keys: ["abcd-efgh-1", "efgh-1234-5678"] }, ["keys"]);
+    expect(redact("start abcd-efgh-1234-5678 end")).toBe("start [redacted] end");
+  });
+
+  test("match a value after its control characters are stripped", () => {
+    const key = "line-one-key\r\nline-two-key";
+    keepSeedSecrets({ key }, ["key"]);
+    expect(redact(stripControl(`loaded ${key}`))).toBe("loaded [redacted]");
   });
 });
 

@@ -84,18 +84,19 @@ export async function openSession(opts: { container: string; provider: ProviderS
   const texts: { text: string }[] = [];
   let queued = 0;
   const release = (all: boolean) => {
-    redactAcross(texts);
-    let after = texts.reduce((sum, part) => sum + part.text.length, 0);
+    const total = texts.reduce((sum, part) => sum + part.text.length, 0);
+    let final = 0;
     let count = 0;
     let released = 0;
     for (const entry of queue) {
       if (entry.content !== null) {
-        after -= entry.content.text.length;
-        if (!all && after < longestSecret() - 1) break;
+        if (!all && total - (final + entry.content.text.length) < longestSecret() - 1) break;
+        final += entry.content.text.length;
         released += 1;
       }
       count += 1;
     }
+    redactAcross(texts, final);
     texts.splice(0, released);
     for (const entry of queue.splice(0, count)) {
       queued -= entry.bytes;

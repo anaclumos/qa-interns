@@ -1,6 +1,7 @@
 import { constants, existsSync } from "node:fs";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { stripControl } from "./findings.ts";
 
 const marker = "[redacted]";
 const minLength = 8;
@@ -8,9 +9,9 @@ const secrets = new Set<string>();
 let cached: string[] | null = null;
 
 function keep(found: { value: string; where: string }[]): string | null {
-  for (const { value } of found) if (value.length >= minLength) secrets.add(value);
+  for (const { value } of found) if (stripControl(value).length >= minLength) secrets.add(value);
   cached = null;
-  const short = found.find(({ value }) => value.length < minLength);
+  const short = found.find(({ value }) => stripControl(value).length < minLength);
   return short === undefined ? null : `${short.where} has fewer than ${minLength} characters, so removing it from the run directory would remove unrelated text too`;
 }
 
@@ -46,12 +47,33 @@ export function keepSeedSecrets(seed: unknown, fields: string[]): string | null 
 
 function forms(): string[] {
   const escape = (text: string) => JSON.stringify(text).slice(1, -1);
-  cached ??= [...new Set([...secrets].flatMap((value) => [value, escape(value), escape(escape(value))]))].sort((a, b) => b.length - a.length);
+  cached ??= [...new Set([...secrets].flatMap((value) => [value, escape(value), escape(escape(value)), stripControl(value)]))].sort((a, b) => b.length - a.length);
   return cached;
 }
 
+function runs(text: string, list: string[], final: number): [number, number][] {
+  const found: [number, number][] = [];
+  for (const form of list) {
+    for (let start = text.indexOf(form); start !== -1 && start < final; start = text.indexOf(form, start + 1)) found.push([start, start + form.length]);
+  }
+  found.sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const [start, end] of found) {
+    const last = merged.at(-1);
+    if (last !== undefined && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
+
 function replace(text: string, list: string[]): string {
-  return list.reduce((result, form) => result.replaceAll(form, marker), text);
+  let out = "";
+  let at = 0;
+  for (const [start, end] of runs(text, list, text.length)) {
+    out += text.slice(at, start) + marker;
+    at = end;
+  }
+  return out + text.slice(at);
 }
 
 export function forgetSecrets(): void {
@@ -71,27 +93,24 @@ export function redact(text: string): string {
   return replace(text, forms());
 }
 
-export function redactAcross(parts: { text: string }[]): void {
+export function redactAcross(parts: { text: string }[], final: number): void {
   const joined = parts.map((part) => part.text).join("");
-  const spans: { start: number; end: number }[] = [];
-  for (const form of forms()) {
-    for (let start = joined.indexOf(form); start !== -1; start = joined.indexOf(form, start + form.length)) {
-      const end = start + form.length;
-      if (!spans.some((span) => start < span.end && span.start < end)) spans.push({ start, end });
-    }
-  }
-  if (spans.length === 0) return;
+  const merged = runs(joined, forms(), final);
+  if (merged.length === 0) return;
   let offset = 0;
   for (const part of parts) {
-    const { length } = part.text;
+    const start = offset;
+    const end = offset + part.text.length;
     let out = "";
-    for (let index = offset; index < offset + length; index += 1) {
-      const span = spans.find((entry) => entry.start <= index && index < entry.end);
-      if (span === undefined) out += joined[index];
-      else if (span.start === index) out += marker;
+    let at = start;
+    for (const [first, last] of merged) {
+      if (last <= start || first >= end) continue;
+      out += joined.slice(at, Math.max(first, start));
+      if (first >= start) out += marker;
+      at = Math.min(last, end);
     }
-    part.text = out;
-    offset += length;
+    part.text = out + joined.slice(at, end);
+    offset = end;
   }
 }
 
