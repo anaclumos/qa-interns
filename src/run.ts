@@ -25,7 +25,7 @@ import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, ju
 import { providers } from "./providers.ts";
 import { renderReport } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
-import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
+import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target, type TargetRef } from "./target.ts";
 import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
@@ -35,6 +35,13 @@ export type RunOptions = {
   minutes: number;
   confirmMinutes: number;
   loginsFile: string;
+  runnerImage(): Promise<string>;
+  print(line: string): void;
+};
+
+export type CopyOptions = {
+  dir: string;
+  rev: string;
   runnerImage(): Promise<string>;
   print(line: string): void;
 };
@@ -79,6 +86,7 @@ const settleMs = 60_000;
 const stopWaitMs = 30_000;
 const gib = 1024 ** 3;
 const noLogin = "no login has spare capacity";
+const copyName = "up";
 
 function now(): string {
   return new Date().toISOString();
@@ -370,7 +378,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
-    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes)), deadline, async (turn, idle) => {
+    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
       if (idle) {
         await note(`stopped at minute ${Math.floor((Date.now() - start) / minute)}: "${turn.lastMessage}"`);
         return null;
@@ -536,9 +544,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
   );
 }
 
-export async function runQa(opts: RunOptions): Promise<string> {
-  const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
-  const ref = await resolveTarget(opts.dir, opts.rev);
+async function newRun(ref: TargetRef, options: RunState["options"], print: (line: string) => void) {
   const runId = newRunId();
   const runDir = runDirFor(runId);
   await mkdir(runsDir(), { recursive: true });
@@ -548,7 +554,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     pid: process.pid,
     pidStart: processStart(process.pid),
     target: { repo: ref.repo, path: ref.path, commit: ref.commit },
-    options: { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 },
+    options,
     phase: "preparing",
     error: null,
     startedAt: now(),
@@ -561,8 +567,78 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await writeState(runDir, state);
   };
   await save();
-  opts.print(runDir);
-  opts.print(`phase ${state.phase}`);
+  print(runDir);
+  print(`phase ${state.phase}`);
+  return { runId, runDir, state, save };
+}
+
+export async function startCopy(opts: CopyOptions): Promise<string> {
+  const ref = await resolveTarget(opts.dir, opts.rev);
+  const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0 }, opts.print);
+  const ctx = context(runId, runDir, "", new Scheduler([]), async () => {});
+  const phase = async (next: RunPhase) => {
+    checkStopping(ctx);
+    state.phase = next;
+    opts.print(`phase ${next}`);
+    await save();
+  };
+  const finish = once(async (error: string): Promise<void> => {
+    const problems = [error];
+    for (const step of [() => stopRun(runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
+      try {
+        await step();
+      } catch (reason) {
+        problems.push(`teardown failed: ${message(reason)}`);
+      }
+    }
+    state.phase = "failed";
+    state.error = stripControl(problems.join("; "));
+    state.endedAt = now();
+    await save();
+  });
+  return guard(
+    ctx,
+    async () => {
+      try {
+        ctx.runnerImage = await opts.runnerImage();
+        const source = join(runDir, "source");
+        await exportTree(ref, source);
+        const target = await loadTarget(ref, source);
+        await writeChromePolicy(runDir, target.settings.urls);
+        await phase("building");
+        const images = await buildImages(runId, target, source);
+        await phase("starting");
+        const env = await startEnvironment({
+          runId,
+          runDir,
+          name: copyName,
+          slot: await freeSlot(ctx.reserved),
+          target,
+          images,
+          runner: { image: ctx.runnerImage, out: join(runDir, outDir(copyName, 1)), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] },
+          egress: [],
+        });
+        await phase("up");
+        opts.print(`project ${env.project}`);
+        opts.print(`runner ${env.runner}`);
+        opts.print(`dev container ${env.devContainer}`);
+        opts.print(`seed ${JSON.stringify(env.seed)}`);
+        opts.print(`Remove it with qa-interns down ${runId}.`);
+      } catch (error) {
+        if (!ctx.stopping) await finish(message(error));
+        throw error;
+      }
+      return runDir;
+    },
+    () => finish("interrupted"),
+  );
+}
+
+export async function runQa(opts: RunOptions): Promise<string> {
+  const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
+  const ref = await resolveTarget(opts.dir, opts.rev);
+  const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 };
+  const { runId, runDir, state, save } = await newRun(ref, options, opts.print);
 
   const ctx = context(runId, runDir, "", scheduler, async (id, patch) => {
     const intern = state.interns.find((entry) => entry.id === id);
