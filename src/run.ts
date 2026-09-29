@@ -7,6 +7,8 @@ import {
   environmentMemory,
   freeSlot,
   freeSlots,
+  networkRange,
+  readRelayLogs,
   removeCopies,
   runnerEnv,
   saveDisks,
@@ -26,7 +28,7 @@ import { providers } from "./providers.ts";
 import { renderReplay, renderReport } from "./report.ts";
 import { forgetSecrets, hasSecrets, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
-import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target, type TargetRef } from "./target.ts";
+import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
@@ -38,6 +40,7 @@ export type RunOptions = {
   confirmMinutes: number;
   loginsFile: string;
   replay: Replay | null;
+  onEnd?: string;
   runnerImage(): Promise<string>;
   print(line: string): void;
 };
@@ -525,7 +528,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
   const finish = once(async (): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     try {
-      await stopProject(project);
+      await stopProject(project, join(opts.runDir, "interns", opts.name));
       await saveDisks(opts.runDir, opts.name, project, opts.runnerImage);
     } catch (reason) {
       teardowns.push(message(reason));
@@ -588,7 +591,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
   };
   const finish = once(async (error: string): Promise<void> => {
     const problems = [error];
-    for (const step of [() => stopRun(runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
+    for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
         await step();
       } catch (reason) {
@@ -662,10 +665,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let findings: Finding[] = [];
   let rejected: Rejected[] = [];
   let groups: Group[] | null = opts.replay?.groups ?? null;
+  let egress: string[] = [];
 
   const finish = once(async (error: string | null): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
-    for (const step of [() => stopRun(runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
+    for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
         await step();
       } catch (reason) {
@@ -687,8 +691,12 @@ export async function runQa(opts: RunOptions): Promise<string> {
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
+    const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
+    const traffic = redactJson({ hosts: egress, relays: logs.flat() });
     const report =
-      opts.replay === null ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected)) : renderReplay(redactJson(state), redactJson(opts.replay));
+      opts.replay === null
+        ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic)
+        : renderReplay(redactJson(state), redactJson(opts.replay), traffic);
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await save();
@@ -700,10 +708,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await exportTree(ref, source);
     ctx.runnerImage = await opts.runnerImage();
     const target = await loadTarget(ref, source);
+    egress = target.settings.egress;
     const memory = environmentMemory(target);
     const free = freemem();
     const slots = await freeSlots(ctx.reserved);
-    if (slots === 0) throw new Error("No free network slot: every 10.213.x.0/23 block overlaps a Docker network or a host route");
+    if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
     const concurrency = Math.min(opts.replay?.groups.length ?? opts.interns, Math.floor(free / memory), scheduler.capacity(), slots);
     if (concurrency < 1) {
       throw new Error(`Free memory is ${(free / gib).toFixed(1)} GiB, and one environment of this target reserves ${(memory / gib).toFixed(1)} GiB`);
@@ -763,21 +772,42 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await phase("reporting");
   };
 
+  const ended = once(async (phase: RunPhase): Promise<string | null> => {
+    if (opts.onEnd === undefined) return null;
+    const env = { ...process.env, QA_INTERNS_RUN_DIR: runDir, QA_INTERNS_PHASE: phase };
+    const code = await trackGroup(Bun.spawn(["sh", "-c", opts.onEnd], { env, stdin: "ignore", stdout: "inherit", stderr: "inherit", detached: true })).exited;
+    return code === 0 ? null : `The --on-end command exited with ${code}`;
+  });
+
+  const run = async (): Promise<string> => {
+    try {
+      await phases();
+    } catch (error) {
+      if (!ctx.stopping) await finish(message(error));
+      throw new Error(redact(message(error)));
+    }
+    const teardown = await finish(null);
+    if (teardown !== null) throw new Error(redact(`Teardown of run ${runId} failed: ${teardown}`));
+    return runDir;
+  };
+
   return guard(
     ctx,
     async () => {
-      try {
-        await phases();
-      } catch (error) {
-        if (!ctx.stopping) await finish(message(error));
-        throw new Error(redact(message(error)));
-      }
-      const teardown = await finish(null);
-      if (teardown !== null) throw new Error(redact(`Teardown of run ${runId} failed: ${teardown}`));
-      return runDir;
+      const [result] = await Promise.allSettled([run()]);
+      checkStopping(ctx);
+      const hook = await ended(result.status === "fulfilled" ? "done" : "failed");
+      if (result.status === "rejected") throw hook === null ? result.reason : new Error(`${message(result.reason)}; ${hook}`);
+      if (hook !== null) throw new Error(hook);
+      return result.value;
     },
     async () => {
-      await finish("interrupted");
+      try {
+        await finish("interrupted");
+      } finally {
+        const hook = await ended("failed");
+        if (hook !== null) process.stderr.write(`${hook}\n`);
+      }
     },
   );
 }

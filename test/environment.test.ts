@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
@@ -9,11 +9,13 @@ import {
   environmentMemory,
   freeSlot,
   freeSlots,
+  readRelayLogs,
   removeCopies,
   renderOverride,
   runnerEnv,
   slotSubnets,
   startEnvironment,
+  stopProject,
   stopRun,
   writeChromePolicy,
   type EnvironmentSpec,
@@ -21,6 +23,7 @@ import {
 import { ensureRunnerImage } from "../src/runner.ts";
 import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
+import type { RelayRecord } from "../src/types.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -65,6 +68,17 @@ type Normalized = {
   networks: Record<string, Record<string, unknown>>;
 };
 
+async function withSubnet(subnet: string, check: () => void | Promise<void>): Promise<void> {
+  const previous = process.env.QA_INTERNS_SUBNET;
+  process.env.QA_INTERNS_SUBNET = subnet;
+  try {
+    await check();
+  } finally {
+    if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+    else process.env.QA_INTERNS_SUBNET = previous;
+  }
+}
+
 async function normalize(runDir: string, composeFiles: string[], override: string): Promise<Normalized> {
   const file = join(runDir, "compose.qa.yml");
   await Bun.write(file, override);
@@ -84,6 +98,29 @@ describe.skipIf(!dockerAvailable)("slots", () => {
   test.each([-1, 128, 1.5])("reject slot %p", (slot) => {
     expect(() => slotSubnets(slot)).toThrow("is not an integer from 0 to 127");
   });
+
+  test("map a slot into the range that QA_INTERNS_SUBNET sets", async () => {
+    await withSubnet("10.100.4.0/22", () => {
+      expect(slotSubnets(0)).toEqual({ internal: "10.100.4.0/25", relay: "10.100.4.128/25", agent: "10.100.5.0/25", egress: "10.100.5.128/25" });
+      expect(slotSubnets(1)).toEqual({ internal: "10.100.6.0/25", relay: "10.100.6.128/25", agent: "10.100.7.0/25", egress: "10.100.7.128/25" });
+      expect(() => slotSubnets(2)).toThrow("Slot 2 is not an integer from 0 to 1");
+    });
+    await withSubnet("192.168.254.0/23", () => {
+      expect(slotSubnets(0)).toEqual({ internal: "192.168.254.0/25", relay: "192.168.254.128/25", agent: "192.168.255.0/25", egress: "192.168.255.128/25" });
+      expect(() => slotSubnets(1)).toThrow("Slot 1 is not an integer from 0 to 0");
+    });
+  });
+
+  test.each(["", "10.213.0.0", "10.213.0.0/15", "10.213.0.0/24", "10.213.1.0/16", "10.213.0/16", "010.213.0.0/16", "10.213.0.0/16 ", "10.213.0.0/16/16", "256.0.0.0/16", "fd00::/48"])(
+    "reject QA_INTERNS_SUBNET %p",
+    async (subnet) => {
+      await withSubnet(subnet, async () => {
+        const message = `QA_INTERNS_SUBNET is ${JSON.stringify(subnet)}, and it must be an IPv4 network address with a prefix length from 16 to 23`;
+        expect(() => slotSubnets(0)).toThrow(message);
+        await expect(freeSlots(new Set())).rejects.toThrow(message);
+      });
+    },
+  );
 
   test("reserve the slot it returns, so concurrent callers get different slots", async () => {
     const reserved = new Set<number>([0]);
@@ -279,6 +316,18 @@ networks:
       internal: true,
       driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" },
       ipam: { config: [{ subnet: "10.213.6.128/25" }] },
+    });
+
+    await withSubnet("10.100.4.0/22", async () => {
+      const moved = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target, { slot: 1 }), 1000, 1000));
+      expect(moved.services.api?.extra_hosts).toEqual(["ai-gateway.vercel.sh=10.100.6.254", "api.pwnedpasswords.com=10.100.6.254"]);
+      expect(moved.services["qa-relay"]?.networks).toEqual({ qa_relay: { ipv4_address: "10.100.6.254" }, qa_egress: null });
+      expect(moved.networks).toMatchObject({
+        qa_internal: { ipam: { config: [{ subnet: "10.100.6.0/25" }] } },
+        qa_relay: { ipam: { config: [{ subnet: "10.100.6.128/25" }] } },
+        qa_agent: { ipam: { config: [{ subnet: "10.100.7.0/25" }] } },
+        qa_egress: { ipam: { config: [{ subnet: "10.100.7.128/25" }] } },
+      });
     });
   });
 
@@ -623,7 +672,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         const environment = await startEnvironment(spec(runDir, null, { runId, slot: await freeSlot(new Set()), runner }));
         await execute(["docker", "exec", environment.runner, "sh", "-c", "mkdir /qa/out/findings && echo '{}' > /qa/out/findings/left.json"]);
       } finally {
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
       expect(await Bun.file(join(out, "findings", "left.json")).text()).toBe("{}\n");
@@ -688,7 +737,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       } finally {
         delete process.env.QA_INTERNS_TEST_LISTED;
         delete process.env.QA_INTERNS_TEST_UNLISTED;
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -721,7 +770,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         expect(redact(key)).toBe("[redacted]");
       } finally {
         forgetSecrets();
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -776,7 +825,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       } finally {
         if (hostConfig === undefined) delete process.env.DOCKER_CONFIG;
         else process.env.DOCKER_CONFIG = hostConfig;
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -817,7 +866,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         await execute(["docker", "wait", web]);
         expect((await execute(["docker", "inspect", "--format", "{{.State.Status}} {{.RestartCount}}", web])).trim()).toBe("exited 0");
       } finally {
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -853,7 +902,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
           expect(kept).toBeLessThanOrEqual(2 * file);
         }
       } finally {
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -887,7 +936,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
           expect(kept).toBeLessThanOrEqual(2 * file);
         }
       } finally {
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -941,7 +990,7 @@ ${sleeper}    profiles: ["mail"]
         const running = (await execute(["docker", "compose", "-p", environment.project, "ps", "--services"])).split("\n").filter((name) => name !== "");
         expect(running.sort()).toEqual([...expected, "qa-proxy", "qa-runner"].sort());
       } finally {
-        await stopRun(runId);
+        await stopRun(runDir, runId);
         await removeCopies(runDir, runId, image);
       }
     },
@@ -949,9 +998,23 @@ ${sleeper}    profiles: ["mail"]
   );
 });
 
+function u16(value: number): Buffer {
+  const buffer = Buffer.alloc(2);
+  buffer.writeUInt16BE(value);
+  return buffer;
+}
+
+function clientHello(name: Buffer): Buffer {
+  const entry = Buffer.concat([Buffer.from([0]), u16(name.length), name]);
+  const extension = Buffer.concat([u16(0), u16(entry.length + 2), u16(entry.length), entry]);
+  const body = Buffer.concat([Buffer.from([3, 3]), Buffer.alloc(32), Buffer.from([0]), u16(2), Buffer.from([0x13, 0x01]), Buffer.from([1, 0]), u16(extension.length), extension]);
+  const handshake = Buffer.concat([Buffer.from([1, body.length >> 16, (body.length >> 8) & 255, body.length & 255]), body]);
+  return Buffer.concat([Buffer.from([22, 3, 1]), u16(handshake.length), handshake]);
+}
+
 describe.skipIf(!dockerAvailable)("qa-relay", () => {
   test(
-    "carry HTTPS from a target service to its egress hosts and to no other host",
+    "carry HTTPS from a target service to its egress hosts and to no other host, and record each connection's outcome through teardown",
     async () => {
       const image = await ensureRunnerImage();
       const source = await scratch();
@@ -967,10 +1030,11 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         JSON.stringify({
           dockerComposeFile: "compose.yml",
           service: "app",
-          customizations: { "qa-interns": { urls: { app: "http://app:3000" }, ready: "true", seed: "true", egress: ["api.example.test"] } },
+          customizations: { "qa-interns": { urls: { app: "http://app:3000" }, ready: "true", seed: "true", egress: ["api.example.test", "gone.example.test"] } },
         }),
       );
-      await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, volumes: ["../certs:/certs:ro"] } } }));
+      const onStop = 'process.on("SIGTERM", () => require("node:net").connect(443, "api.example.test", function () { this.write("GET / HTTP/1.1\\r\\n\\r\\n"); }).on("close", () => process.exit(0))); setInterval(() => {}, 60000)';
+      await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, command: ["node", "-e", onStop], volumes: ["../certs:/certs:ro"] } } }));
       const target = await loadTarget(ref, source);
       const runDir = await scratch();
       const slot = await freeSlot(new Set());
@@ -983,7 +1047,9 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         upstream,
         JSON.stringify({ services: { upstream: { image, command: ["node", "-e", server], volumes: [`${certs}:/certs:ro`], networks: { qa_egress: { aliases: ["api.example.test", "blocked.example.test"] } } } } }),
       );
-      const compose = ["docker", "compose", "-p", `qair-relay-${crypto.randomUUID().slice(0, 8)}`, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const project = `qair-relay-${crypto.randomUUID().slice(0, 8)}`;
+      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const saved = join(runDir, "interns", "i1");
       try {
         await execute([...compose, "up", "-d", "--wait", "app", "upstream", "qa-relay"]);
         const curl = [...compose, "exec", "-T", "app", "curl", "-sS", "--max-time", "10", "--cacert", "/certs/cert.pem"];
@@ -994,12 +1060,29 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         expect(plain.code).not.toBe(0);
         expect(plain.code).not.toBe(28);
         expect((await capture([...curl, "https://blocked.example.test/"])).code).toBe(6);
-        const decisions = (await execute([...compose, "logs", "--no-log-prefix", "qa-relay"])).split("\n");
-        expect(decisions).toEqual(expect.arrayContaining(["allow api.example.test", 'deny "blocked.example.test"', "deny null"]));
-        expect(decisions.filter((line) => line.startsWith("allow ")).every((line) => line === "allow api.example.test")).toBe(true);
+        await execute([...compose, "exec", "-T", "app", "node", "-e", "require('node:net').connect(443, 'api.example.test').on('connect', function () { this.end(); })"]);
+        expect((await capture([...curl, "https://gone.example.test/"])).code).not.toBe(0);
+        const hello = clientHello(Buffer.alloc(30_000, 1)).toString("hex");
+        await execute([...compose, "exec", "-T", "app", "node", "-e", "require('node:net').connect(443, 'api.example.test', function () { this.end(Buffer.from(process.argv[1], 'hex')); })", hello]);
       } finally {
-        await execute([...compose, "down", "-v", "--remove-orphans", "--timeout", "2"]);
+        await stopProject(project, saved);
       }
+      const [records = [], ...others] = await readRelayLogs(saved);
+      expect(others).toEqual([]);
+      expect(records.map((entry) => entry.n)).toEqual(records.map((_, index) => index + 1));
+      const retries = (entry: RelayRecord) => entry.host === "api.example.test" && entry.outcome === "failed";
+      expect(records.filter((entry) => !retries(entry)).map((entry) => [entry.host, entry.outcome, entry.error])).toEqual([
+        ["api.example.test", "connected", null],
+        ["blocked.example.test", "denied", null],
+        [null, "denied", null],
+        [null, "incomplete", null],
+        ["gone.example.test", "failed", "ENOTFOUND"],
+        ["\u0001".repeat(253), "denied", null],
+        [null, "denied", null],
+      ]);
+      const [file = ""] = (await readdir(saved)).filter((name) => name.startsWith("relay-"));
+      const lines = (await Bun.file(join(saved, file)).text()).split("\n");
+      expect(Math.max(...lines.map((line) => Buffer.byteLength(line) + 1))).toBeLessThanOrEqual(4096);
     },
     20 * 60_000,
   );

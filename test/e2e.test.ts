@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { removeCopies, writeChromePolicy } from "../src/environment.ts";
+import { readRelayLogs, removeCopies, writeChromePolicy } from "../src/environment.ts";
+import { errorCode } from "../src/findings.ts";
 import { readReplay } from "../src/report.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
@@ -20,6 +21,7 @@ const fakeImage = `qair-f-e2e-runner:${id}`;
 const target = join(root, "repo", "eval", "ledger");
 const previousStateHome = process.env.XDG_STATE_HOME;
 const timeout = 20 * 60_000;
+const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
 const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
@@ -154,6 +156,7 @@ USER qa
     "two interns on Grok and Cursor logins report one defect, the judge groups it, and a confirmation reproduces it",
     async () => {
       const lines: string[] = [];
+      const ended = join(root, "pair-ended.txt");
       const runDir = await runQa({
         dir: target,
         rev: "HEAD",
@@ -166,11 +169,13 @@ USER qa
           { id: "cursor-1", provider: "cursor" },
         ]),
         replay: null,
+        onEnd: `test -f "$QA_INTERNS_RUN_DIR/report.md" && printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'`,
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
 
       expect(lines[0]).toBe(runDir);
+      expect(await Bun.file(ended).text()).toBe(`${runDir}\ndone\n`);
       expect(lines).toContain("phase grouping");
       expect(lines).toContain("phase confirming");
       const state = await readState(runDir);
@@ -195,6 +200,7 @@ USER qa
       expect(confirmationPrompt).not.toContain(knownGap);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.egress).toEqual([]);
       expect(report.groups).toHaveLength(1);
       expect(report.groups[0]).toMatchObject({
         id: "g1",
@@ -225,6 +231,62 @@ USER qa
       const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Seen once"));
       expect(confirmed).toContain(`### ${title}`);
       expect(confirmed).toContain("- Reproductions: 3 (i1, i2, c1)");
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "the report counts the connections that target services open through the relay, per egress host and outcome",
+    async () => {
+      const relayed = join(root, "relayed");
+      await cp(target, relayed, { recursive: true });
+      const file = join(relayed, ".devcontainer", "devcontainer.json");
+      const config = await Bun.file(file).json();
+      const settings = config.customizations["qa-interns"];
+      const calls = "await fetch('https://api.example.test/').catch(() => {}); await fetch('http://api.example.test:443/').catch(() => {});";
+      const qa = { ...settings, egress: ["api.example.test", "silent.example.test"], seed: `bun -e "${calls}" && ${settings.seed}` };
+      await Bun.write(file, JSON.stringify({ ...config, customizations: { "qa-interns": qa } }));
+      const git = ["git", "-C", relayed, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Relayed Ledger"]);
+
+      const runDir = await runQa({
+        dir: relayed,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("relayed", [{ id: "claude-1", provider: "claude" }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state.phase).toBe("done");
+      expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([
+        ["i1", "done"],
+        ["c1", "done"],
+      ]);
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.egress).toEqual([
+        { host: "api.example.test", outcome: "failed", error: "ENOTFOUND", connections: 2, interns: ["i1", "c1"] },
+        { host: "silent.example.test", outcome: null, error: null, connections: 0, interns: [] },
+        { host: null, outcome: "denied", error: null, connections: 2, interns: ["i1", "c1"] },
+      ]);
+      const markdown = await Bun.file(join(runDir, "report.md")).text();
+      expect(markdown).toContain("| api.example.test | failed | ENOTFOUND | 2 | i1, c1 |\n");
+      expect(markdown).toContain("| silent.example.test | no connection |  | 0 |  |\n");
+      for (const internId of ["i1", "c1"]) {
+        const logs = await readRelayLogs(join(runDir, "interns", internId));
+        expect(logs.map((records) => records.map((entry) => entry.n))).toEqual([[1, 2]]);
+      }
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
@@ -400,6 +462,45 @@ USER qa
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, and a run fails when every block overlaps one",
+    async () => {
+      const third = 4 * Math.floor(Math.random() * 64);
+      const subnet = `10.214.${third}.0/22`;
+      const blockers: string[] = [];
+      const block = async (range: string) => {
+        const name = `qair-f-e2e-${id}-range-${blockers.length}`;
+        await execute(["docker", "network", "create", "--internal", "--subnet", range, name]);
+        blockers.push(name);
+      };
+      const previous = process.env.QA_INTERNS_SUBNET;
+      process.env.QA_INTERNS_SUBNET = subnet;
+      try {
+        await block(`10.214.${third}.0/25`);
+        const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude" }]);
+        const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+        const runDir = await run();
+        const state = await readState(runDir);
+        expect(state.phase).toBe("done");
+        expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([
+          ["i1", "done"],
+          ["c1", "done"],
+        ]);
+        expect(internalSubnet(runDir, "i1")).toBe(`10.214.${third + 2}.0/25`);
+        expect(internalSubnet(runDir, "c1")).toBe(`10.214.${third + 2}.0/25`);
+        expect(await leftovers(state.runId)).toEqual([]);
+
+        await block(`10.214.${third + 3}.128/25`);
+        await expect(run()).rejects.toThrow(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${subnet} overlaps a Docker network or a host route`);
+      } finally {
+        if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+        else process.env.QA_INTERNS_SUBNET = previous;
+        if (blockers.length > 0) await execute(["docker", "network", "rm", ...blockers]);
+      }
     },
     timeout,
   );
@@ -641,6 +742,7 @@ USER qa
     "an intern that fills its 1 GiB disk, partly with a deleted file it keeps open, is stopped and keeps its findings",
     async () => {
       const lines: string[] = [];
+      const ended = join(root, "flood-ended.txt");
       const run = runQa({
         dir: target,
         rev: "HEAD",
@@ -650,13 +752,16 @@ USER qa
         confirmMinutes: 0.5,
         loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
         replay: null,
+        onEnd: `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; exit 3`,
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
 
       await expect(run).rejects.toThrow("No testing intern completed");
+      await expect(run).rejects.toThrow("; The --on-end command exited with 3");
       const runDir = lines[0];
       if (runDir === undefined) throw new Error("runQa printed no run directory");
+      expect(await Bun.file(ended).text()).toBe(`${runDir}\nfailed\n`);
       const state = await readState(runDir);
       expect(state.phase).toBe("failed");
       expect(intern(state, "i1")).toMatchObject({
@@ -675,6 +780,99 @@ USER qa
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "a run that SIGTERM interrupts tears down, runs its --on-end command, and exits 130 when that command fails",
+    async () => {
+      const ended = join(root, "interrupt-ended.txt");
+      const cli = Bun.spawn(
+        [
+          process.execPath,
+          cliScript,
+          "run",
+          target,
+          "--interns",
+          "1",
+          "--logins",
+          await logins("interrupt", [{ id: "claude-1", provider: "claude" }]),
+          "--on-end",
+          `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; echo 'no notification' >&2; exit 3`,
+        ],
+        { env: { ...process.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+      );
+      const reader = cli.stdout.getReader();
+      const decoder = new TextDecoder();
+      let out = "";
+      while (!out.includes("\n")) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error(`run exited before it printed its run directory: ${await new Response(cli.stderr).text()}`);
+        out += decoder.decode(chunk.value, { stream: true });
+      }
+      const runDir = out.slice(0, out.indexOf("\n"));
+      while (!existsSync(join(runDir, "source")) && cli.exitCode === null) await Bun.sleep(50);
+      cli.kill("SIGTERM");
+      const [code, stderr] = await Promise.all([cli.exited, new Response(cli.stderr).text()]);
+
+      expect(code).toBe(130);
+      expect(stderr).toContain("no notification\nThe --on-end command exited with 3\n");
+      expect(await Bun.file(ended).text()).toBe(`${runDir}\nfailed\n`);
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "failed", error: "interrupted" });
+      expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "down stops a failed run whose --on-end command is still running",
+    async () => {
+      const bare = join(root, "bare");
+      await mkdir(bare);
+      await Bun.write(join(bare, "README.md"), "No dev container.\n");
+      const git = ["git", "-C", bare, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "No dev container"]);
+      const ended = join(root, "down-ended.txt");
+      const child = join(root, "down-child.txt");
+      const cli = Bun.spawn(
+        [
+          process.execPath,
+          cliScript,
+          "run",
+          bare,
+          "--logins",
+          await logins("down", [{ id: "claude-1", provider: "claude" }]),
+          "--on-end",
+          `sleep 600 & echo $! > '${child}'; printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}.tmp' && mv '${ended}.tmp' '${ended}'; wait`,
+        ],
+        { env: { ...process.env }, stdin: "ignore", stdout: "ignore", stderr: "pipe" },
+      );
+      while (!existsSync(ended) && cli.exitCode === null) await Bun.sleep(50);
+      const [runDir = "", phase] = (await Bun.file(ended).text()).split("\n");
+      expect(phase).toBe("failed");
+      const sleeper = Number((await Bun.file(child).text()).trim());
+      const alive = () => {
+        try {
+          return !readFileSync(`/proc/${sleeper}/stat`, "utf8").includes(") Z ");
+        } catch (error) {
+          if (errorCode(error) === "ENOENT") return false;
+          throw error;
+        }
+      };
+      expect(alive()).toBe(true);
+
+      const down = await capture([process.execPath, cliScript, "down", runDir], { env: { ...process.env } });
+      expect(down.code).toBe(0);
+      expect(down.stdout).toContain(`(process ${cli.pid})`);
+      expect(await cli.exited).toBe(130);
+      for (let tries = 0; tries < 100 && alive(); tries += 1) await Bun.sleep(50);
+      expect(alive()).toBe(false);
+      expect(await new Response(cli.stderr).text()).toContain("The --on-end command exited with");
+      expect(await readState(runDir)).toMatchObject({ phase: "failed" });
     },
     timeout,
   );
