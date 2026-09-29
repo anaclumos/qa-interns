@@ -19,13 +19,18 @@ Commands:
   doctor [--logins <file>]
       Check Docker, Compose, the isolated network mode, the Dev Container CLI,
       the runner image and its agents, the logins, and free memory.
-  validate <target-dir> [--commit <rev>]
+  validate <target-dir> [--commit <rev> | --dirty]
       Check the target's dev container and Compose files at the commit (default
-      HEAD) as run does before it builds images, with no logins and no values
-      for hostEnv variables that no checked setting depends on.
-  run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]
-      Run interns against the target at the commit. Defaults: HEAD, 4 interns,
-      30 minutes each, 10 minutes per confirmation. Prints the run directory first.
+      HEAD), or with --dirty in a copy of its working tree, as run does before it
+      builds images, with no logins and no values for hostEnv variables that no
+      checked setting depends on.
+  run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]
+      Run interns against the target at the commit, or with --dirty against a
+      copy of its working tree: the tracked files as they are and the untracked
+      files that Git does not ignore. Defaults: HEAD, 4 interns, 30 minutes
+      each, 10 minutes per confirmation. Prints the run directory first.
+      With --on-end, run the shell command when the run ends, done, failed, or
+      interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
   replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]
       Hand each confirmed group of the earlier run, or each group --group names,
       to a confirming intern against the run's target at the commit. Defaults:
@@ -88,16 +93,17 @@ async function main(args: string[]): Promise<number> {
       return (await doctor(values.logins, print)) ? 0 : 1;
     }
     case "validate": {
-      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { commit: { type: "string", default: "HEAD" } } });
+      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { commit: { type: "string" }, dirty: { type: "boolean", default: false } } });
       const [dir, ...extra] = positionals;
       if (dir === undefined || extra.length > 0) throw new Error("validate takes exactly one target directory. Run qa-interns help for usage.");
-      const ref = await resolveTarget(dir, values.commit);
+      if (values.dirty && values.commit !== undefined) throw new Error("--dirty checks the working tree, so it takes no --commit");
+      const ref = await resolveTarget(dir, values.commit ?? "HEAD", values.dirty);
       const source = await mkdtemp(join(tmpdir(), "qa-interns-validate-"));
       try {
         await exportTree(ref, source);
         const target = await loadTarget(ref, source, true);
         imageBuilders(target);
-        print(`${join(ref.repo, ref.path)} at ${ref.commit} passes the checks that run makes before it builds images.`);
+        print(`${join(ref.repo, ref.path)} at ${ref.commit}${ref.dirty ? " with uncommitted changes" : ""} passes the checks that run makes before it builds images.`);
         const unset = target.settings.hostEnv.filter((name) => process.env[name] === undefined);
         if (unset.length > 0) print(`hostEnv names ${unset.join(", ")}, which the environment of qa-interns does not set. No checked setting depends on them.`);
       } finally {
@@ -110,22 +116,27 @@ async function main(args: string[]): Promise<number> {
         args: rest,
         allowPositionals: true,
         options: {
-          commit: { type: "string", default: "HEAD" },
+          commit: { type: "string" },
+          dirty: { type: "boolean", default: false },
           interns: { type: "string", default: "4" },
           minutes: { type: "string", default: "30" },
           "confirm-minutes": { type: "string", default: "10" },
           logins: { type: "string", default: defaultLoginsPath },
+          "on-end": { type: "string" },
         },
       });
       const [dir, ...extra] = positionals;
       if (dir === undefined || extra.length > 0) throw new Error("run takes exactly one target directory. Run qa-interns help for usage.");
+      if (values.dirty && values.commit !== undefined) throw new Error("--dirty runs the working tree, so it takes no --commit");
       const options = {
         dir,
-        rev: values.commit,
+        rev: values.commit ?? "HEAD",
+        dirty: values.dirty,
         interns: count(values.interns, "interns"),
         minutes: minutes(values.minutes, "minutes"),
         confirmMinutes: minutes(values["confirm-minutes"], "confirm-minutes"),
         loginsFile: values.logins,
+        onEnd: values["on-end"],
       };
       await runQa({ ...options, replay: null, runnerImage: ensureRunnerImage, print });
       return 0;
@@ -148,6 +159,7 @@ async function main(args: string[]): Promise<number> {
       await runQa({
         dir: join(replay.target.repo, replay.target.path),
         rev: values.commit,
+        dirty: false,
         interns: 0,
         minutes: 0,
         confirmMinutes,
@@ -182,7 +194,7 @@ async function main(args: string[]): Promise<number> {
     case "down": {
       const dir = await resolveRunDir(runArg(command, rest));
       const state = await readState(dir);
-      if (state.phase !== "done" && state.phase !== "failed" && running(state.pid, state.pidStart)) {
+      if (running(state.pid, state.pidStart)) {
         try {
           process.kill(state.pid, "SIGTERM");
           print(`Sent SIGTERM to run ${state.runId} (process ${state.pid}).`);

@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { removeCopies, writeChromePolicy } from "../src/environment.ts";
+import { errorCode } from "../src/findings.ts";
 import { readReplay } from "../src/report.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
@@ -19,6 +20,7 @@ const fakeImage = `qair-f-e2e-runner:${id}`;
 const target = join(root, "repo", "eval", "ledger");
 const previousStateHome = process.env.XDG_STATE_HOME;
 const timeout = 20 * 60_000;
+const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
 const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
@@ -153,9 +155,11 @@ USER qa
     "two interns on Grok and Cursor logins report one defect, the judge groups it, and a confirmation reproduces it",
     async () => {
       const lines: string[] = [];
+      const ended = join(root, "pair-ended.txt");
       const runDir = await runQa({
         dir: target,
         rev: "HEAD",
+        dirty: false,
         interns: 2,
         minutes: 0.5,
         confirmMinutes: 0.5,
@@ -164,11 +168,13 @@ USER qa
           { id: "cursor-1", provider: "cursor" },
         ]),
         replay: null,
+        onEnd: `test -f "$QA_INTERNS_RUN_DIR/report.md" && printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'`,
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
 
       expect(lines[0]).toBe(runDir);
+      expect(await Bun.file(ended).text()).toBe(`${runDir}\ndone\n`);
       expect(lines).toContain("phase grouping");
       expect(lines).toContain("phase confirming");
       const state = await readState(runDir);
@@ -209,7 +215,7 @@ USER qa
       expect(report.groups[0].findings[0]).toMatchObject({
         title,
         evidence: ["interns/i1/out/evidence/page.html"],
-        environment: { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: intern(state, "i1").provider, model: "fake-model-1" },
+        environment: { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, provider: intern(state, "i1").provider, model: "fake-model-1" },
       });
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "page.html")).text()).toContain("<form");
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "browser.json")).json()).toEqual({
@@ -235,7 +241,7 @@ USER qa
     "a replay hands the confirmed group of an earlier run to a confirming intern at a new commit and reports that it reproduced",
     async () => {
       const loginsFile = await logins("replay", [{ id: "claude-1", provider: "claude" }]);
-      const sourceDir = await runQa({ dir: target, rev: "HEAD", interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+      const sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
       const source = await readState(sourceDir);
       const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false"];
       const next = (await execute([...git, "commit-tree", "-p", source.target.commit, "-m", "Next", `${source.target.commit}^{tree}`])).trim();
@@ -246,6 +252,7 @@ USER qa
       const runDir = await runQa({
         dir: join(replay.target.repo, replay.target.path),
         rev: next,
+        dirty: false,
         interns: 0,
         minutes: 0,
         confirmMinutes: 0.5,
@@ -290,6 +297,7 @@ USER qa
         runQa({
           dir: join(replay.target.repo, replay.target.path),
           rev: next,
+          dirty: false,
           interns: 0,
           minutes: 0,
           confirmMinutes: 0.5,
@@ -329,6 +337,7 @@ USER qa
       const runDir = await runQa({
         dir: target,
         rev: "HEAD",
+        dirty: false,
         interns: 1,
         minutes: 0.5,
         confirmMinutes: 0.5,
@@ -387,8 +396,8 @@ USER qa
       });
       const findings: Finding[] = report.groups[0].findings;
       expect(findings.map((finding) => [finding.id, finding.evidence, finding.environment])).toEqual([
-        ["i1/fake-home", ["interns/i1/out/evidence/page.html"], { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-a" }],
-        ["i1/out-2/fake-home", ["interns/i1/out-2/evidence/page.html"], { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-b" }],
+        ["i1/fake-home", ["interns/i1/out/evidence/page.html"], { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-a" }],
+        ["i1/out-2/fake-home", ["interns/i1/out-2/evidence/page.html"], { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-b" }],
       ]);
       expect(await Bun.file(join(runDir, "interns", "c1", "out-2", "confirmation.json")).exists()).toBe(false);
 
@@ -468,7 +477,7 @@ USER qa
       process.env.QA_PROBE_DIR = probe;
       let error: unknown = null;
       try {
-        await runQa({ dir: hostile, rev: "HEAD", interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+        await runQa({ dir: hostile, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
       } catch (reason) {
         error = reason;
       } finally {
@@ -579,21 +588,26 @@ USER qa
     "an intern that fills its 1 GiB disk, partly with a deleted file it keeps open, is stopped and keeps its findings",
     async () => {
       const lines: string[] = [];
+      const ended = join(root, "flood-ended.txt");
       const run = runQa({
         dir: target,
         rev: "HEAD",
+        dirty: false,
         interns: 1,
         minutes: 5,
         confirmMinutes: 0.5,
         loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
         replay: null,
+        onEnd: `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; exit 3`,
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
 
       await expect(run).rejects.toThrow("No testing intern completed");
+      await expect(run).rejects.toThrow("; The --on-end command exited with 3");
       const runDir = lines[0];
       if (runDir === undefined) throw new Error("runQa printed no run directory");
+      expect(await Bun.file(ended).text()).toBe(`${runDir}\nfailed\n`);
       const state = await readState(runDir);
       expect(state.phase).toBe("failed");
       expect(intern(state, "i1")).toMatchObject({
@@ -608,6 +622,145 @@ USER qa
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups.map((group: { findings: { id: string }[] }) => group.findings.map((finding) => finding.id))).toEqual([["i1/fake-home"]]);
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "a run that SIGTERM interrupts tears down, runs its --on-end command, and exits 130 when that command fails",
+    async () => {
+      const ended = join(root, "interrupt-ended.txt");
+      const cli = Bun.spawn(
+        [
+          process.execPath,
+          cliScript,
+          "run",
+          target,
+          "--interns",
+          "1",
+          "--logins",
+          await logins("interrupt", [{ id: "claude-1", provider: "claude" }]),
+          "--on-end",
+          `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; echo 'no notification' >&2; exit 3`,
+        ],
+        { env: { ...process.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+      );
+      const reader = cli.stdout.getReader();
+      const decoder = new TextDecoder();
+      let out = "";
+      while (!out.includes("\n")) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error(`run exited before it printed its run directory: ${await new Response(cli.stderr).text()}`);
+        out += decoder.decode(chunk.value, { stream: true });
+      }
+      const runDir = out.slice(0, out.indexOf("\n"));
+      while (!existsSync(join(runDir, "source")) && cli.exitCode === null) await Bun.sleep(50);
+      cli.kill("SIGTERM");
+      const [code, stderr] = await Promise.all([cli.exited, new Response(cli.stderr).text()]);
+
+      expect(code).toBe(130);
+      expect(stderr).toContain("no notification\nThe --on-end command exited with 3\n");
+      expect(await Bun.file(ended).text()).toBe(`${runDir}\nfailed\n`);
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "failed", error: "interrupted" });
+      expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "down stops a failed run whose --on-end command is still running",
+    async () => {
+      const bare = join(root, "bare");
+      await mkdir(bare);
+      await Bun.write(join(bare, "README.md"), "No dev container.\n");
+      const git = ["git", "-C", bare, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "No dev container"]);
+      const ended = join(root, "down-ended.txt");
+      const child = join(root, "down-child.txt");
+      const cli = Bun.spawn(
+        [
+          process.execPath,
+          cliScript,
+          "run",
+          bare,
+          "--logins",
+          await logins("down", [{ id: "claude-1", provider: "claude" }]),
+          "--on-end",
+          `sleep 600 & echo $! > '${child}'; printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}.tmp' && mv '${ended}.tmp' '${ended}'; wait`,
+        ],
+        { env: { ...process.env }, stdin: "ignore", stdout: "ignore", stderr: "pipe" },
+      );
+      while (!existsSync(ended) && cli.exitCode === null) await Bun.sleep(50);
+      const [runDir = "", phase] = (await Bun.file(ended).text()).split("\n");
+      expect(phase).toBe("failed");
+      const sleeper = Number((await Bun.file(child).text()).trim());
+      const alive = () => {
+        try {
+          return !readFileSync(`/proc/${sleeper}/stat`, "utf8").includes(") Z ");
+        } catch (error) {
+          if (errorCode(error) === "ENOENT") return false;
+          throw error;
+        }
+      };
+      expect(alive()).toBe(true);
+
+      const down = await capture([process.execPath, cliScript, "down", runDir], { env: { ...process.env } });
+      expect(down.code).toBe(0);
+      expect(down.stdout).toContain(`(process ${cli.pid})`);
+      expect(await cli.exited).toBe(130);
+      for (let tries = 0; tries < 100 && alive(); tries += 1) await Bun.sleep(50);
+      expect(alive()).toBe(false);
+      expect(await new Response(cli.stderr).text()).toContain("The --on-end command exited with");
+      expect(await readState(runDir)).toMatchObject({ phase: "failed" });
+    },
+    timeout,
+  );
+
+  test(
+    "a dirty run serves the uncommitted changes and untracked files of the working tree and records the run as dirty",
+    async () => {
+      const dirty = join(root, "dirty");
+      await cp(target, dirty, { recursive: true });
+      const git = ["git", "-C", dirty, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Ledger"]);
+      const head = (await execute([...git, "rev-parse", "HEAD"])).trim();
+      const html = join(dirty, "src", "html.ts");
+      const page = (await Bun.file(html).text()).replace("<h1>Sign in to Ledger</h1>", "<h1>Sign in to Ledger</h1>${notice}");
+      await Bun.write(html, `import { notice } from "./notice.ts";\n${page}`);
+      await Bun.write(join(dirty, "src", "notice.ts"), 'export const notice = "<p id=\\"notice\\">Uncommitted notice</p>";\n');
+      await Bun.write(join(dirty, "node_modules", "ignored.txt"), "ignored\n");
+
+      const lines: string[] = [];
+      const runDir = await runQa({
+        dir: dirty,
+        rev: "HEAD",
+        dirty: true,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("dirty", [{ id: "claude-1", provider: "claude" }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null, target: { path: "", commit: head, dirty: true } });
+      expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "page.html")).text()).toContain('<p id="notice">Uncommitted notice</p>');
+      expect(await Bun.file(join(runDir, "source", "node_modules", "ignored.txt")).exists()).toBe(false);
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.run.target).toEqual(state.target);
+      expect(report.groups[0].findings[0].environment).toEqual({ commit: head, dirty: true, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-1" });
+      expect((await Bun.file(join(runDir, "report.md")).text()).split("\n")).toContain(`- Commit: \`${head}\`, with the uncommitted changes and untracked files of the working tree`);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);

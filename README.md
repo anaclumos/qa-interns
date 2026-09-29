@@ -38,8 +38,8 @@ qa-interns doctor
 | Command | What it does |
 | --- | --- |
 | `qa-interns doctor [--logins <file>]` | Checks Docker, Compose, the isolated network mode, the Dev Container CLI, the runner image and its agents, and the logins. Builds the runner image when it is missing. |
-| `qa-interns validate <target-dir> [--commit <rev>]` | Checks the target's dev container and Compose files at the commit (default `HEAD`) as `run` does before it builds images. Needs no logins, no runner image, and no value for a `hostEnv` variable that no checked setting reads (see [Target environment contract](#target-environment-contract)). |
-| `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. |
+| `qa-interns validate <target-dir> [--commit <rev> \| --dirty]` | Checks the target's dev container and Compose files at the commit (default `HEAD`), or with `--dirty` in the same copy of the working tree that `run --dirty` takes, as `run` does before it builds images. Needs no logins, no runner image, and no value for a `hostEnv` variable that no checked setting reads (see [Target environment contract](#target-environment-contract)). |
+| `qa-interns run <target-dir> [--commit <rev> \| --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). With `--dirty`, runs them against a copy of the target's working tree, taken when the run starts: the tracked files that the working tree holds, as they are, and the untracked files that Git does not ignore. `state.json` and the `environment` of each finding record the commit of `HEAD` with `dirty: true`, and `report.md` names the uncommitted changes after the commit. Prints the run directory first. With `--on-end`, runs the command when the run ends (see [Command when a run ends](#command-when-a-run-ends)). |
 | `qa-interns replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]` | Hands each confirmed group of the earlier run to a confirming intern against that run's target at the commit (default `HEAD`, 10 minutes per confirmation). See [Replay](#replay). Prints the run directory first. |
 | `qa-interns up <target-dir> [--commit <rev>]` | Starts one environment of the target at the commit (default `HEAD`) with no interns, runs its `ready` check and `seed`, and leaves it running. Prints the run directory first, then the Compose project, the IDs of the runner and the dev container, and the seed output. When a step fails, it tears the environment down. `qa-interns down` removes the environment. |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
@@ -82,7 +82,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
 
-- A `dockerComposeFile` entry outside the target directory, so the tested services always come from the commit.
+- A `dockerComposeFile` entry outside the target directory, so the tested services always come from the run's copy of the target.
 - An `include` path, `project_directory`, or `env_file`, or an `extends.file`, that is not an existing path inside the target directory. These paths are checked as written: a path that contains `$` or `:`, or starts with `~` or `github.com/`, is rejected, because Compose may expand it or load it from a remote source. The `.env` file that Compose reads from an included project's directory must also resolve inside the target. An `include` inside an included file cannot set a relative `project_directory` or `env_file`, because Compose resolves those against the directory it runs in.
 - A `container_name`.
 - An external volume or network, or a volume or network with an explicit `name:`.
@@ -102,7 +102,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 
 `devcontainer up` writes settings from `devcontainer.json`, its features, and the `devcontainer.metadata` label of the dev container image into its own Compose files. After `devcontainer up` creates an environment's dev container, `run` renders the environment's Compose files with and without the files the Dev Container CLI wrote. Those files may add volumes and may change only the `image`, `build`, `entrypoint`, `command`, `init`, `user`, `environment`, `labels`, `privileged`, `cap_add`, `security_opt`, and `volumes` of the dev container service. `run` then applies the checks above, except the build checks, to every target service in the environment's copy of the target, with the environment variables `devcontainer up` used. When a check fails, the environment is torn down before its intern starts.
 
-`qa-interns validate` exports the target at the commit as `run` does and makes the checks that `run` makes before it builds images. It does not make the checks after `devcontainer up`, which need a started environment. It uses the host value of each `hostEnv` variable that the host sets. When a `hostEnv` variable is not set, `validate` sets it to `/qa-interns-unset/<name>` for the checks. It also renders the Compose files with `/qa-interns-unset/<name>/<name>` and fails when a setting that the checks read differs between the two renders, such as a bind mount source built from the variable. A variable that only a service's `environment` reads, such as an API key, needs no value. Set a variable that a checked setting reads to the value `run` uses.
+`qa-interns validate` exports the target at the commit, or with `--dirty` copies its working tree, as `run` does, and makes the checks that `run` makes before it builds images. It does not make the checks after `devcontainer up`, which need a started environment. It uses the host value of each `hostEnv` variable that the host sets. When a `hostEnv` variable is not set, `validate` sets it to `/qa-interns-unset/<name>` for the checks. It also renders the Compose files with `/qa-interns-unset/<name>/<name>` and fails when a setting that the checks read differs between the two renders, such as a bind mount source built from the variable. A variable that only a service's `environment` reads, such as an API key, needs no value. Set a variable that a checked setting reads to the value `run` uses.
 
 Published ports and build `tags` are allowed; QA Interns removes them. `logging` settings are allowed; QA Interns replaces them with its own log limit (see [Isolation](#isolation)).
 
@@ -146,7 +146,7 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 ## What a run does
 
-1. Exports the target at the commit and checks its dev container and Compose files.
+1. Exports the target at the commit, or copies its working tree with `--dirty`, and checks its dev container and Compose files.
 2. Builds the target's images once.
 3. Starts one environment per intern, each as its own Compose project on its own isolated network, at most as many at once as free memory, login capacity, and free network slots allow, and at most four starting at a time. Checks each dev container that `devcontainer up` created.
 4. Starts one agent per intern inside that intern's runner container, over the Agent Client Protocol.
@@ -167,6 +167,23 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 - `state.json`: the run's phase and every intern's status.
 
 A finding is confirmed when two or more interns reproduced it.
+
+## Command when a run ends
+
+`run --on-end <command>` runs `<command>` with `sh -c` on the host when the run ends, whether it is done, failed, or interrupted by SIGINT, SIGTERM, or SIGHUP. The command runs after the teardown and after `report.md`, `findings.json`, and `state.json` are written. It gets the environment of `qa-interns` and these variables:
+
+- `QA_INTERNS_RUN_DIR`: the run directory.
+- `QA_INTERNS_PHASE`: `done` when the run is done, and `failed` otherwise, including an interrupt and a failure to write `report.md`, `findings.json`, or `state.json`. The `error` in the `state.json` of an interrupted run starts with `interrupted`.
+
+Quote the command so that the shell that starts `run` does not expand these variables:
+
+```
+qa-interns run eval/ledger --on-end 'echo "$QA_INTERNS_PHASE $QA_INTERNS_RUN_DIR" >> "$HOME/qa-runs.log"'
+```
+
+The command writes to the standard output and error of `run`. `run` waits for the command to exit, then exits 0 when the run is done, 1 when it failed, and 130 after an interrupt. When the command exits with a code other than 0, `run` prints that code, and a run that is done exits 1. A run that fails before it prints its run directory, such as on a missing logins file, does not run the command.
+
+A signal to `run` while the command runs after a done or failed run, such as the SIGTERM that `qa-interns down` sends, sends SIGTERM to the command, and `run` exits 130. After an interrupt, `run` ignores further signals until it exits, so the wait of up to 120 seconds that `qa-interns down` allows includes the time the command takes.
 
 ## Replay
 

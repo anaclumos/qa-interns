@@ -25,17 +25,19 @@ import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, ju
 import { providers } from "./providers.ts";
 import { renderReplay, renderReport } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
-import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target, type TargetRef } from "./target.ts";
+import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
   dir: string;
   rev: string;
+  dirty: boolean;
   interns: number;
   minutes: number;
   confirmMinutes: number;
   loginsFile: string;
   replay: Replay | null;
+  onEnd?: string;
   runnerImage(): Promise<string>;
   print(line: string): void;
 };
@@ -375,7 +377,7 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
 async function explore(ctx: Context, intern: InternState, target: Target, minutes: number): Promise<{ outcome: Outcome<void>; findings: Finding[]; rejected: Rejected[] }> {
   const attempts: { attempt: number; environment: FindingEnvironment }[] = [];
   const outcome = await agentTask(ctx, intern.id, target, [], async (session, attempt, env, provider, note) => {
-    const environment = { commit: target.commit, environment: env.project, provider, model: session.model };
+    const environment = { commit: target.commit, dirty: target.dirty, environment: env.project, provider, model: session.model };
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
@@ -554,7 +556,7 @@ async function newRun(ref: TargetRef, options: RunState["options"], print: (line
     runId,
     pid: process.pid,
     pidStart: processStart(process.pid),
-    target: { repo: ref.repo, path: ref.path, commit: ref.commit },
+    target: { repo: ref.repo, path: ref.path, commit: ref.commit, dirty: ref.dirty },
     options,
     phase: "preparing",
     error: null,
@@ -574,7 +576,7 @@ async function newRun(ref: TargetRef, options: RunState["options"], print: (line
 }
 
 export async function startCopy(opts: CopyOptions): Promise<string> {
-  const ref = await resolveTarget(opts.dir, opts.rev);
+  const ref = await resolveTarget(opts.dir, opts.rev, false);
   const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0 }, opts.print);
   const ctx = context(runId, runDir, "", new Scheduler([]), async () => {});
   const phase = async (next: RunPhase) => {
@@ -637,7 +639,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
 
 export async function runQa(opts: RunOptions): Promise<string> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
-  const ref = await resolveTarget(opts.dir, opts.rev);
+  const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
   const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 };
   const { runId, runDir, state, save } = await newRun(ref, options, opts.print);
 
@@ -682,9 +684,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
   });
 
   const phases = async () => {
-    ctx.runnerImage = await opts.runnerImage();
     const source = join(runDir, "source");
     await exportTree(ref, source);
+    ctx.runnerImage = await opts.runnerImage();
     const target = await loadTarget(ref, source);
     const memory = environmentMemory(target);
     const free = freemem();
@@ -749,21 +751,42 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await phase("reporting");
   };
 
+  const ended = once(async (phase: RunPhase): Promise<string | null> => {
+    if (opts.onEnd === undefined) return null;
+    const env = { ...process.env, QA_INTERNS_RUN_DIR: runDir, QA_INTERNS_PHASE: phase };
+    const code = await trackGroup(Bun.spawn(["sh", "-c", opts.onEnd], { env, stdin: "ignore", stdout: "inherit", stderr: "inherit", detached: true })).exited;
+    return code === 0 ? null : `The --on-end command exited with ${code}`;
+  });
+
+  const run = async (): Promise<string> => {
+    try {
+      await phases();
+    } catch (error) {
+      if (!ctx.stopping) await finish(message(error));
+      throw error;
+    }
+    const teardown = await finish(null);
+    if (teardown !== null) throw new Error(`Teardown of run ${runId} failed: ${teardown}`);
+    return runDir;
+  };
+
   return guard(
     ctx,
     async () => {
-      try {
-        await phases();
-      } catch (error) {
-        if (!ctx.stopping) await finish(message(error));
-        throw error;
-      }
-      const teardown = await finish(null);
-      if (teardown !== null) throw new Error(`Teardown of run ${runId} failed: ${teardown}`);
-      return runDir;
+      const [result] = await Promise.allSettled([run()]);
+      checkStopping(ctx);
+      const hook = await ended(result.status === "fulfilled" ? "done" : "failed");
+      if (result.status === "rejected") throw hook === null ? result.reason : new Error(`${message(result.reason)}; ${hook}`);
+      if (hook !== null) throw new Error(hook);
+      return result.value;
     },
     async () => {
-      await finish("interrupted");
+      try {
+        await finish("interrupted");
+      } finally {
+        const hook = await ended("failed");
+        if (hook !== null) process.stderr.write(`${hook}\n`);
+      }
     },
   );
 }
