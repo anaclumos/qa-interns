@@ -205,7 +205,7 @@ const composeSchema = z.object({
       use_api_socket: z.boolean().optional(),
       runtime: z.string().optional(),
       env_file: z.array(z.object({ path: z.string() })).optional(),
-      volumes: z.array(z.object({ type: z.string(), source: z.string().optional() })).optional(),
+      volumes: z.array(z.object({ type: z.string(), source: z.string().optional(), target: z.string().optional() })).optional(),
       volumes_from: z.array(z.string()).optional(),
       pre_start: hooksSchema,
       post_start: hooksSchema,

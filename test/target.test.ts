@@ -878,6 +878,19 @@ describe.skipIf(!dockerAvailable)("validate", () => {
     expect(outside.stderr).toContain("- service web mounts /etc/app/../data, which resolves to /etc/data, outside the target directory");
   });
 
+  test("reject a volume whose whole spec comes from an unset hostEnv variable", async () => {
+    const root = await fixture('services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: ["${QA_INTERNS_TEST_DIR}"]\n', devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_DIR"] }));
+    expect(await validate(root)).toEqual({
+      code: 1,
+      stdout: "",
+      stderr:
+        'qa-interns: customizations["qa-interns"].hostEnv names QA_INTERNS_TEST_DIR, which the environment of qa-interns does not set, and these checked settings depend on one or more of them:\n- volumes of service web\n',
+    });
+    const socket = await validate(root, { QA_INTERNS_TEST_DIR: "/var/run/docker.sock:/var/run/docker.sock" });
+    expect(socket.code).toBe(1);
+    expect(socket.stderr).toContain("- service web mounts /var/run/docker.sock");
+  });
+
   test("reject a checked setting that depends on an unset hostEnv variable in an included or extended file", async () => {
     const root = await repo({
       ".devcontainer/devcontainer.json": devcontainer({}, hostEnv),
