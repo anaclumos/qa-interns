@@ -31,7 +31,7 @@ export type RunState = {
   runId: string;
   pid: number;
   pidStart: number;
-  target: { repo: string; path: string; commit: string };
+  target: { repo: string; path: string; commit: string; dirty: boolean };
   options: { interns: number; minutes: number; confirmMinutes: number; concurrency: number };
   phase: RunPhase;
   error: string | null;
@@ -45,7 +45,7 @@ export const kinds = ["crash", "error", "wrong-data", "data-loss", "inconsistenc
 
 export type Kind = (typeof kinds)[number];
 
-export type FindingEnvironment = { commit: string; environment: string; provider: Provider; model: string | null };
+export type FindingEnvironment = { commit: string; dirty: boolean; environment: string; provider: Provider; model: string | null };
 
 export type Finding = {
   id: string;
@@ -73,3 +73,5 @@ export type Group = {
   findings: Finding[];
   confirmation: { intern: string; provider: Provider | null; result: Confirmation | null; error: string | null } | null;
 };
+
+export type Replay = { runId: string; target: RunState["target"]; groups: Group[] };
