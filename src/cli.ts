@@ -1,14 +1,17 @@
 #!/usr/bin/env bun
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor } from "./doctor.ts";
-import { removeCopies, stopRun } from "./environment.ts";
+import { imageBuilders, removeCopies, stopRun } from "./environment.ts";
 import { errorCode, stripControl } from "./findings.ts";
 import { defaultLoginsPath } from "./logins.ts";
 import { readReplay } from "./report.ts";
 import { runQa, startCopy } from "./run.ts";
 import { ensureRunnerImage, runnerImage } from "./runner.ts";
 import { formatStatus, processStart, readState, resolveRunDir, writeState } from "./state.ts";
+import { exportTree, loadTarget, resolveTarget } from "./target.ts";
 
 const usage = `Usage: qa-interns <command> [options]
 
@@ -16,6 +19,11 @@ Commands:
   doctor [--logins <file>]
       Check Docker, Compose, the isolated network mode, the Dev Container CLI,
       the runner image and its agents, the logins, and free memory.
+  validate <target-dir> [--commit <rev> | --dirty]
+      Check the target's dev container and Compose files at the commit (default
+      HEAD), or with --dirty in a copy of its working tree, as run does before it
+      builds images, with no logins and no values for hostEnv variables that no
+      checked setting depends on.
   run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]
       Run interns against the target at the commit, or with --dirty against a
       copy of its working tree: the tracked files as they are and the untracked
@@ -83,6 +91,25 @@ async function main(args: string[]): Promise<number> {
     case "doctor": {
       const { values } = parseArgs({ args: rest, options: { logins: { type: "string", default: defaultLoginsPath } } });
       return (await doctor(values.logins, print)) ? 0 : 1;
+    }
+    case "validate": {
+      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { commit: { type: "string" }, dirty: { type: "boolean", default: false } } });
+      const [dir, ...extra] = positionals;
+      if (dir === undefined || extra.length > 0) throw new Error("validate takes exactly one target directory. Run qa-interns help for usage.");
+      if (values.dirty && values.commit !== undefined) throw new Error("--dirty checks the working tree, so it takes no --commit");
+      const ref = await resolveTarget(dir, values.commit ?? "HEAD", values.dirty);
+      const source = await mkdtemp(join(tmpdir(), "qa-interns-validate-"));
+      try {
+        await exportTree(ref, source);
+        const target = await loadTarget(ref, source, true);
+        imageBuilders(target);
+        print(`${join(ref.repo, ref.path)} at ${ref.commit}${ref.dirty ? " with uncommitted changes" : ""} passes the checks that run makes before it builds images.`);
+        const unset = target.settings.hostEnv.filter((name) => process.env[name] === undefined);
+        if (unset.length > 0) print(`hostEnv names ${unset.join(", ")}, which the environment of qa-interns does not set. No checked setting depends on them.`);
+      } finally {
+        await rm(source, { recursive: true, force: true });
+      }
+      return 0;
     }
     case "run": {
       const { values, positionals } = parseArgs({

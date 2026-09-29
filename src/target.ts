@@ -205,7 +205,7 @@ const composeSchema = z.object({
       use_api_socket: z.boolean().optional(),
       runtime: z.string().optional(),
       env_file: z.array(z.object({ path: z.string() })).optional(),
-      volumes: z.array(z.object({ type: z.string(), source: z.string().optional() })).optional(),
+      volumes: z.array(z.object({ type: z.string(), source: z.string().optional(), target: z.string().optional() })).optional(),
       volumes_from: z.array(z.string()).optional(),
       pre_start: hooksSchema,
       post_start: hooksSchema,
@@ -514,7 +514,19 @@ async function checkComposeReferences(root: string, composePaths: string[]): Pro
   }
 }
 
-export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Target> {
+function checkedSettings({ project, started }: { project: ComposeProject; started: ComposeProject["services"] }): Record<string, unknown> {
+  const named = (kind: string, entries: Record<string, unknown> = {}) => Object.entries(entries).map(([name, value]) => [`${kind} ${name}`, value]);
+  return Object.fromEntries([
+    ...Object.entries(project.services).flatMap(([name, entry]) => Object.entries(entry).map(([key, value]) => [`${key} of service ${name}`, value])),
+    ...named("volume", project.volumes),
+    ...named("network", project.networks),
+    ...named("secret", project.secrets),
+    ...named("config", project.configs),
+    ["the services that run starts", Object.keys(started)],
+  ]);
+}
+
+export async function loadTarget(ref: TargetRef, sourceDir: string, placeholders = false): Promise<Target> {
   const file = join(sourceDir, ".devcontainer", "devcontainer.json");
   const object = z.record(z.string(), z.unknown()).safeParse(Bun.JSONC.parse(await Bun.file(file).text()));
   if (!object.success) throw new Error(`${file} is not a JSON object`);
@@ -538,16 +550,33 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   await composeVersion();
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
   const hostEnv = customizations["qa-interns"].hostEnv;
-  const project = composeSchema.parse(await withTargetEnv(hostEnv, (env) => render(checkProject, paths, env)));
-  if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
+  const unset = placeholders ? hostEnv.filter((name) => process.env[name] === undefined) : [];
   const files = paths.flatMap((path) => ["-f", path]);
-  const selection = await withTargetEnv(hostEnv, (env) =>
-    execute(
-      ["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", "--no-env-resolution", ...(runServices === undefined ? [] : [service, ...runServices])],
-      { env },
-    ),
-  );
-  const started = composeSchema.parse(JSON.parse(selection)).services;
+  const renderWith = (placeholder: (name: string) => string) =>
+    withTargetEnv(
+      hostEnv.filter((name) => !unset.includes(name)),
+      async (hostValues) => {
+        const env = { ...hostValues, ...Object.fromEntries(unset.map((name) => [name, placeholder(name)])) };
+        const project = composeSchema.parse(await render(checkProject, paths, env));
+        if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
+        const selection = await execute(
+          ["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", "--no-env-resolution", ...(runServices === undefined ? [] : [service, ...runServices])],
+          { env },
+        );
+        return { project, started: composeSchema.parse(JSON.parse(selection)).services };
+      },
+    );
+  const rendered = await renderWith((name) => `/qa-interns-unset/${name}`);
+  const { project, started } = rendered;
+  if (unset.length > 0) {
+    const [one, two] = [checkedSettings(rendered), checkedSettings(await renderWith((name) => `/qa-interns-unset/${name}/${name}`))];
+    const dependent = [...new Set([...Object.keys(one), ...Object.keys(two)])].filter((setting) => !Bun.deepEquals(one[setting], two[setting]));
+    if (dependent.length > 0) {
+      throw new Error(
+        `customizations["qa-interns"].hostEnv names ${unset.join(", ")}, which the environment of qa-interns does not set, and these checked settings depend on one or more of them:\n${dependent.map((setting) => `- ${setting}`).join("\n")}`,
+      );
+    }
+  }
   const violations = await projectEnvViolations(root, paths);
   const services: Record<string, ComposeService> = {};
   const tags = new Map<string, string>();
