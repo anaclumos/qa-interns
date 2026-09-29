@@ -12,7 +12,7 @@ const stateSchema = z.object({
   pidStart: z.int().nonnegative(),
   target: z.object({ repo: z.string(), path: z.string(), commit: z.string(), dirty: z.boolean() }),
   options: z.object({ interns: z.number(), minutes: z.number(), confirmMinutes: z.number(), concurrency: z.number() }),
-  phase: z.enum(["preparing", "building", "testing", "grouping", "confirming", "reporting", "done", "failed"]),
+  phase: z.enum(["preparing", "building", "starting", "up", "testing", "grouping", "confirming", "reporting", "done", "failed"]),
   error: z.string().nullable(),
   startedAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),

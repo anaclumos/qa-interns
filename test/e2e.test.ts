@@ -19,6 +19,7 @@ const target = join(root, "repo", "eval", "ledger");
 const previousStateHome = process.env.XDG_STATE_HOME;
 const timeout = 20 * 60_000;
 const title = "Home page shows the fake defect";
+const knownGap = "The environment has no video model.";
 let built = false;
 
 type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true };
@@ -83,6 +84,13 @@ async function askOptions(runId: string, name: string): Promise<AskOptions> {
   };
 }
 
+async function firstPrompt(runDir: string, internId: string): Promise<string> {
+  const lines = (await Bun.file(join(runDir, "interns", internId, "transcript.jsonl")).text()).split("\n").filter((line) => line !== "");
+  const prompt = lines.map((line) => JSON.parse(line)).find((line) => line.from === "client" && line.message.method === "session/prompt");
+  if (prompt === undefined) throw new Error(`transcript of ${internId} has no session/prompt`);
+  return prompt.message.params.prompt.map((block: { text: string }) => block.text).join("\n");
+}
+
 function internalSubnet(runDir: string, internId: string): string {
   const network = readFileSync(join(runDir, "envs", internId, "compose.qa.yml"), "utf8")
     .split("\n")
@@ -100,7 +108,9 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     await Bun.write(join(feature, "devcontainer-feature.json"), JSON.stringify({ id: "probe-feature", version: "1.0.0", name: "Probe feature" }));
     await Bun.write(join(feature, "install.sh"), "#!/bin/sh\nset -e\n");
     const devcontainerFile = join(target, ".devcontainer", "devcontainer.json");
-    await Bun.write(devcontainerFile, JSON.stringify({ ...(await Bun.file(devcontainerFile).json()), features: { "./probe-feature": {} } }));
+    const ledger = await Bun.file(devcontainerFile).json();
+    const customizations = { "qa-interns": { ...ledger.customizations["qa-interns"], knownGaps: [knownGap] } };
+    await Bun.write(devcontainerFile, JSON.stringify({ ...ledger, customizations, features: { "./probe-feature": {} } }));
     const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
     await execute([...git, "init", "-q"]);
     await execute([...git, "add", "-A"]);
@@ -176,6 +186,10 @@ USER qa
       ]);
       expect(["i1", "i2"].map((internId) => intern(state, internId).provider).sort()).toEqual(["cursor", "grok"]);
       expect(intern(state, "judge").provider).toBe("grok");
+      const [charterPrompt, confirmationPrompt] = await Promise.all(["i1", "c1"].map((internId) => firstPrompt(runDir, internId)));
+      expect(charterPrompt).toContain(`  - ${knownGap}`);
+      expect(confirmationPrompt).toContain("/qa/out/confirmation.json");
+      expect(confirmationPrompt).not.toContain(knownGap);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups).toHaveLength(1);
@@ -393,6 +407,81 @@ USER qa
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "up leaves one ready and seeded environment with its relay and a runner without a login, and down removes it",
+    async () => {
+      const relayed = join(root, "relayed");
+      await cp(target, relayed, { recursive: true });
+      const file = join(relayed, ".devcontainer", "devcontainer.json");
+      const config = await Bun.file(file).json();
+      config.customizations["qa-interns"].egress = ["api.pwnedpasswords.com"];
+      await Bun.write(file, JSON.stringify(config));
+      const git = ["git", "-C", relayed, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Relayed Ledger"]);
+      config.customizations["qa-interns"].seed = "echo not-json";
+      await Bun.write(file, JSON.stringify(config));
+      await execute([...git, "commit", "-q", "-a", "-m", "Broken seed"]);
+
+      const cli = (...args: string[]) => capture([process.execPath, join(import.meta.dir, "..", "src", "cli.ts"), ...args], { env: { ...process.env } });
+      const up = await cli("up", relayed, "--commit", "HEAD~1");
+      const lines = up.stdout.trim().split("\n");
+      const runDir = lines[0] ?? "";
+      let removed = false;
+      try {
+        expect(up).toMatchObject({ code: 0 });
+        expect(runDir).toStartWith(join(root, "state"));
+        const state = await readState(runDir);
+        expect(state).toMatchObject({ phase: "up", error: null, interns: [] });
+        const project = `qa-${state.runId}-up`;
+        const container = async (service: string) => (await execute(["docker", "compose", "-p", project, "ps", "-q", service])).trim();
+        const runner = await container("qa-runner");
+        const [seed = ""] = lines.filter((line) => line.startsWith("seed "));
+        expect(lines.filter((line) => !line.startsWith("seed "))).toEqual([
+          runDir,
+          "phase preparing",
+          "phase building",
+          "phase starting",
+          "phase up",
+          `project ${project}`,
+          `runner ${runner}`,
+          `dev container ${await container("web")}`,
+          `Remove it with qa-interns down ${state.runId}.`,
+        ]);
+        expect(JSON.parse(seed.slice("seed ".length))).toMatchObject({ data: { acmeInvoiceCount: 23, globexInvoiceCount: 3 } });
+
+        const services = await execute(["docker", "ps", "--filter", `label=com.docker.compose.project=${project}`, "--format", '{{.Label "com.docker.compose.service"}}']);
+        expect(services.trim().split("\n").sort()).toEqual(["db", "qa-relay", "qa-runner", "web"]);
+        expect(await execute(["docker", "exec", runner, "curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", "http://web:3000/health"])).toBe("200");
+        const mounts: { Destination: string }[] = JSON.parse(await execute(["docker", "inspect", "--format", "{{json .Mounts}}", runner]));
+        expect(mounts.map((mount) => mount.Destination).sort()).toEqual(["/etc/opt/chrome_for_testing/policies/managed/qa-interns.json", "/qa/out"]);
+        const networks = JSON.parse(await execute(["docker", "inspect", "--format", "{{json .NetworkSettings.Networks}}", runner]));
+        expect(Object.keys(networks)).toEqual([`${project}_qa_internal`]);
+
+        const down = await cli("down", runDir);
+        expect(down).toMatchObject({ code: 0, stdout: `Run ${state.runId} has no environments left.\n` });
+        removed = true;
+        expect(await readState(runDir)).toMatchObject({ phase: "done", error: null });
+        expect(await leftovers(state.runId)).toEqual([]);
+        expect((await readdir(join(runDir, "envs", "up"))).filter((entry) => entry === project || entry === "tmp")).toEqual([]);
+        expect((await readdir(join(runDir, "interns", "up"))).filter((entry) => entry.includes(".img"))).toEqual([]);
+        expect(readFileSync("/proc/self/mountinfo", "utf8")).not.toContain(runDir);
+      } finally {
+        if (!removed && runDir !== "") expect(await cli("down", runDir)).toMatchObject({ code: 0 });
+      }
+
+      const broken = await cli("up", relayed);
+      expect(broken.code).toBe(1);
+      expect(broken.stderr).toContain("The seed command echo not-json did not print one JSON document");
+      const failed = await readState(broken.stdout.split("\n")[0] ?? "");
+      expect(failed).toMatchObject({ phase: "failed" });
+      expect(failed.error).toStartWith("The seed command echo not-json did not print one JSON document");
+      expect(await leftovers(failed.runId)).toEqual([]);
     },
     timeout,
   );

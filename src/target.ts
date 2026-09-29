@@ -7,7 +7,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { z } from "zod";
 import { errorCode } from "./findings.ts";
 
-export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; hostEnv: string[]; egress: string[] };
+export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; knownGaps: string[]; hostEnv: string[]; egress: string[] };
 export type TargetRef = { repo: string; path: string; commit: string; dirty: boolean };
 export type ComposeService = {
   build: boolean;
@@ -135,6 +135,7 @@ const settingsSchema = z.strictObject({
   seed: z.string().min(1),
   focus: z.array(z.string().min(1)).default([]),
   offLimits: z.array(z.string().min(1)).default([]),
+  knownGaps: z.array(z.string().min(1)).default([]),
   hostEnv: z.array(z.string().min(1)).default([]),
   egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
 });

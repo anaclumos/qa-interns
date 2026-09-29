@@ -160,6 +160,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
         "What owners, editors, and viewers can see and change, in the pages and in the API.",
       ],
       offLimits: ["Do not change the password of a seeded account."],
+      knownGaps: [],
       hostEnv: [],
       egress: [],
     });
@@ -771,6 +772,7 @@ services:
       seed: "node seed.mjs",
       focus: [],
       offLimits: [],
+      knownGaps: [],
       hostEnv: [],
       egress: [],
     });
