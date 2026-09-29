@@ -31,6 +31,7 @@ import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Pro
 export type RunOptions = {
   dir: string;
   rev: string;
+  dirty: boolean;
   interns: number;
   minutes: number;
   confirmMinutes: number;
@@ -366,7 +367,7 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
 async function explore(ctx: Context, intern: InternState, target: Target, minutes: number): Promise<{ outcome: Outcome<void>; findings: Finding[]; rejected: Rejected[] }> {
   const attempts: { attempt: number; environment: FindingEnvironment }[] = [];
   const outcome = await agentTask(ctx, intern.id, target, [], async (session, attempt, env, provider, note) => {
-    const environment = { commit: target.commit, environment: env.project, provider, model: session.model };
+    const environment = { commit: target.commit, dirty: target.dirty, environment: env.project, provider, model: session.model };
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
@@ -538,7 +539,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
 
 export async function runQa(opts: RunOptions): Promise<string> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
-  const ref = await resolveTarget(opts.dir, opts.rev);
+  const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
   const runId = newRunId();
   const runDir = runDirFor(runId);
   await mkdir(runsDir(), { recursive: true });
@@ -547,7 +548,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     runId,
     pid: process.pid,
     pidStart: processStart(process.pid),
-    target: { repo: ref.repo, path: ref.path, commit: ref.commit },
+    target: { repo: ref.repo, path: ref.path, commit: ref.commit, dirty: ref.dirty },
     options: { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 },
     phase: "preparing",
     error: null,
@@ -605,9 +606,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
   });
 
   const phases = async () => {
-    ctx.runnerImage = await opts.runnerImage();
     const source = join(runDir, "source");
     await exportTree(ref, source);
+    ctx.runnerImage = await opts.runnerImage();
     const target = await loadTarget(ref, source);
     const memory = environmentMemory(target);
     const free = freemem();

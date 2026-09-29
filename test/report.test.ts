@@ -25,7 +25,7 @@ const state: RunState = {
   runId: "7c1e9a04",
   pid: 48213,
   pidStart: 8312765,
-  target: { repo: "/home/owner/src/qa-interns", path: "eval/ledger", commit: "3f9c2e1d8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d" },
+  target: { repo: "/home/owner/src/qa-interns", path: "eval/ledger", commit: "3f9c2e1d8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d", dirty: false },
   options: { interns: 3, minutes: 30, confirmMinutes: 10, concurrency: 3 },
   phase: "done",
   error: null,
@@ -55,7 +55,7 @@ function finding(id: string, title: string, observed: string, contradicts: strin
     observed,
     contradicts,
     evidence: [`interns/${internId}/out/evidence/${id.slice(id.indexOf("/") + 1)}.png`],
-    environment: { commit: state.target.commit, environment: `qa-7c1e9a04-${internId}`, provider: internId === "i2" ? "codex" : "claude", model: null },
+    environment: { commit: state.target.commit, dirty: state.target.dirty, environment: `qa-7c1e9a04-${internId}`, provider: internId === "i2" ? "codex" : "claude", model: null },
   };
 }
 
@@ -105,6 +105,12 @@ describe("renderReport", () => {
     expect(at(`### ${negative.findings[0]!.title}`)).toBeLessThan(at("## Rejected finding files"));
     expect(at("## Rejected finding files")).toBeLessThan(at(rejected[0]!.file));
     expect(at(rejected[0]!.file)).toBeLessThan(at("## Interns"));
+  });
+
+  test("the header names the commit, and the uncommitted changes when the run copied the working tree", () => {
+    expect(markdown.split("\n")).toContain(`- Commit: \`${state.target.commit}\``);
+    const dirty = renderReport({ ...state, target: { ...state.target, dirty: true } }, [], []).markdown;
+    expect(dirty.split("\n")).toContain(`- Commit: \`${state.target.commit}\`, with the uncommitted changes and untracked files of the working tree`);
   });
 
   test("a confirmed group lists its reproduction count and interns", () => {

@@ -110,7 +110,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
     `# QA Interns run ${state.runId}`,
     "",
     `- Target: \`${state.target.repo}\`, path \`${state.target.path || "."}\``,
-    `- Commit: \`${state.target.commit}\``,
+    `- Commit: \`${state.target.commit}\`${state.target.dirty ? ", with the uncommitted changes and untracked files of the working tree" : ""}`,
     `- Ran: ${state.startedAt}${state.endedAt === null ? "" : ` to ${state.endedAt}`}`,
     `- Interns: ${summary.interns.testing} testing, ${summary.interns.confirming} confirming, ${summary.interns.judging} judging`,
     `- Providers: ${summary.providers.length > 0 ? summary.providers.join(", ") : "none"}`,
