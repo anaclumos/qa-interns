@@ -409,6 +409,45 @@ USER qa
   );
 
   test(
+    "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, and a run fails when every block overlaps one",
+    async () => {
+      const third = 4 * Math.floor(Math.random() * 64);
+      const subnet = `10.214.${third}.0/22`;
+      const blockers: string[] = [];
+      const block = async (range: string) => {
+        const name = `qair-f-e2e-${id}-range-${blockers.length}`;
+        await execute(["docker", "network", "create", "--internal", "--subnet", range, name]);
+        blockers.push(name);
+      };
+      const previous = process.env.QA_INTERNS_SUBNET;
+      process.env.QA_INTERNS_SUBNET = subnet;
+      try {
+        await block(`10.214.${third}.0/25`);
+        const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude" }]);
+        const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+        const runDir = await run();
+        const state = await readState(runDir);
+        expect(state.phase).toBe("done");
+        expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([
+          ["i1", "done"],
+          ["c1", "done"],
+        ]);
+        expect(internalSubnet(runDir, "i1")).toBe(`10.214.${third + 2}.0/25`);
+        expect(internalSubnet(runDir, "c1")).toBe(`10.214.${third + 2}.0/25`);
+        expect(await leftovers(state.runId)).toEqual([]);
+
+        await block(`10.214.${third + 3}.128/25`);
+        await expect(run()).rejects.toThrow(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${subnet} overlaps a Docker network or a host route`);
+      } finally {
+        if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+        else process.env.QA_INTERNS_SUBNET = previous;
+        if (blockers.length > 0) await execute(["docker", "network", "rm", ...blockers]);
+      }
+    },
+    timeout,
+  );
+
+  test(
     "ask returns the file the agent wrote, leaves nothing of its environment, and leaves other projects of the run alone",
     async () => {
       const runId = newRunId();
