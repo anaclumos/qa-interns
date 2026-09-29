@@ -873,6 +873,14 @@ describe.skipIf(!dockerAvailable)("validate", () => {
     expect(await validate(root, {}, ["--dirty", "--commit", "HEAD"])).toEqual({ code: 1, stdout: "", stderr: "qa-interns: --dirty checks the working tree, so it takes no --commit\n" });
   });
 
+  test("pass without the value of a hostEnv variable that secrets.hostEnv names", async () => {
+    const compose = "services:\n  web:\n    image: nginx:1.29-alpine\n    environment:\n      API_KEY: ${QA_INTERNS_TEST_KEY:?set the API key}\n";
+    const root = await fixture(compose, devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_KEY"], secrets: { hostEnv: ["QA_INTERNS_TEST_KEY"] } }));
+    const result = await validate(root);
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(result.stdout).toEndWith("hostEnv names QA_INTERNS_TEST_KEY, which the environment of qa-interns does not set. No checked setting depends on them.\n");
+  });
+
   test("pass without the value of a hostEnv variable that only the environment of a service reads", async () => {
     const compose = "services:\n  web:\n    image: nginx:1.29-alpine\n    environment:\n      API_KEY: ${QA_INTERNS_TEST_KEY:?set the API key}\n";
     const root = await fixture(compose, devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_KEY"] }));
