@@ -6,7 +6,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 
 ## Requirements
 
-- Linux on x86-64. Chrome for Testing has no Linux ARM64 build.
+- Linux 5.19 or later on x86-64, with cgroup v2. Chrome for Testing has no Linux ARM64 build. QA Interns reads the peak memory of each container from the `memory.peak` file of its cgroup, which older kernels and cgroup v1 do not have. `qa-interns doctor` checks that it can read that file.
 - Docker Engine with Compose 5.0 or later, the `isolated` bridge gateway mode, and privileged containers that can use loop devices. QA Interns mounts each intern's output disk from such a container, so the state directory must be on a mount with shared propagation, which is the systemd default. `qa-interns doctor` checks all of these. Compose 2 drops `env_file` paths from `docker compose config --no-env-resolution`, which the target checks read.
 - Bun 1.4 or later, Git, and `flock` from util-linux.
 - At least one agent login: Claude Code, Codex, Cursor, or Grok (see [Logins](#logins)).
@@ -158,7 +158,7 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when set):
 
-- `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the interns, then the connections that target services opened through the relay.
+- `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the interns, then the connections that target services opened through the relay, then the environments.
 - `findings.json`: the same data as JSON.
 - `tickets/<group>/`: a ticket draft for each confirmed group, for a person to review and file on a tracker. QA Interns files nothing. `title.txt` holds the title of the group's first finding. `body.md` holds the run id, the commit, the kind, the reproductions, the conditions, steps, observation, contradiction, and evidence paths of the first finding, the intern and observation of each other finding in the group, and the confirmation. Each text an intern wrote is in a Markdown code block with no escape characters added, so a Markdown renderer shows it as written. The folder holds a hard link to each evidence file that `body.md` lists, at the same path, so the draft takes no extra disk space, a copy of the folder holds the files, and a change to a file in the folder changes the run's evidence file too. An evidence file that is not a regular file at exactly that path, for example because it is missing or its path passes through a symbolic link, is not linked, and `body.md` ends with a list of those files and the reason for each.
 - `interns/<id>/out/`: each intern's findings and evidence (screenshots, recordings, HAR files, console logs). After a move to another login, the next attempt writes to `interns/<id>/out-2/`, the one after it to `out-3/`, and so on. The id of a finding from such an attempt names its folder, as in `i1/out-2/<slug>`.
@@ -169,6 +169,15 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 - `state.json`: the run's phase and every intern's status.
 
 A finding is confirmed when two or more interns reproduced it.
+
+The report has one entry for each environment that an intern, the judge, or a confirmation started, including each attempt after a move to another login. An entry has the time QA Interns began to create the environment and the time its ready check passed, which is empty when the check never passed. An environment without a target, such as the judge's, is ready when its containers run. For each container of the environment, QA Interns reads at teardown:
+
+- The container's state.
+- Its peak memory, which is the `memory.peak` value of its cgroup, in bytes in `findings.json`. It counts page cache, as `mem_limit` does. A container that stopped before teardown has no peak memory.
+- Whether the kernel killed a process in the container for lack of memory, whichever process that was.
+- How many times its restart policy restarted it.
+
+A restart resets the peak memory and the out-of-memory flag. For a container that restarted while its environment started, both cover only the time since its last restart.
 
 The **Egress connections** section of `report.md` and the `egress` list of `findings.json` count the relayed connections of the whole run, with one row for each host, outcome, and error, and the interns whose environments opened them. An `egress` host that no target service connected to has a row with no outcome and 0 connections. The relay passes TLS through unchanged, so it counts connections, not HTTP requests, and one connection can carry many requests. The relay records a connection when its outcome is known, with one of these outcomes:
 
@@ -199,7 +208,7 @@ A signal to `run` while the command runs after a done or failed run, such as the
 
 `qa-interns replay <run>` reruns the confirmed findings of an earlier run against a fresh copy of the target, for example at the commit of a change. It resolves `--commit` in the repository that the earlier run tested, then exports, checks, and builds the target at the earlier run's path, as steps 1 and 2 of a run do. It hands the first finding of each confirmed group to a confirming intern in a fresh environment, as step 6 does, and runs no testing intern and no judge. `--group <id>` limits the replay to one confirmed group; repeat it to name more. The replay fails when no intern records a result for any group.
 
-A replay is a run of its own, with its own run directory, and `status`, `report`, and `down` work on it. Its `report.md` lists the groups that the interns reproduced, then the groups that they did not reproduce, then the groups that no intern checked. It ends with the interns and the connections through the relay, as the report of a run does. Each group keeps the id it has in the earlier run and shows the finding the intern followed and the intern's confirmation. `findings.json` carries the same data. Each finding in it is as the earlier run recorded it, so its evidence paths are relative to the earlier run's directory. A replay writes no ticket drafts. A replay cannot be replayed; replay the earlier run again.
+A replay is a run of its own, with its own run directory, and `status`, `report`, and `down` work on it. Its `report.md` lists the groups that the interns reproduced, then the groups that they did not reproduce, then the groups that no intern checked. It ends with the interns, the connections through the relay, and the environments, as the report of a run does. Each group keeps the id it has in the earlier run and shows the finding the intern followed and the intern's confirmation. `findings.json` carries the same data. Each finding in it is as the earlier run recorded it, so its evidence paths are relative to the earlier run's directory. A replay writes no ticket drafts. A replay cannot be replayed; replay the earlier run again.
 
 ## Isolation
 

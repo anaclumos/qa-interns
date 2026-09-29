@@ -25,6 +25,10 @@ export type InternState = {
   endedAt: string | null;
 };
 
+export type ContainerStats = { service: string; number: number; state: string; oomKilled: boolean; restarts: number; memoryPeak: number | null };
+
+export type EnvironmentStats = { intern: string; attempt: number; startedAt: string; readyAt: string | null; containers: ContainerStats[] | null };
+
 export type RunPhase = "preparing" | "building" | "starting" | "up" | "testing" | "grouping" | "confirming" | "reporting" | "done" | "failed";
 
 export type RunState = {
