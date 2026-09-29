@@ -73,3 +73,5 @@ export type Group = {
   findings: Finding[];
   confirmation: { intern: string; provider: Provider | null; result: Confirmation | null; error: string | null } | null;
 };
+
+export type Replay = { runId: string; target: RunState["target"]; groups: Group[] };
