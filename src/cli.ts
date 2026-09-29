@@ -117,7 +117,7 @@ async function main(args: string[]): Promise<number> {
     case "down": {
       const dir = await resolveRunDir(runArg(command, rest));
       const state = await readState(dir);
-      if (state.phase !== "done" && state.phase !== "failed" && running(state.pid, state.pidStart)) {
+      if (running(state.pid, state.pidStart)) {
         try {
           process.kill(state.pid, "SIGTERM");
           print(`Sent SIGTERM to run ${state.runId} (process ${state.pid}).`);

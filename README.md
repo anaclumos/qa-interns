@@ -166,7 +166,7 @@ A finding is confirmed when two or more interns reproduced it.
 `run --on-end <command>` runs `<command>` with `sh -c` on the host when the run ends, whether it is done, failed, or interrupted by SIGINT, SIGTERM, or SIGHUP. The command runs after the teardown and after `report.md`, `findings.json`, and `state.json` are written. It gets the environment of `qa-interns` and these variables:
 
 - `QA_INTERNS_RUN_DIR`: the run directory.
-- `QA_INTERNS_PHASE`: `done` or `failed`. An interrupted run is `failed`, and the `error` in its `state.json` starts with `interrupted`.
+- `QA_INTERNS_PHASE`: `done` when the run is done, and `failed` otherwise, including an interrupt and a failure to write `report.md`, `findings.json`, or `state.json`. The `error` in the `state.json` of an interrupted run starts with `interrupted`.
 
 Quote the command so that the shell that starts `run` does not expand these variables:
 
@@ -174,7 +174,9 @@ Quote the command so that the shell that starts `run` does not expand these vari
 qa-interns run eval/ledger --on-end 'echo "$QA_INTERNS_PHASE $QA_INTERNS_RUN_DIR" >> "$HOME/qa-runs.log"'
 ```
 
-`run` waits for the command to exit, then exits 0 when the run is done, 1 when it failed, and 130 after an interrupt. `run` does not show the command's output. When the command exits with a code other than 0, `run` prints that code and the end of the command's error output, and a run that is done exits 1. A run that fails before it prints its run directory, such as on a missing logins file, does not run the command. When `qa-interns down` stops a running orchestrator, its wait of up to 120 seconds for that orchestrator to exit includes the time the command takes.
+The command writes to the standard output and error of `run`. `run` waits for the command to exit, then exits 0 when the run is done, 1 when it failed, and 130 after an interrupt. When the command exits with a code other than 0, `run` prints that code, and a run that is done exits 1. A run that fails before it prints its run directory, such as on a missing logins file, does not run the command.
+
+A signal to `run` while the command runs after a done or failed run, such as the SIGTERM that `qa-interns down` sends, sends SIGTERM to the command, and `run` exits 130. After an interrupt, `run` ignores further signals until it exits, so the wait of up to 120 seconds that `qa-interns down` allows includes the time the command takes.
 
 ## Isolation
 

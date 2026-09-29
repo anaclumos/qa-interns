@@ -18,6 +18,7 @@ const fakeImage = `qair-f-e2e-runner:${id}`;
 const target = join(root, "repo", "eval", "ledger");
 const previousStateHome = process.env.XDG_STATE_HOME;
 const timeout = 20 * 60_000;
+const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
 const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
@@ -424,13 +425,13 @@ USER qa
         minutes: 5,
         confirmMinutes: 0.5,
         loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
-        onEnd: `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; echo 'no notification' >&2; exit 3`,
+        onEnd: `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; exit 3`,
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
 
       await expect(run).rejects.toThrow("No testing intern completed");
-      await expect(run).rejects.toThrow("; The --on-end command exited with 3: no notification");
+      await expect(run).rejects.toThrow("; The --on-end command exited with 3");
       const runDir = lines[0];
       if (runDir === undefined) throw new Error("runQa printed no run directory");
       expect(await Bun.file(ended).text()).toBe(`${runDir}\nfailed\n`);
@@ -463,7 +464,7 @@ USER qa
       const cli = Bun.spawn(
         [
           process.execPath,
-          join(import.meta.dir, "..", "src", "cli.ts"),
+          cliScript,
           "run",
           target,
           "--interns",
@@ -489,11 +490,49 @@ USER qa
       const [code, stderr] = await Promise.all([cli.exited, new Response(cli.stderr).text()]);
 
       expect(code).toBe(130);
-      expect(stderr).toContain("The --on-end command exited with 3: no notification");
+      expect(stderr).toContain("no notification\nThe --on-end command exited with 3\n");
       expect(await Bun.file(ended).text()).toBe(`${runDir}\nfailed\n`);
       const state = await readState(runDir);
       expect(state).toMatchObject({ phase: "failed", error: "interrupted" });
       expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "down stops a failed run whose --on-end command is still running",
+    async () => {
+      const bare = join(root, "bare");
+      await mkdir(bare);
+      await Bun.write(join(bare, "README.md"), "No dev container.\n");
+      const git = ["git", "-C", bare, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "No dev container"]);
+      const ended = join(root, "down-ended.txt");
+      const cli = Bun.spawn(
+        [
+          process.execPath,
+          cliScript,
+          "run",
+          bare,
+          "--logins",
+          await logins("down", [{ id: "claude-1", provider: "claude" }]),
+          "--on-end",
+          `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}.tmp' && mv '${ended}.tmp' '${ended}' && exec sleep 600`,
+        ],
+        { stdin: "ignore", stdout: "ignore", stderr: "pipe" },
+      );
+      while (!existsSync(ended) && cli.exitCode === null) await Bun.sleep(50);
+      const [runDir = "", phase] = (await Bun.file(ended).text()).split("\n");
+      expect(phase).toBe("failed");
+
+      const down = await capture([process.execPath, cliScript, "down", runDir]);
+      expect(down.code).toBe(0);
+      expect(down.stdout).toContain(`(process ${cli.pid})`);
+      expect(await cli.exited).toBe(130);
+      expect(await new Response(cli.stderr).text()).toContain("The --on-end command exited with");
+      expect(await readState(runDir)).toMatchObject({ phase: "failed" });
     },
     timeout,
   );
