@@ -1,5 +1,5 @@
 import type { Subprocess } from "bun";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -8,7 +8,7 @@ import { z } from "zod";
 import { errorCode } from "./findings.ts";
 
 export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; knownGaps: string[]; hostEnv: string[]; egress: string[] };
-export type TargetRef = { repo: string; path: string; commit: string };
+export type TargetRef = { repo: string; path: string; commit: string; dirty: boolean };
 export type ComposeService = {
   build: boolean;
   image: string | null;
@@ -266,19 +266,38 @@ async function render(projectName: string, files: string[], env?: Record<string,
   return JSON.parse(await execute(cmd, { env }));
 }
 
-export async function resolveTarget(dir: string, rev: string): Promise<TargetRef> {
+export async function resolveTarget(dir: string, rev: string, dirty: boolean): Promise<TargetRef> {
   const git = ["git", "-C", dir, "rev-parse"];
   const repo = (await execute([...git, "--show-toplevel"])).trim();
   const prefix = (await execute([...git, "--show-prefix"])).trim();
   const commit = (await execute([...git, "--verify", "--end-of-options", `${rev}^{commit}`])).trim();
-  return { repo, path: prefix.endsWith("/") ? prefix.slice(0, -1) : prefix, commit };
+  return { repo, path: prefix.endsWith("/") ? prefix.slice(0, -1) : prefix, commit, dirty };
+}
+
+function present(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
+async function workingTreeFiles(dir: string): Promise<Buffer> {
+  const listed = await execute(["git", "-C", dir, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--deduplicate"]);
+  const files = listed.split("\0").filter((file) => file !== "" && present(join(dir, file)));
+  return Buffer.from(files.map((file) => `${file}\0`).join(""));
 }
 
 export async function exportTree(ref: TargetRef, dest: string): Promise<void> {
   await mkdir(dest, { recursive: true });
-  const archiveCmd = ["git", "-C", ref.repo, "archive", "--format=tar", `${ref.commit}:${ref.path}`];
+  const dir = join(ref.repo, ref.path);
+  const archiveCmd = ref.dirty
+    ? ["tar", "-c", "-C", dir, "--no-recursion", "--null", "--verbatim-files-from", "-T", "-"]
+    : ["git", "-C", ref.repo, "archive", "--format=tar", `${ref.commit}:${ref.path}`];
   const extractCmd = ["tar", "-x", "-C", dest];
-  const archive = track(Bun.spawn(archiveCmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe" }));
+  const archive = track(Bun.spawn(archiveCmd, { stdin: ref.dirty ? await workingTreeFiles(dir) : "ignore", stdout: "pipe", stderr: "pipe" }));
   const extract = track(Bun.spawn(extractCmd, { stdin: archive.stdout, stdout: "ignore", stderr: "pipe" }));
   const [archiveCode, archiveErr, extractCode, extractErr] = await Promise.all([
     archive.exited,

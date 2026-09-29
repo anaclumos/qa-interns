@@ -38,7 +38,7 @@ qa-interns doctor
 | Command | What it does |
 | --- | --- |
 | `qa-interns doctor [--logins <file>]` | Checks Docker, Compose, the isolated network mode, the Dev Container CLI, the runner image and its agents, and the logins. Builds the runner image when it is missing. |
-| `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. With `--on-end`, runs the command when the run ends (see [Command when a run ends](#command-when-a-run-ends)). |
+| `qa-interns run <target-dir> [--commit <rev> \| --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). With `--dirty`, runs them against a copy of the target's working tree, taken when the run starts: the tracked files that the working tree holds, as they are, and the untracked files that Git does not ignore. `state.json` and the `environment` of each finding record the commit of `HEAD` with `dirty: true`, and `report.md` names the uncommitted changes after the commit. Prints the run directory first. With `--on-end`, runs the command when the run ends (see [Command when a run ends](#command-when-a-run-ends)). |
 | `qa-interns replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]` | Hands each confirmed group of the earlier run to a confirming intern against that run's target at the commit (default `HEAD`, 10 minutes per confirmation). See [Replay](#replay). Prints the run directory first. |
 | `qa-interns up <target-dir> [--commit <rev>]` | Starts one environment of the target at the commit (default `HEAD`) with no interns, runs its `ready` check and `seed`, and leaves it running. Prints the run directory first, then the Compose project, the IDs of the runner and the dev container, and the seed output. When a step fails, it tears the environment down. `qa-interns down` removes the environment. |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
@@ -81,7 +81,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
 
-- A `dockerComposeFile` entry outside the target directory, so the tested services always come from the commit.
+- A `dockerComposeFile` entry outside the target directory, so the tested services always come from the run's copy of the target.
 - An `include` path, `project_directory`, or `env_file`, or an `extends.file`, that is not an existing path inside the target directory. These paths are checked as written: a path that contains `$` or `:`, or starts with `~` or `github.com/`, is rejected, because Compose may expand it or load it from a remote source. The `.env` file that Compose reads from an included project's directory must also resolve inside the target. An `include` inside an included file cannot set a relative `project_directory` or `env_file`, because Compose resolves those against the directory it runs in.
 - A `container_name`.
 - An external volume or network, or a volume or network with an explicit `name:`.
@@ -143,7 +143,7 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 ## What a run does
 
-1. Exports the target at the commit and checks its dev container and Compose files.
+1. Exports the target at the commit, or copies its working tree with `--dirty`, and checks its dev container and Compose files.
 2. Builds the target's images once.
 3. Starts one environment per intern, each as its own Compose project on its own isolated network, at most as many at once as free memory, login capacity, and free network slots allow, and at most four starting at a time. Checks each dev container that `devcontainer up` created.
 4. Starts one agent per intern inside that intern's runner container, over the Agent Client Protocol.
