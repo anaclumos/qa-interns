@@ -14,4 +14,4 @@ pre-push:
     - name: plugin validate
       run: bunx @anthropic-ai/claude-code@2.1.283 plugin validate . && bunx @anthropic-ai/claude-code@2.1.283 plugin validate skills
     - name: test
-      run: bun test --timeout 1200000
+      run: unset $(git rev-parse --local-env-vars) && bun test --timeout 1200000
