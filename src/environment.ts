@@ -511,7 +511,7 @@ export async function memoryPeak(id: string, pid: number): Promise<number | null
   return bytes;
 }
 
-async function containerStats(project: string): Promise<ContainerStats[]> {
+export async function containerStats(project: string): Promise<ContainerStats[]> {
   const ids = (await execute(["docker", "ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`])).split("\n").filter((id) => id !== "");
   if (ids.length === 0) return [];
   const containers = inspectSchema.parse(JSON.parse(await execute(["docker", "inspect", "--type", "container", ...ids])));
@@ -548,15 +548,11 @@ async function removeAsRoot(dir: string, image: string, paths: string[]): Promis
   await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
 }
 
-export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<ContainerStats[]> {
-  try {
-    return await containerStats(project);
-  } finally {
-    await down(project);
-    await removeImages([`vsc-${project}-`]);
-    await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
-    await saveDisks(runDir, name, project, image);
-  }
+export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<void> {
+  await down(project);
+  await removeImages([`vsc-${project}-`]);
+  await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
+  await saveDisks(runDir, name, project, image);
 }
 
 export async function saveDisks(runDir: string, name: string, project: string, image: string): Promise<void> {

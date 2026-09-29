@@ -6,6 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import {
   buildImages,
+  containerStats,
   environmentMemory,
   freeSlot,
   freeSlots,
@@ -792,7 +793,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
   );
 
   test(
-    "read each container's state, peak memory, out-of-memory kill, and restarts at teardown, after the ready check passed",
+    "read each container's state, peak memory, out-of-memory kill, and restarts after the ready check passed",
     async () => {
       const runId = `btest-${crypto.randomUUID().slice(0, 8)}`;
       const runDir = await scratch();
@@ -825,7 +826,8 @@ ${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", 
         await execute(["docker", "exec", worker, "touch", "/tmp/stop"]);
         await execute(["docker", "wait", worker]);
 
-        const stats = await stopEnvironment(runDir, "i1", environment.project, image);
+        const stats = await containerStats(environment.project);
+        await stopEnvironment(runDir, "i1", environment.project, image);
         expect(stats.map(({ memoryPeak, ...rest }) => rest)).toEqual([
           { service: "flaky", number: 1, state: "running", oomKilled: false, restarts: 1 },
           { service: "hog", number: 1, state: "running", oomKilled: true, restarts: 0 },

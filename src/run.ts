@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { AgentError, openSession, type Session } from "./acp.ts";
 import {
   buildImages,
+  containerStats,
   environmentMemory,
   freeSlot,
   freeSlots,
@@ -245,9 +246,16 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
   if (lease === null) return null;
   const project = `qa-${ctx.runId}-${id}`;
   let slot: number | undefined;
-  let started = null as EnvironmentStats | null;
+  let started = false;
+  let unread = null as EnvironmentStats | null;
   const teardown = async () => {
-    if (started !== null) started.containers = await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage);
+    const environment = unread;
+    unread = null;
+    try {
+      if (environment !== null) environment.containers = await containerStats(project);
+    } finally {
+      await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage);
+    }
   };
   try {
     await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, project, startedAt: now() });
@@ -258,7 +266,8 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
         slot = await freeSlot(ctx.reserved);
         const environment: EnvironmentStats = { intern: id, attempt: count, startedAt: now(), readyAt: null, containers: null };
         ctx.environments.push(environment);
-        started = environment;
+        started = true;
+        unread = environment;
         return startEnvironment(environmentSpec(ctx, id, slot, target, current, count), () => {
           environment.readyAt = now();
         });
@@ -267,7 +276,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
       if (!(outcome instanceof AgentError)) return outcome;
       ctx.scheduler.exhaust(lease);
       await teardown();
-      started = null;
+      started = false;
       if (slot !== undefined) ctx.reserved.delete(slot);
       slot = undefined;
       lease.release();
@@ -282,7 +291,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
     }
   } finally {
     try {
-      await teardown();
+      if (started) await teardown();
     } catch (error) {
       ctx.teardowns.push(`${id}: ${message(error)}`);
       await note(`teardown failed: ${message(error)}`);
