@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, stat, statfs } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { errorCode } from "./findings.ts";
 import { capture, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
-import type { GeneratedFile, Mount } from "./types.ts";
+import type { ContainerStats, GeneratedFile, Mount } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
 export type EnvironmentSpec = {
@@ -360,7 +361,7 @@ async function waitReady(ready: string, runner: string, exec: string[], env: Rec
   }
 }
 
-export async function startEnvironment(spec: EnvironmentSpec): Promise<Environment> {
+export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void): Promise<Environment> {
   const project = projectName(spec.runId, spec.name);
   const dir = envDir(spec);
   const log = join(dir, "env.log");
@@ -369,6 +370,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const tmp = join(dir, "tmp");
   if (spec.target === null) {
     await execute(["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds], { env: { ...process.env, DOCKER_CONFIG: await dockerConfig(tmp) }, log });
+    ready?.();
     return { project, runner: await runnerId(project), out: spec.runner.out, devContainer: null, seed: null };
   }
   const target = spec.target;
@@ -405,6 +407,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const runner = await runnerId(project);
   const exec = [process.execPath, devcontainer, "exec", "--container-id", devContainer, "--workspace-folder", workspace, "--override-config", config];
   await waitReady(target.settings.ready, runner, exec, env, log);
+  ready?.();
   const output = await execute([...exec, "sh", "-c", target.settings.seed], { env, log, timeout: 10 * minute });
   let seed: unknown;
   try {
@@ -467,6 +470,60 @@ async function projectObjects(project: string): Promise<string[]> {
   return left.join("\n").split("\n").filter((id) => id !== "");
 }
 
+const inspectSchema = z.array(
+  z.object({
+    Id: z.string(),
+    RestartCount: z.int(),
+    State: z.object({ Status: z.string(), Running: z.boolean(), OOMKilled: z.boolean(), Pid: z.int() }),
+    Config: z.object({ Labels: z.object({ "com.docker.compose.service": z.string(), "com.docker.compose.container-number": z.string().transform(Number).pipe(z.int().positive()) }) }),
+  }),
+);
+
+async function readLive(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT" || errorCode(error) === "ESRCH") return null;
+    throw error;
+  }
+}
+
+export async function memoryPeak(id: string, pid: number): Promise<number | null> {
+  const cgroups = await readLive(`/proc/${pid}/cgroup`);
+  if (cgroups === null) return null;
+  const unified = cgroups.split("\n").find((line) => line.startsWith("0::"));
+  if (unified === undefined) throw new Error(`/proc/${pid}/cgroup of container ${id} has no cgroup v2 entry, and QA Interns reads peak memory from cgroup v2`);
+  const parts = unified.slice(3).split("/");
+  const own = parts.findIndex((part) => part.includes(id));
+  if (own === -1) return null;
+  const dir = join("/sys/fs/cgroup", ...parts.slice(0, own + 1));
+  const peak = await readLive(join(dir, "memory.peak"));
+  if (peak === null) {
+    if (existsSync(dir)) throw new Error(`${dir} has no memory.peak, which needs Linux 5.19 or later with the cgroup v2 memory controller`);
+    return null;
+  }
+  const bytes = Number(peak);
+  if (!Number.isSafeInteger(bytes)) throw new Error(`${dir}/memory.peak holds ${JSON.stringify(peak)} instead of a byte count`);
+  return bytes;
+}
+
+async function containerStats(project: string): Promise<ContainerStats[]> {
+  const ids = (await execute(["docker", "ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`])).split("\n").filter((id) => id !== "");
+  if (ids.length === 0) return [];
+  const containers = inspectSchema.parse(JSON.parse(await execute(["docker", "inspect", "--type", "container", ...ids])));
+  const stats = await Promise.all(
+    containers.map(async ({ Id, RestartCount, State, Config }) => ({
+      service: Config.Labels["com.docker.compose.service"],
+      number: Config.Labels["com.docker.compose.container-number"],
+      state: State.Status,
+      oomKilled: State.OOMKilled,
+      restarts: RestartCount,
+      memoryPeak: State.Running ? await memoryPeak(Id, State.Pid) : null,
+    })),
+  );
+  return stats.toSorted((a, b) => a.service.localeCompare(b.service) || a.number - b.number);
+}
+
 async function down(project: string): Promise<void> {
   await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
   const ids = await projectObjects(project);
@@ -487,11 +544,15 @@ async function removeAsRoot(dir: string, image: string, paths: string[]): Promis
   await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
 }
 
-export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<void> {
-  await down(project);
-  await removeImages([`vsc-${project}-`]);
-  await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
-  await saveDisks(runDir, name, project, image);
+export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<ContainerStats[]> {
+  try {
+    return await containerStats(project);
+  } finally {
+    await down(project);
+    await removeImages([`vsc-${project}-`]);
+    await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
+    await saveDisks(runDir, name, project, image);
+  }
 }
 
 export async function saveDisks(runDir: string, name: string, project: string, image: string): Promise<void> {

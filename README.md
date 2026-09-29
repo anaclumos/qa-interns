@@ -6,7 +6,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 
 ## Requirements
 
-- Linux on x86-64. Chrome for Testing has no Linux ARM64 build.
+- Linux 5.19 or later on x86-64, with cgroup v2. Chrome for Testing has no Linux ARM64 build. QA Interns reads the peak memory of each container from the `memory.peak` file of its cgroup, which older kernels and cgroup v1 do not have. `qa-interns doctor` checks that it can read that file.
 - Docker Engine with Compose 5.0 or later, the `isolated` bridge gateway mode, and privileged containers that can use loop devices. QA Interns mounts each intern's output disk from such a container, so the state directory must be on a mount with shared propagation, which is the systemd default. `qa-interns doctor` checks all of these. Compose 2 drops `env_file` paths from `docker compose config --no-env-resolution`, which the target checks read.
 - Bun 1.4 or later, Git, and `flock` from util-linux.
 - At least one agent login: Claude Code, Codex, Cursor, or Grok (see [Logins](#logins)).
@@ -150,7 +150,7 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when set):
 
-- `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the interns.
+- `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the interns, then the environments.
 - `findings.json`: the same data as JSON.
 - `interns/<id>/out/`: each intern's findings and evidence (screenshots, recordings, HAR files, console logs). After a move to another login, the next attempt writes to `interns/<id>/out-2/`, the one after it to `out-3/`, and so on. The id of a finding from such an attempt names its folder, as in `i1/out-2/<slug>`.
 - `interns/<id>/transcript.jsonl`: the agent traffic of each intern.
@@ -159,6 +159,15 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 - `state.json`: the run's phase and every intern's status.
 
 A finding is confirmed when two or more interns reproduced it.
+
+The report has one entry for each environment that an intern, the judge, or a confirmation started, including each attempt after a move to another login. An entry has the time QA Interns began to create the environment and the time its ready check passed, which is empty when the check never passed. An environment without a target, such as the judge's, is ready when its containers run. For each container of the environment, QA Interns reads at teardown:
+
+- The container's state.
+- Its peak memory, which is the `memory.peak` value of its cgroup, in bytes in `findings.json`. It counts page cache, as `mem_limit` does. A container that stopped before teardown has no peak memory.
+- Whether the kernel killed a process in the container for lack of memory, whichever process that was.
+- How many times its restart policy restarted it.
+
+A restart resets the peak memory and the out-of-memory flag. For a container that restarted while its environment started, both cover only the time since its last restart.
 
 ## Isolation
 

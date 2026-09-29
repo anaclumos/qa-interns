@@ -1,5 +1,5 @@
 import { stripControl } from "./findings.ts";
-import type { Group, InternState, Rejected, RunState } from "./types.ts";
+import type { EnvironmentStats, Group, InternState, Rejected, RunState } from "./types.ts";
 
 export function reproductions(group: Group): string[] {
   const interns = new Set(group.findings.map((finding) => finding.intern));
@@ -87,7 +87,19 @@ function section(group: Group, interns: string[]) {
   return lines;
 }
 
-export function renderReport(state: RunState, groups: Group[], rejected: Rejected[]): { markdown: string; json: unknown } {
+function usage(environment: EnvironmentStats) {
+  const ready = environment.readyAt === null ? "not reached" : `after ${((Date.parse(environment.readyAt) - Date.parse(environment.startedAt)) / 1000).toFixed(1)} s`;
+  const lines = [`### ${environment.intern}, attempt ${environment.attempt}`, "", `- Started: ${environment.startedAt}`, `- Ready: ${ready}`, ""];
+  if (environment.containers === null) return [...lines, "No container was read before teardown."];
+  lines.push("| Container | State | Peak memory | Out-of-memory kill | Restarts |", "| --- | --- | --- | --- | --- |");
+  for (const container of environment.containers) {
+    const peak = container.memoryPeak === null ? "not read" : `${(container.memoryPeak / 1024 ** 2).toFixed(1)} MiB`;
+    lines.push(`| ${[`${container.service}-${container.number}`, container.state, peak, container.oomKilled ? "yes" : "no", container.restarts].map(cell).join(" | ")} |`);
+  }
+  return lines;
+}
+
+export function renderReport(state: RunState, groups: Group[], rejected: Rejected[], environments: EnvironmentStats[]): { markdown: string; json: unknown } {
   const rows = groups.map((group) => ({ group, interns: reproductions(group) }));
   const confirmed = rows.filter((row) => row.interns.length >= 2);
   const seenOnce = rows.filter((row) => row.interns.length < 2);
@@ -138,6 +150,9 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
       );
     }
   }
+  lines.push("", "## Environments");
+  if (environments.length === 0) lines.push("", "No environment started.");
+  for (const environment of environments) lines.push("", ...usage(environment));
 
   return {
     markdown: stripControl(`${lines.join("\n")}\n`),
@@ -152,6 +167,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
       })),
       rejected,
       interns: state.interns,
+      environments,
     },
   };
 }

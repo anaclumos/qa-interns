@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderReport, reproductions } from "../src/report.ts";
-import type { Finding, Group, InternState, Provider, RunState } from "../src/types.ts";
+import type { EnvironmentStats, Finding, Group, InternState, Provider, RunState } from "../src/types.ts";
 
 function intern(id: string, role: InternState["role"], provider: Provider | null, status: InternState["status"], findings: number, detail: string | null): InternState {
   return {
@@ -82,6 +82,21 @@ const negative: Group = {
 
 const rejected = [{ intern: "i2", file: "interns/i2/out/findings/slow-export.json", reason: "steps must have at least one entry" }];
 
+const environments: EnvironmentStats[] = [
+  {
+    intern: "i1",
+    attempt: 1,
+    startedAt: "2026-09-26T09:00:05.000Z",
+    readyAt: "2026-09-26T09:00:47.300Z",
+    containers: [
+      { service: "db", number: 1, state: "running", oomKilled: false, restarts: 0, memoryPeak: 83_886_080 },
+      { service: "qa-runner", number: 1, state: "running", oomKilled: false, restarts: 0, memoryPeak: 1_288_490_189 },
+      { service: "web|api", number: 2, state: "exited", oomKilled: true, restarts: 3, memoryPeak: null },
+    ],
+  },
+  { intern: "i2", attempt: 2, startedAt: "2026-09-26T09:03:00.000Z", readyAt: null, containers: null },
+];
+
 describe("reproductions", () => {
   test("counts distinct reporters plus the confirming intern only when it reproduced", () => {
     expect(reproductions(overlap)).toEqual(["i1", "i2", "c1"]);
@@ -92,11 +107,11 @@ describe("reproductions", () => {
 });
 
 describe("renderReport", () => {
-  const { markdown, json } = renderReport(state, [exportTotal, overlap, negative], rejected);
+  const { markdown, json } = renderReport(state, [exportTotal, overlap, negative], rejected, environments);
 
-  test("orders the sections: confirmed, seen once, rejected files, interns", () => {
+  test("orders the sections: confirmed, seen once, rejected files, interns, environments", () => {
     const headings = markdown.split("\n").filter((line) => line.startsWith("## "));
-    expect(headings).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"]);
+    expect(headings).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns", "## Environments"]);
     const at = (text: string) => markdown.indexOf(text);
     expect(at("## Confirmed")).toBeLessThan(at(`### ${overlap.findings[0]!.title}`));
     expect(at(`### ${overlap.findings[0]!.title}`)).toBeLessThan(at("## Seen once"));
@@ -117,14 +132,29 @@ describe("renderReport", () => {
   });
 
   test("the intern table has one row per intern and escapes pipes in cells", () => {
-    const rows = markdown.slice(markdown.indexOf("## Interns")).split("\n").filter((line) => line.startsWith("| "));
+    const rows = markdown.slice(markdown.indexOf("## Interns"), markdown.indexOf("## Environments")).split("\n").filter((line) => line.startsWith("| "));
     expect(rows).toHaveLength(state.interns.length + 2);
     for (const intern of state.interns) expect(rows.filter((row) => row.startsWith(`| ${intern.id} |`))).toHaveLength(1);
     expect(rows.find((row) => row.startsWith("| i2 |"))).toContain("I found \\| nothing else");
   });
 
-  test("the JSON form carries the same groups, rejected files, and interns", () => {
-    const data = json as { run: { confirmedGroups: number; seenOnceGroups: number; rejectedFiles: number; providers: string[] }; groups: { id: string; confirmed: boolean; reproductions: string[] }[]; rejected: unknown; interns: unknown };
+  test("each environment lists its time to ready and one row per container with its peak memory, out-of-memory kill, and restarts", () => {
+    const section = markdown.slice(markdown.indexOf("## Environments"));
+    const first = section.slice(section.indexOf("### i1, attempt 1"), section.indexOf("### i2, attempt 2"));
+    expect(first).toContain("- Started: 2026-09-26T09:00:05.000Z\n- Ready: after 42.3 s\n");
+    expect(first.split("\n").filter((line) => line.startsWith("| ")).slice(2)).toEqual([
+      "| db-1 | running | 80.0 MiB | no | 0 |",
+      "| qa-runner-1 | running | 1228.8 MiB | no | 0 |",
+      "| web\\|api-2 | exited | not read | yes | 3 |",
+    ]);
+    const second = section.slice(section.indexOf("### i2, attempt 2"));
+    expect(second).toContain("- Ready: not reached\n");
+    expect(second).toContain("No container was read before teardown.");
+    expect(second).not.toContain("| ");
+  });
+
+  test("the JSON form carries the same groups, rejected files, interns, and environments", () => {
+    const data = json as { run: { confirmedGroups: number; seenOnceGroups: number; rejectedFiles: number; providers: string[] }; groups: { id: string; confirmed: boolean; reproductions: string[] }[]; rejected: unknown; interns: unknown; environments: unknown };
     expect(data.run).toMatchObject({ confirmedGroups: 1, seenOnceGroups: 2, rejectedFiles: 1, providers: ["claude", "codex"] });
     expect(data.groups.map((group) => [group.id, group.confirmed, group.reproductions])).toEqual([
       ["g1", true, ["i1", "i2", "c1"]],
@@ -133,6 +163,7 @@ describe("renderReport", () => {
     ]);
     expect(data.rejected).toEqual(rejected);
     expect(data.interns).toEqual(state.interns);
+    expect(data.environments).toEqual(environments);
     expect(JSON.parse(JSON.stringify(json))).toEqual(json);
   });
 
@@ -142,20 +173,20 @@ describe("renderReport", () => {
       findings: [{ ...finding("i1/bidi", "Totals \u{202e}disagree", "Row \u001b[31mred\u001b[0m"), evidence: ["interns/i1/out/evidence/a\u0007.png"] }],
       confirmation: { intern: "c1", provider: "codex", result: null, error: "adapter said \u009bno" },
     };
-    const text = renderReport(state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }]).markdown;
+    const text = renderReport(state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }], []).markdown;
     for (const char of ["\u{202e}", "\u001b", "\u0007", "\u009b", "\u{2066}", "\u0000"]) expect(text.includes(char)).toBe(false);
     expect(text).toContain("### Totals disagree\n");
     expect(text).toContain("> Row \\[31mred\\[0m\n");
     expect(text).toContain("- interns/i1/out/evidence/a.png\n");
     expect(text).toContain("Confirmation: c1 (codex) failed: adapter said no\n");
     expect(text).toContain("- interns/i2/out/findings/xy.json: bad input\n");
-    expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"]);
+    expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns", "## Environments"]);
   });
 
   test("agent text cannot add a heading or inline HTML", () => {
     const base = finding("i1/forged", "Totals disagree", "Row <script>alert(1)</script>\n## Interns");
     const forged: Group = { id: "g1", findings: [{ ...base, conditions: { ...base.conditions, account: "x\n\n## Interns" } }], confirmation: null };
-    const text = renderReport(state, [forged], []).markdown;
+    const text = renderReport(state, [forged], [], []).markdown;
     expect(text.split("\n").filter((line) => line.trimStart().startsWith("## Interns"))).toEqual(["## Interns"]);
     expect(text).not.toContain("<script>");
     expect(text).toContain("  - Account: x  \\#\\# Interns\n");
@@ -164,15 +195,15 @@ describe("renderReport", () => {
 
   test("agent text cannot add links or images", () => {
     const linked = finding("i1/linked", "See ![x](http://attacker.test/p.png)", "Click [here](http://attacker.test)");
-    const text = renderReport(state, [{ id: "g1", findings: [linked], confirmation: null }], []).markdown;
+    const text = renderReport(state, [{ id: "g1", findings: [linked], confirmation: null }], [], []).markdown;
     expect(text).toContain("### See \\!\\[x\\](http://attacker.test/p.png)\n");
     expect(text).toContain("> Click \\[here\\](http://attacker.test)\n");
   });
 
   test("a run with nothing to report still has a line in every section", () => {
-    const empty = renderReport({ ...state, interns: [] }, [], []).markdown;
+    const empty = renderReport({ ...state, interns: [] }, [], [], []).markdown;
     const lines = empty.split("\n");
-    const headings = ["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"];
+    const headings = ["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns", "## Environments"];
     for (const heading of headings) {
       const start = lines.indexOf(heading);
       const next = lines.findIndex((line, index) => index > start && line.startsWith("## "));
