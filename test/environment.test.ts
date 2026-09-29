@@ -65,6 +65,17 @@ type Normalized = {
   networks: Record<string, Record<string, unknown>>;
 };
 
+async function withSubnet(subnet: string, check: () => void | Promise<void>): Promise<void> {
+  const previous = process.env.QA_INTERNS_SUBNET;
+  process.env.QA_INTERNS_SUBNET = subnet;
+  try {
+    await check();
+  } finally {
+    if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+    else process.env.QA_INTERNS_SUBNET = previous;
+  }
+}
+
 async function normalize(runDir: string, composeFiles: string[], override: string): Promise<Normalized> {
   const file = join(runDir, "compose.qa.yml");
   await Bun.write(file, override);
@@ -84,6 +95,29 @@ describe.skipIf(!dockerAvailable)("slots", () => {
   test.each([-1, 128, 1.5])("reject slot %p", (slot) => {
     expect(() => slotSubnets(slot)).toThrow("is not an integer from 0 to 127");
   });
+
+  test("map a slot into the range that QA_INTERNS_SUBNET sets", async () => {
+    await withSubnet("10.100.4.0/22", () => {
+      expect(slotSubnets(0)).toEqual({ internal: "10.100.4.0/25", relay: "10.100.4.128/25", agent: "10.100.5.0/25", egress: "10.100.5.128/25" });
+      expect(slotSubnets(1)).toEqual({ internal: "10.100.6.0/25", relay: "10.100.6.128/25", agent: "10.100.7.0/25", egress: "10.100.7.128/25" });
+      expect(() => slotSubnets(2)).toThrow("Slot 2 is not an integer from 0 to 1");
+    });
+    await withSubnet("192.168.254.0/23", () => {
+      expect(slotSubnets(0)).toEqual({ internal: "192.168.254.0/25", relay: "192.168.254.128/25", agent: "192.168.255.0/25", egress: "192.168.255.128/25" });
+      expect(() => slotSubnets(1)).toThrow("Slot 1 is not an integer from 0 to 0");
+    });
+  });
+
+  test.each(["", "10.213.0.0", "10.213.0.0/15", "10.213.0.0/24", "10.213.1.0/16", "10.213.0/16", "010.213.0.0/16", "10.213.0.0/16 ", "10.213.0.0/16/16", "256.0.0.0/16", "fd00::/48"])(
+    "reject QA_INTERNS_SUBNET %p",
+    async (subnet) => {
+      await withSubnet(subnet, async () => {
+        const message = `QA_INTERNS_SUBNET is ${JSON.stringify(subnet)}, and it must be an IPv4 network address with a prefix length from 16 to 23`;
+        expect(() => slotSubnets(0)).toThrow(message);
+        await expect(freeSlots(new Set())).rejects.toThrow(message);
+      });
+    },
+  );
 
   test("reserve the slot it returns, so concurrent callers get different slots", async () => {
     const reserved = new Set<number>([0]);
@@ -280,6 +314,18 @@ networks:
       internal: true,
       driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" },
       ipam: { config: [{ subnet: "10.213.6.128/25" }] },
+    });
+
+    await withSubnet("10.100.4.0/22", async () => {
+      const moved = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target, { slot: 1 }), 1000, 1000));
+      expect(moved.services.api?.extra_hosts).toEqual(["ai-gateway.vercel.sh=10.100.6.254", "api.pwnedpasswords.com=10.100.6.254"]);
+      expect(moved.services["qa-relay"]?.networks).toEqual({ qa_relay: { ipv4_address: "10.100.6.254" }, qa_egress: null });
+      expect(moved.networks).toMatchObject({
+        qa_internal: { ipam: { config: [{ subnet: "10.100.6.0/25" }] } },
+        qa_relay: { ipam: { config: [{ subnet: "10.100.6.128/25" }] } },
+        qa_agent: { ipam: { config: [{ subnet: "10.100.7.0/25" }] } },
+        qa_egress: { ipam: { config: [{ subnet: "10.100.7.128/25" }] } },
+      });
     });
   });
 

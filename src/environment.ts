@@ -39,9 +39,12 @@ const createDiskScript =
 const saveDiskScript =
   'rm -f "$2.new"; [ -e "$2" ] || exit 0; if mountpoint -q "$1"; then umount "$1"; fi && mount -o loop "$2" /mnt && find "$1" -mindepth 1 -delete && cp -a /mnt/. "$1" && umount /mnt && rm "$2"';
 
+const defaultSubnet = "10.213.0.0/16";
+const slotBits = 23;
+
 type Cidr = { address: number; bits: number };
 
-function parseCidr(value: string): Cidr {
+function readCidr(value: string): Cidr | null {
   const [address = "", prefix = "32"] = value.split("/");
   const octets = address.split(".");
   const bits = Number(prefix);
@@ -51,8 +54,26 @@ function parseCidr(value: string): Cidr {
     Number.isInteger(bits) &&
     bits >= 0 &&
     bits <= 32;
-  if (!valid) throw new Error(`${value} is not an IPv4 address or CIDR block`);
-  return { address: octets.reduce((sum, octet) => sum * 256 + Number(octet), 0), bits };
+  return valid ? { address: octets.reduce((sum, octet) => sum * 256 + Number(octet), 0), bits } : null;
+}
+
+function parseCidr(value: string): Cidr {
+  const cidr = readCidr(value);
+  if (cidr === null) throw new Error(`${value} is not an IPv4 address or CIDR block`);
+  return cidr;
+}
+
+function formatAddress(address: number): string {
+  return [24, 16, 8, 0].map((shift) => (address >>> shift) & 255).join(".");
+}
+
+export function networkRange(): { subnet: string; address: number; slots: number } {
+  const subnet = process.env.QA_INTERNS_SUBNET ?? defaultSubnet;
+  const cidr = readCidr(subnet);
+  if (cidr === null || `${formatAddress(cidr.address)}/${cidr.bits}` !== subnet || cidr.bits < 16 || cidr.bits > slotBits || cidr.address % 2 ** (32 - cidr.bits) !== 0) {
+    throw new Error(`QA_INTERNS_SUBNET is ${JSON.stringify(subnet)}, and it must be an IPv4 network address with a prefix length from 16 to ${slotBits}, such as ${defaultSubnet}`);
+  }
+  return { subnet, address: cidr.address, slots: 2 ** (slotBits - cidr.bits) };
 }
 
 function overlaps(a: Cidr, b: Cidr): boolean {
@@ -83,18 +104,23 @@ async function usedBlocks(): Promise<Cidr[]> {
   return [...subnets, ...destinations].map(parseCidr);
 }
 
+function slotAddress(slot: number, offset: number): string {
+  const { address, slots } = networkRange();
+  if (!Number.isInteger(slot) || slot < 0 || slot >= slots) throw new Error(`Slot ${slot} is not an integer from 0 to ${slots - 1}`);
+  return formatAddress(address + slot * 2 ** (32 - slotBits) + offset);
+}
+
 export function slotSubnets(slot: number): { internal: string; relay: string; agent: string; egress: string } {
-  if (!Number.isInteger(slot) || slot < 0 || slot > 127) throw new Error(`Slot ${slot} is not an integer from 0 to 127`);
   return {
-    internal: `10.213.${slot * 2}.0/25`,
-    relay: `10.213.${slot * 2}.128/25`,
-    agent: `10.213.${slot * 2 + 1}.0/25`,
-    egress: `10.213.${slot * 2 + 1}.128/25`,
+    internal: `${slotAddress(slot, 0)}/25`,
+    relay: `${slotAddress(slot, 128)}/25`,
+    agent: `${slotAddress(slot, 256)}/25`,
+    egress: `${slotAddress(slot, 384)}/25`,
   };
 }
 
 function openSlots(used: Cidr[], reserved: Set<number>): number[] {
-  return Array.from({ length: 128 }, (_, slot) => slot).filter((slot) => {
+  return Array.from({ length: networkRange().slots }, (_, slot) => slot).filter((slot) => {
     if (reserved.has(slot)) return false;
     const blocks = Object.values(slotSubnets(slot)).map(parseCidr);
     return !used.some((block) => blocks.some((own) => overlaps(block, own)));
@@ -107,7 +133,7 @@ export async function freeSlots(reserved: Set<number>): Promise<number> {
 
 export async function freeSlot(reserved: Set<number>): Promise<number> {
   const [slot] = openSlots(await usedBlocks(), reserved);
-  if (slot === undefined) throw new Error("No free network slot: every 10.213.x.0/23 block overlaps a Docker network, a host route, or a slot this run holds");
+  if (slot === undefined) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network, a host route, or a slot this run holds`);
   reserved.add(slot);
   return slot;
 }
@@ -132,7 +158,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
   const proxied = spec.egress.length > 0;
   const { internal, relay, agent, egress } = slotSubnets(spec.slot);
   const relayHosts = spec.target?.settings.egress ?? [];
-  const relayAddress = `10.213.${spec.slot * 2}.254`;
+  const relayAddress = slotAddress(spec.slot, 254);
   const y = (value: unknown) => JSON.stringify(value);
   const isolated = (subnet: string) => ({ internal: true, driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" }, ipam: { config: [{ subnet }] } });
   const logging = `    logging: !override ${y({ driver: "local", options: { "max-size": "10m", "max-file": "2" } })}`;
