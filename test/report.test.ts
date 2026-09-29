@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { renderReplay, renderReport, reproductions } from "../src/report.ts";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readReplay, renderReplay, renderReport, reproductions } from "../src/report.ts";
+import { writeState } from "../src/state.ts";
 import type { Finding, Group, InternState, Provider, RunState } from "../src/types.ts";
 
 function intern(id: string, role: InternState["role"], provider: Provider | null, status: InternState["status"], findings: number, detail: string | null): InternState {
@@ -236,6 +240,35 @@ describe("renderReplay", () => {
     expect(data.groups[0]!.confirmation).toEqual(overlap.confirmation);
     expect(data.interns).toEqual(replayState.interns);
     expect(JSON.parse(JSON.stringify(json))).toEqual(json);
+  });
+
+  describe("readReplay", () => {
+    const dirs: string[] = [];
+    afterAll(async () => {
+      for (const dir of dirs) await rm(dir, { recursive: true });
+    });
+
+    async function runDir(run: RunState, report: unknown): Promise<string> {
+      const dir = await mkdtemp(join(tmpdir(), "qa-interns-replay-"));
+      dirs.push(dir);
+      await writeState(dir, run);
+      await Bun.write(join(dir, "findings.json"), `${JSON.stringify(report, null, 2)}\n`);
+      return dir;
+    }
+
+    test("reads the confirmed groups of a run's findings.json, or the ones named, without their confirmations", async () => {
+      const dir = await runDir(state, renderReport(state, [exportTotal, overlap, negative], rejected).json);
+      expect(await readReplay(dir, [])).toEqual({ runId: state.runId, target: state.target, groups: [{ ...overlap, confirmation: null }] });
+      expect((await readReplay(dir, ["g1", "g1"])).groups.map((group) => group.id)).toEqual(["g1"]);
+      await expect(readReplay(dir, ["g1", "g2"])).rejects.toThrow("Run 7c1e9a04 has no confirmed group g2. Its confirmed groups are g1.");
+    });
+
+    test("rejects a replay and a run without a confirmed group", async () => {
+      await expect(readReplay(await runDir(replayState, json), [])).rejects.toThrow("Run 9b4d2f61 is a replay of run 7c1e9a04. Replay run 7c1e9a04 instead.");
+      const unconfirmed = await runDir(state, renderReport(state, [exportTotal], []).json);
+      await expect(readReplay(unconfirmed, [])).rejects.toThrow("Run 7c1e9a04 has no confirmed group to replay.");
+      await expect(readReplay(unconfirmed, ["g1"])).rejects.toThrow("Run 7c1e9a04 has no confirmed group g1. Its confirmed groups are none.");
+    });
   });
 
   test("a group without a confirmation is not checked", () => {

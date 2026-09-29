@@ -666,6 +666,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
     state.interns.push(...confirmations.map((entry) => entry.intern));
     await save();
     await settle(confirmations.map(({ group, intern }) => running(() => reproduce(ctx, intern, group, target, opts.confirmMinutes))));
+    if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null)) {
+      throw new Error(`No confirming intern recorded a result: ${confirmations.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
+    }
 
     await phase("reporting");
   };

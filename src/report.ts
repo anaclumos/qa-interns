@@ -247,8 +247,9 @@ export function renderReplay(state: RunState, replay: Replay): { markdown: strin
   };
 }
 
-const storedSchema = z.object({
-  run: z.object({ replay: z.object({ runId: z.string() }).optional() }),
+const storedRunSchema = z.object({ run: z.object({ replay: z.object({ runId: z.string() }).optional() }) });
+
+const storedGroupsSchema = z.object({
   groups: z.array(
     z.object({
       id: z.string().min(1),
@@ -278,6 +279,13 @@ const storedSchema = z.object({
   ),
 });
 
+function stored<T>(schema: z.ZodType<T>, raw: unknown, file: string): T {
+  const parsed = schema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  const problems = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
+  throw new Error(`${file} does not hold the groups of a run: ${problems.join("; ")}`);
+}
+
 export async function readReplay(runDir: string, only: string[]): Promise<Replay> {
   const state = await readState(runDir);
   const file = join(runDir, "findings.json");
@@ -289,13 +297,9 @@ export async function readReplay(runDir: string, only: string[]): Promise<Replay
   } catch (error) {
     throw new Error(`${file} is not valid JSON: ${String(error)}`);
   }
-  const parsed = storedSchema.safeParse(raw);
-  if (!parsed.success) {
-    const problems = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
-    throw new Error(`${file} does not hold the groups of a run: ${problems.join("; ")}`);
-  }
-  const { run, groups } = parsed.data;
+  const { run } = stored(storedRunSchema, raw, file);
   if (run.replay !== undefined) throw new Error(`Run ${state.runId} is a replay of run ${run.replay.runId}. Replay run ${run.replay.runId} instead.`);
+  const { groups } = stored(storedGroupsSchema, raw, file);
   const confirmed = groups.filter((group) => group.confirmed);
   const ids = confirmed.map((group) => group.id);
   const missing = only.filter((id) => !ids.includes(id));

@@ -271,9 +271,31 @@ USER qa
       expect(reproduced).toContain(`- Group: g1 in run ${source.runId}`);
       await expect(readReplay(runDir, [])).rejects.toThrow(`Run ${state.runId} is a replay of run ${source.runId}. Replay run ${source.runId} instead.`);
 
+      const failedLines: string[] = [];
+      await expect(
+        runQa({
+          dir: join(replay.target.repo, replay.target.path),
+          rev: next,
+          interns: 0,
+          minutes: 0,
+          confirmMinutes: 0.5,
+          loginsFile: await logins("replay-silent", [{ id: "claude-no-confirm", provider: "claude", confirms: false }]),
+          replay: await readReplay(sourceDir, []),
+          runnerImage: async () => fakeImage,
+          print: (line) => failedLines.push(line),
+        }),
+      ).rejects.toThrow("No confirming intern recorded a result: c1 done: confirmation failed: no confirmation.json written");
+      const failedDir = failedLines[0] ?? "";
+      const failed = await readState(failedDir);
+      expect(failed.phase).toBe("failed");
+      const failedReport = await Bun.file(join(failedDir, "findings.json")).json();
+      expect(failedReport.run).toMatchObject({ reproducedGroups: 0, notReproducedGroups: 0, uncheckedGroups: 1 });
+      expect(failedReport.groups[0]).toMatchObject({ id: "g1", reproduced: null, confirmation: { intern: "c1", result: null, error: "no confirmation.json written" } });
+
       for (const [dir, run] of [
         [sourceDir, source],
         [runDir, state],
+        [failedDir, failed],
       ] as const) {
         expect(await leftovers(run.runId)).toEqual([]);
         expect(await workspaces(dir, run)).toEqual([]);
