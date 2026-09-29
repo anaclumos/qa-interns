@@ -26,7 +26,7 @@ import { outDir, parseGroups, readAgentFile, readConfirmation, readFindings, str
 import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
-import { renderReplay, renderReport } from "./report.ts";
+import { renderReplay, renderReport, writeTickets } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Confirmation, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
@@ -698,9 +698,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
     const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
     const traffic = { hosts: egress, relays: logs.flat() };
-    const report = opts.replay === null ? renderReport(state, groups ?? singles, rejected, traffic, ctx.environments) : renderReplay(state, opts.replay, traffic, ctx.environments);
+    const report = opts.replay === null ? renderReport(state, groups ?? singles, rejected, traffic, ctx.environments) : { ...renderReplay(state, opts.replay, traffic, ctx.environments), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
+    await writeTickets(runDir, report.tickets);
     await save();
     return teardowns.length === 0 ? null : teardowns.join("; ");
   });
