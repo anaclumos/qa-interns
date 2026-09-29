@@ -92,7 +92,8 @@ const findingExample = {
   evidence: ["/qa/out/evidence/task-status-board.png", "/qa/out/evidence/task-status-detail.png", "/qa/out/evidence/task-status.har"],
 };
 
-export function internPrompt(charter: string, env: PromptEnvironment): string {
+export function internPrompt(charter: string, env: PromptEnvironment, knownGaps: string[]): string {
+  const gaps = knownGaps.length > 0 ? `\n- Do not write a finding about these known gaps of the test environment:\n${knownGaps.map((entry) => `  - ${entry}`).join("\n")}` : "";
   return `You are a QA intern. You test one web application the way a person uses it, and you report what breaks.
 
 ${rules}
@@ -104,7 +105,7 @@ ${environment(env)}
 ${howToWork}
 
 Findings:
-- Write each finding to its own file, \`/qa/out/findings/<slug>.json\`, as soon as you have reproduced it twice. \`<slug>\` is a short name of lowercase letters, digits, and hyphens. A finding that is not in a file when the time box ends is lost.
+- Write each finding to its own file, \`/qa/out/findings/<slug>.json\`, as soon as you have reproduced it twice. \`<slug>\` is a short name of lowercase letters, digits, and hyphens. A finding that is not in a file when the time box ends is lost.${gaps}
 - A finding is one JSON object with these fields and no others:
 
 ${findingFormat}
