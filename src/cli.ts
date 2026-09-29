@@ -5,6 +5,7 @@ import { doctor } from "./doctor.ts";
 import { removeCopies, stopRun } from "./environment.ts";
 import { errorCode, stripControl } from "./findings.ts";
 import { defaultLoginsPath } from "./logins.ts";
+import { readReplay } from "./report.ts";
 import { runQa, startCopy } from "./run.ts";
 import { ensureRunnerImage, runnerImage } from "./runner.ts";
 import { formatStatus, processStart, readState, resolveRunDir, writeState } from "./state.ts";
@@ -20,6 +21,10 @@ Commands:
       30 minutes each, 10 minutes per confirmation. Prints the run directory first.
       With --on-end, run the shell command when the run ends, done, failed, or
       interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
+  replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]
+      Hand each confirmed group of the earlier run, or each group --group names,
+      to a confirming intern against the run's target at the commit. Defaults:
+      HEAD, 10 minutes per confirmation. Prints the run directory first.
   up <target-dir> [--commit <rev>]
       Start one environment of the target at the commit (default HEAD) with no
       interns, run its ready check and seed, and leave it running. Prints the run
@@ -101,7 +106,35 @@ async function main(args: string[]): Promise<number> {
         loginsFile: values.logins,
         onEnd: values["on-end"],
       };
-      await runQa({ ...options, runnerImage: ensureRunnerImage, print });
+      await runQa({ ...options, replay: null, runnerImage: ensureRunnerImage, print });
+      return 0;
+    }
+    case "replay": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: {
+          commit: { type: "string", default: "HEAD" },
+          group: { type: "string", multiple: true, default: [] },
+          "confirm-minutes": { type: "string", default: "10" },
+          logins: { type: "string", default: defaultLoginsPath },
+        },
+      });
+      const [run, ...extra] = positionals;
+      if (run === undefined || extra.length > 0) throw new Error("replay takes exactly one run id or run directory. Run qa-interns help for usage.");
+      const confirmMinutes = minutes(values["confirm-minutes"], "confirm-minutes");
+      const replay = await readReplay(await resolveRunDir(run), values.group);
+      await runQa({
+        dir: join(replay.target.repo, replay.target.path),
+        rev: values.commit,
+        interns: 0,
+        minutes: 0,
+        confirmMinutes,
+        loginsFile: values.logins,
+        replay,
+        runnerImage: ensureRunnerImage,
+        print,
+      });
       return 0;
     }
     case "up": {
