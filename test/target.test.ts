@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdtemp, readdir, realpath, rm, symlink } from "node:fs/promises";
+import { mkdtemp, readdir, readlink, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { redact } from "../src/secrets.ts";
@@ -63,7 +63,7 @@ function fixture(compose: string, config = devcontainer()): Promise<string> {
 }
 
 async function load(root: string) {
-  const ref = await resolveTarget(root, "HEAD");
+  const ref = await resolveTarget(root, "HEAD", false);
   const source = await scratch("qa-interns-source-");
   await exportTree(ref, source);
   return loadTarget(ref, source);
@@ -73,8 +73,8 @@ describe("resolveTarget and exportTree", () => {
   test("resolve a subdirectory to the repository, its path, and the commit, and export only that tree", async () => {
     const root = await repo({ ...(await ledgerFiles("apps/ledger/")), "README.md": "monorepo\n", "apps/other/index.ts": "export {};\n" });
     const head = git(root, "rev-parse", "HEAD");
-    const ref = await resolveTarget(join(root, "apps", "ledger"), "HEAD");
-    expect(ref).toEqual({ repo: await realpath(root), path: "apps/ledger", commit: head });
+    const ref = await resolveTarget(join(root, "apps", "ledger"), "HEAD", false);
+    expect(ref).toEqual({ repo: await realpath(root), path: "apps/ledger", commit: head, dirty: false });
 
     const dest = await scratch("qa-interns-export-");
     await exportTree(ref, dest);
@@ -89,22 +89,56 @@ describe("resolveTarget and exportTree", () => {
     await Bun.write(join(root, "app", "VERSION"), "uncommitted\n");
     await Bun.write(join(root, "app", "untracked.txt"), "untracked\n");
 
-    const older = await resolveTarget(join(root, "app"), "HEAD~1");
+    const older = await resolveTarget(join(root, "app"), "HEAD~1", false);
     expect(older.commit).toBe(first);
     const olderDest = await scratch("qa-interns-export-");
     await exportTree(older, olderDest);
     expect(await Bun.file(join(olderDest, "VERSION")).text()).toBe("one\n");
 
-    const head = await resolveTarget(join(root, "app"), "HEAD");
+    const head = await resolveTarget(join(root, "app"), "HEAD", false);
     const headDest = await scratch("qa-interns-export-");
     await exportTree(head, headDest);
     expect(await Bun.file(join(headDest, "VERSION")).text()).toBe("two\n");
     expect(await Bun.file(join(headDest, "untracked.txt")).exists()).toBe(false);
   });
 
+  test("export the working tree of a dirty target: tracked files as they are, untracked files, and no ignored, deleted, or sparse-checkout-omitted file", async () => {
+    const root = await repo({
+      "app/.devcontainer/devcontainer.json": devcontainer(),
+      "app/.gitignore": "node_modules/\n.env\n",
+      "app/VERSION": "one\n",
+      "app/assets/large.bin": "large\n",
+      "app/src/removed.ts": "export {};\n",
+      "app/src/-C": "tracked\n",
+      "other/README.md": "outside the target\n",
+    });
+    await symlink("../VERSION", join(root, "app", "src", "version-link"));
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "link");
+    const head = git(root, "rev-parse", "HEAD");
+    await Bun.write(join(root, "app", "VERSION"), "uncommitted\n");
+    await rm(join(root, "app", "src", "removed.ts"));
+    git(root, "update-index", "--skip-worktree", "app/assets/large.bin");
+    await rm(join(root, "app", "assets"), { recursive: true });
+    await Bun.write(join(root, "app", "src", "new file.ts"), "export const added = true;\n");
+    await Bun.write(join(root, "app", ".env"), "SECRET=local\n");
+    await Bun.write(join(root, "app", "node_modules", "dep", "index.js"), "module.exports = {};\n");
+    await Bun.write(join(root, "other", "untracked.txt"), "outside the target\n");
+
+    const ref = await resolveTarget(join(root, "app"), "HEAD", true);
+    expect(ref).toEqual({ repo: await realpath(root), path: "app", commit: head, dirty: true });
+    const dest = await scratch("qa-interns-export-");
+    await exportTree(ref, dest);
+    expect((await readdir(dest, { recursive: true })).sort()).toEqual([".devcontainer", ".devcontainer/devcontainer.json", ".gitignore", "VERSION", "src", "src/-C", "src/new file.ts", "src/version-link"]);
+    expect(await Bun.file(join(dest, "VERSION")).text()).toBe("uncommitted\n");
+    expect(await Bun.file(join(dest, "src", "new file.ts")).text()).toBe("export const added = true;\n");
+    expect(await readlink(join(dest, "src", "version-link"))).toBe("../VERSION");
+    expect(git(root, "diff", "--cached", "--name-only")).toBe("");
+  });
+
   test("resolve the repository root to an empty path and export the whole tree", async () => {
     const root = await repo({ "app.ts": "export {};\n", ".devcontainer/devcontainer.json": devcontainer() });
-    const ref = await resolveTarget(root, "HEAD");
+    const ref = await resolveTarget(root, "HEAD", false);
     expect(ref.path).toBe("");
     const dest = await scratch("qa-interns-export-");
     await exportTree(ref, dest);
@@ -113,7 +147,7 @@ describe("resolveTarget and exportTree", () => {
 
   test("reject a revision that does not exist", async () => {
     const root = await repo({ "app.ts": "export {};\n" });
-    await expect(resolveTarget(root, "no-such-branch")).rejects.toThrow("no-such-branch^{commit}");
+    await expect(resolveTarget(root, "no-such-branch", false)).rejects.toThrow("no-such-branch^{commit}");
   });
 });
 
