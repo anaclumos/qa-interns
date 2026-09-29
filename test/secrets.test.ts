@@ -2,13 +2,14 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { keepHostSecrets, keepSeedSecrets, redact, redactAcross, redactFiles, redactJson } from "../src/secrets.ts";
+import { forgetSecrets, keepHostSecrets, keepSeedSecrets, redact, redactAcross, redactFiles, redactJson } from "../src/secrets.ts";
 import { failure } from "../src/target.ts";
 
 const asRoot = process.getuid?.() === 0;
 const roots: string[] = [];
 
 afterAll(async () => {
+  forgetSecrets();
   for (const root of roots) await rm(root, { recursive: true, force: true });
 });
 

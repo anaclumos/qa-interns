@@ -24,7 +24,7 @@ import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
 import { renderReplay, renderReport } from "./report.ts";
-import { hasSecrets, redact, redactFiles, redactJson } from "./secrets.ts";
+import { forgetSecrets, hasSecrets, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target, type TargetRef } from "./target.ts";
 import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
@@ -514,6 +514,7 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
     return result.value;
   } finally {
     for (const signal of signals) process.off(signal, handler);
+    forgetSecrets();
   }
 }
 

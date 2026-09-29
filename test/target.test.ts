@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, readlink, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { redact } from "../src/secrets.ts";
+import { forgetSecrets, redact } from "../src/secrets.ts";
 import { exportTree, loadTarget, resolveTarget } from "../src/target.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
@@ -332,6 +332,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       await expect(load(await fixture(compose, listed))).rejects.toThrow(`service web mounts ${mount}`);
       expect(redact(`service web mounts ${mount}`)).toBe("service web mounts [redacted]");
     } finally {
+      forgetSecrets();
       delete process.env.QA_INTERNS_TEST_MOUNT;
     }
   });

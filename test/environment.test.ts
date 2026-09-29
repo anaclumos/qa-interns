@@ -19,7 +19,7 @@ import {
   type EnvironmentSpec,
 } from "../src/environment.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
-import { redact } from "../src/secrets.ts";
+import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
@@ -720,6 +720,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         expect(String(failed)).toEndWith("\nseeding failed after [redacted]");
         expect(redact(key)).toBe("[redacted]");
       } finally {
+        forgetSecrets();
         await stopRun(runId);
         await removeCopies(runDir, runId, image);
       }

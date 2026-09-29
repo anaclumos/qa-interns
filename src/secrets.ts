@@ -54,6 +54,11 @@ function replace(text: string, list: string[]): string {
   return list.reduce((result, form) => result.replaceAll(form, marker), text);
 }
 
+export function forgetSecrets(): void {
+  secrets.clear();
+  cached = null;
+}
+
 export function hasSecrets(): boolean {
   return secrets.size > 0;
 }

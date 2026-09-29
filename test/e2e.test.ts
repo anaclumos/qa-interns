@@ -7,6 +7,7 @@ import { removeCopies, writeChromePolicy } from "../src/environment.ts";
 import { readReplay } from "../src/report.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
+import { redact } from "../src/secrets.ts";
 import { newRunId, readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
 import type { Finding, Provider, RunState } from "../src/types.ts";
@@ -534,6 +535,7 @@ USER qa
 
       const state = await readState(runDir);
       expect(state.phase).toBe("done");
+      expect(redact(token)).toBe(token);
       const entries = await readdir(runDir, { recursive: true, withFileTypes: true });
       const files = entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name)).filter((path) => !path.startsWith(join(runDir, "source", "")));
       expect(files).toContain(join(runDir, "interns", "c1", "transcript.jsonl"));
