@@ -25,7 +25,7 @@ export type InternState = {
   endedAt: string | null;
 };
 
-export type RunPhase = "preparing" | "building" | "testing" | "grouping" | "confirming" | "reporting" | "done" | "failed";
+export type RunPhase = "preparing" | "building" | "starting" | "up" | "testing" | "grouping" | "confirming" | "reporting" | "done" | "failed";
 
 export type RunState = {
   runId: string;
