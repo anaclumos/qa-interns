@@ -29,7 +29,7 @@ export type ContainerStats = { service: string; number: number; state: string; o
 
 export type EnvironmentStats = { intern: string; attempt: number; startedAt: string; readyAt: string | null; containers: ContainerStats[] | null };
 
-export type RunPhase = "preparing" | "building" | "testing" | "grouping" | "confirming" | "reporting" | "done" | "failed";
+export type RunPhase = "preparing" | "building" | "starting" | "up" | "testing" | "grouping" | "confirming" | "reporting" | "done" | "failed";
 
 export type RunState = {
   runId: string;
