@@ -208,6 +208,13 @@ USER qa
       expect(confirmed).toContain(`### ${title}`);
       expect(confirmed).toContain("- Reproductions: 3 (i1, i2, c1)");
 
+      const draft = join(runDir, "tickets", "g1");
+      expect(await readdir(join(runDir, "tickets"))).toEqual(["g1"]);
+      expect(await Bun.file(join(draft, "title.txt")).text()).toBe(`${title}\n`);
+      expect(await Bun.file(join(draft, "body.md")).text()).toStartWith(`- Run: ${state.runId}\n- Commit: ${state.target.commit}\n- Kind: `);
+      expect(await Bun.file(join(draft, "interns", "i1", "out", "evidence", "page.html")).text()).toBe(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "page.html")).text());
+      expect(await Bun.file(join(draft, "interns", "c1", "out", "evidence", "reproduction.txt")).text()).toBe("fake reproduction\n");
+
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);

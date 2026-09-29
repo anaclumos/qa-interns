@@ -23,7 +23,7 @@ import { outDir, parseGroups, readAgentFile, readConfirmation, readFindings, str
 import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
-import { renderReport } from "./report.ts";
+import { renderReport, writeTickets } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
 import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
@@ -600,6 +600,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const report = renderReport(state, groups ?? singles, rejected);
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
+    await writeTickets(runDir, report.tickets);
     await save();
     return teardowns.length === 0 ? null : teardowns.join("; ");
   });

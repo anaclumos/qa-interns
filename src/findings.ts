@@ -1,5 +1,5 @@
 import { constants, existsSync } from "node:fs";
-import { open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
+import { copyFile, mkdir, open, readdir, readlink, realpath, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { kinds, type Confirmation, type Finding, type FindingEnvironment, type Rejected } from "./types.ts";
@@ -13,6 +13,7 @@ const openFailures = new Map([
   ["ELOOP", "the file is a symbolic link"],
   ["EACCES", "the file is not readable"],
   ["ENXIO", "the file is not a regular file"],
+  ["ENOTDIR", "a folder in the path is not a directory"],
 ]);
 
 const folderFailures = new Map([
@@ -240,4 +241,26 @@ export async function readConfirmation(runDir: string, intern: string, attempt: 
   const out = outDir(intern, attempt);
   const data = parse(confirmationSchema, await readAgentFile(path.join(runDir, out, "confirmation.json")));
   return { reproduced: data.reproduced, observed: data.observed, evidence: (await evidence(runDir, out, data.evidence)).map(stripControl) };
+}
+
+export async function copyEvidence(runDir: string, entry: string, target: string): Promise<string | null> {
+  if (entry.split("/").includes("..")) return "the path has a .. component";
+  const expected = path.join(await realpath(runDir), entry);
+  let handle: FileHandle;
+  try {
+    handle = await open(path.join(runDir, entry), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    const reason = openFailures.get(errorCode(error) ?? "");
+    if (reason === undefined) throw error;
+    return reason;
+  }
+  try {
+    if ((await readlink(`/proc/self/fd/${handle.fd}`)) !== expected) return "its real path is not the listed path";
+    if (!(await handle.stat()).isFile()) return "the file is not a regular file";
+    await mkdir(path.dirname(target), { recursive: true });
+    await copyFile(`/proc/self/fd/${handle.fd}`, target);
+    return null;
+  } finally {
+    await handle.close();
+  }
 }

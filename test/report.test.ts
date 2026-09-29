@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test";
-import { renderReport, reproductions } from "../src/report.ts";
+import { afterAll, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { renderReport, reproductions, writeTickets } from "../src/report.ts";
 import type { Finding, Group, InternState, Provider, RunState } from "../src/types.ts";
 
 function intern(id: string, role: InternState["role"], provider: Provider | null, status: InternState["status"], findings: number, detail: string | null): InternState {
@@ -180,5 +184,122 @@ describe("renderReport", () => {
       expect(body).toHaveLength(1);
       expect(body[0]?.startsWith("#")).toBe(false);
     }
+  });
+});
+
+function codeBlocks(html: string): string[] {
+  return html
+    .split("<pre><code>")
+    .slice(1)
+    .map((part) => part.slice(0, part.indexOf("</code></pre>")));
+}
+
+describe("ticket drafts", () => {
+  const hostile = "Row <script>alert(1)</script> [here](http://attacker.test) @owner #12 *x_y*\n```\n## Interns\n`````";
+  const base = finding("i1/hostile", "Total of *INV_0014* shows `NaN` <b>", hostile, "The list at /invoices shows \\$75.00.");
+  const lead: Finding = { ...base, conditions: { ...base.conditions, account: hostile }, steps: ["Open http://web:3000/invoices.", `Type ${hostile}`] };
+  const { tickets } = renderReport(state, [exportTotal, { ...overlap, findings: [lead, overlap.findings[1]!] }, negative], rejected);
+  const draft = tickets[0]!;
+
+  test("a run has one draft per confirmed group, titled with the raw title of its first finding", () => {
+    expect(tickets.map((entry) => [entry.id, entry.title])).toEqual([["g1", "Total of *INV_0014* shows `NaN` <b>"]]);
+    expect(draft.evidence).toEqual(["interns/i1/out/evidence/hostile.png", "interns/c1/out/evidence/repeat.png"]);
+  });
+
+  test("the body starts with the run, commit, kind, and reproductions, and holds no host path", () => {
+    expect(draft.body).toStartWith(`- Run: 7c1e9a04\n- Commit: ${state.target.commit}\n- Kind: inconsistency\n- Reproductions: 3 (i1, i2, c1)\n\n## Conditions\n`);
+    expect(draft.body).not.toContain(state.target.repo);
+  });
+
+  test("every text an intern wrote renders verbatim inside a code block", () => {
+    const html = Bun.markdown.html(draft.body);
+    const escaped = Bun.escapeHTML(hostile);
+    expect(html.split("\n").filter((line) => line.startsWith("<h"))).toEqual([
+      "<h2>Conditions</h2>",
+      "<h2>Steps</h2>",
+      "<h2>Observed</h2>",
+      "<h2>Contradicts</h2>",
+      "<h2>Evidence</h2>",
+      "<h2>Other reports</h2>",
+      "<h2>Confirmation</h2>",
+    ]);
+    for (const tag of ["<script", "<a ", "<em>", "<img"]) expect(html).not.toContain(tag);
+    expect(codeBlocks(html)).toEqual([
+      `Account: ${escaped}\nData: freshly seeded\nViewport: 1280x720\nBrowser: one tab, signed in\nNetwork: online\n`,
+      `1. Open http://web:3000/invoices.\n2. Type ${escaped.split("\n").join("\n   ")}\n`,
+      `${escaped}\n`,
+      "The list at /invoices shows \\$75.00.\n",
+      "interns/i1/out/evidence/hostile.png\n",
+      "The first row of page 2 is INV-0014.\nIt is also the last row of page 1.\n",
+      "Page 2 starts with INV-0014.\n",
+      "interns/c1/out/evidence/repeat.png\n",
+    ]);
+  });
+
+  test("a group that two testing interns reported gets a draft when its confirmation failed", () => {
+    const failed: Group = { ...overlap, confirmation: { intern: "c3", provider: null, result: null, error: "no login with spare capacity" } };
+    const [only] = renderReport(state, [failed], []).tickets;
+    expect(only?.body).toContain("- Reproductions: 2 (i1, i2)\n");
+    expect(only?.body).toEndWith("## Confirmation\n\nc3 failed:\n\n```\nno login with spare capacity\n```\n");
+    expect(only?.evidence).toEqual(["interns/i1/out/evidence/pagination-overlap.png"]);
+  });
+});
+
+describe("writeTickets", () => {
+  let root = "";
+
+  afterAll(async () => {
+    if (root !== "") await rm(root, { recursive: true, force: true });
+  });
+
+  test("copies each evidence file into the draft folder and lists the files it did not copy", async () => {
+    root = await mkdtemp(path.join(os.tmpdir(), "qa-interns-tickets-"));
+    const runDir = path.join(root, "run");
+    const evidence = (intern: string, name: string) => path.join(runDir, "interns", intern, "out", "evidence", name);
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
+    await Bun.write(evidence("i1", "page.png"), png);
+    await Bun.write(evidence("c1", "repeat.png"), "reproduction");
+    await Bun.write(path.join(root, "host", "id_ed25519"), "host secret");
+    await Bun.write(path.join(runDir, "secret.txt"), "run secret");
+    await symlink(path.join(root, "host", "id_ed25519"), evidence("i1", "link.png"));
+    await symlink(path.join(root, "host"), evidence("i1", "folder"));
+    await mkdir(evidence("i1", "folder.png"));
+    const lead = {
+      ...overlap.findings[0]!,
+      evidence: [
+        "interns/i1/out/evidence/page.png",
+        "interns/i1/out/evidence/link.png",
+        "interns/i1/out/evidence/folder/id_ed25519",
+        "interns/i1/out/evidence/folder.png",
+        "interns/i1/out/evidence/gone.png",
+        "interns/i1/out/../../../secret.txt",
+      ],
+    };
+    const { tickets } = renderReport(state, [{ ...overlap, findings: [lead, overlap.findings[1]!] }], []);
+    await writeTickets(runDir, tickets);
+
+    const dir = path.join(runDir, "tickets", "g1");
+    expect(await Bun.file(path.join(dir, "title.txt")).text()).toBe(`${lead.title}\n`);
+    expect(await Bun.file(path.join(dir, "interns", "i1", "out", "evidence", "page.png")).bytes()).toEqual(png);
+    expect(await Bun.file(path.join(dir, "interns", "c1", "out", "evidence", "repeat.png")).text()).toBe("reproduction");
+    for (const name of ["link.png", "folder", "folder.png", "gone.png"]) expect(existsSync(path.join(dir, "interns", "i1", "out", "evidence", name))).toBe(false);
+    expect(existsSync(path.join(dir, "secret.txt"))).toBe(false);
+    const body = await Bun.file(path.join(dir, "body.md")).text();
+    expect(body).toStartWith(tickets[0]!.body);
+    expect(body.slice(tickets[0]!.body.length)).toBe(
+      [
+        "",
+        "## Evidence not copied",
+        "",
+        "```",
+        "interns/i1/out/evidence/link.png: the file is a symbolic link",
+        "interns/i1/out/evidence/folder/id_ed25519: its real path is not the listed path",
+        "interns/i1/out/evidence/folder.png: the file is not a regular file",
+        "interns/i1/out/evidence/gone.png: the file does not exist",
+        "interns/i1/out/../../../secret.txt: the path has a .. component",
+        "```",
+        "",
+      ].join("\n"),
+    );
   });
 });
