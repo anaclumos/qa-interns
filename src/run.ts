@@ -7,6 +7,7 @@ import {
   environmentMemory,
   freeSlot,
   freeSlots,
+  networkRange,
   removeCopies,
   runnerEnv,
   saveDisks,
@@ -612,7 +613,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const memory = environmentMemory(target);
     const free = freemem();
     const slots = await freeSlots(ctx.reserved);
-    if (slots === 0) throw new Error("No free network slot: every 10.213.x.0/23 block overlaps a Docker network or a host route");
+    if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
     const concurrency = Math.min(opts.interns, Math.floor(free / memory), scheduler.capacity(), slots);
     if (concurrency < 1) {
       throw new Error(`Free memory is ${(free / gib).toFixed(1)} GiB, and one environment of this target reserves ${(memory / gib).toFixed(1)} GiB`);
