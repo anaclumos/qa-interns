@@ -1,7 +1,7 @@
 ---
 name: qa-interns
-description: Start a QA Interns run against a target application at one commit in the background, then report its findings when the run ends. Use when the user asks to run QA interns against an application.
-argument-hint: <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--logins <file>]
+description: Start a QA Interns run against a target application at one commit or its working tree in the background, then report its findings when the run ends. Use when the user asks to run QA interns against an application.
+argument-hint: <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--logins <file>]
 disable-model-invocation: true
 allowed-tools: Bash(bun ${CLAUDE_PLUGIN_ROOT}/src/cli.ts *) Read
 ---

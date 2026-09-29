@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { capture, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
-import type { GeneratedFile, Mount } from "./types.ts";
+import { relayOutcomes, type GeneratedFile, type Mount, type RelayRecord } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
 export type EnvironmentSpec = {
@@ -39,9 +39,12 @@ const createDiskScript =
 const saveDiskScript =
   'rm -f "$2.new"; [ -e "$2" ] || exit 0; if mountpoint -q "$1"; then umount "$1"; fi && mount -o loop "$2" /mnt && find "$1" -mindepth 1 -delete && cp -a /mnt/. "$1" && umount /mnt && rm "$2"';
 
+const defaultSubnet = "10.213.0.0/16";
+const slotBits = 23;
+
 type Cidr = { address: number; bits: number };
 
-function parseCidr(value: string): Cidr {
+function readCidr(value: string): Cidr | null {
   const [address = "", prefix = "32"] = value.split("/");
   const octets = address.split(".");
   const bits = Number(prefix);
@@ -51,8 +54,26 @@ function parseCidr(value: string): Cidr {
     Number.isInteger(bits) &&
     bits >= 0 &&
     bits <= 32;
-  if (!valid) throw new Error(`${value} is not an IPv4 address or CIDR block`);
-  return { address: octets.reduce((sum, octet) => sum * 256 + Number(octet), 0), bits };
+  return valid ? { address: octets.reduce((sum, octet) => sum * 256 + Number(octet), 0), bits } : null;
+}
+
+function parseCidr(value: string): Cidr {
+  const cidr = readCidr(value);
+  if (cidr === null) throw new Error(`${value} is not an IPv4 address or CIDR block`);
+  return cidr;
+}
+
+function formatAddress(address: number): string {
+  return [24, 16, 8, 0].map((shift) => (address >>> shift) & 255).join(".");
+}
+
+export function networkRange(): { subnet: string; address: number; slots: number } {
+  const subnet = process.env.QA_INTERNS_SUBNET ?? defaultSubnet;
+  const cidr = readCidr(subnet);
+  if (cidr === null || `${formatAddress(cidr.address)}/${cidr.bits}` !== subnet || cidr.bits < 16 || cidr.bits > slotBits || cidr.address % 2 ** (32 - cidr.bits) !== 0) {
+    throw new Error(`QA_INTERNS_SUBNET is ${JSON.stringify(subnet)}, and it must be an IPv4 network address with a prefix length from 16 to ${slotBits}, such as ${defaultSubnet}`);
+  }
+  return { subnet, address: cidr.address, slots: 2 ** (slotBits - cidr.bits) };
 }
 
 function overlaps(a: Cidr, b: Cidr): boolean {
@@ -83,18 +104,23 @@ async function usedBlocks(): Promise<Cidr[]> {
   return [...subnets, ...destinations].map(parseCidr);
 }
 
+function slotAddress(slot: number, offset: number): string {
+  const { address, slots } = networkRange();
+  if (!Number.isInteger(slot) || slot < 0 || slot >= slots) throw new Error(`Slot ${slot} is not an integer from 0 to ${slots - 1}`);
+  return formatAddress(address + slot * 2 ** (32 - slotBits) + offset);
+}
+
 export function slotSubnets(slot: number): { internal: string; relay: string; agent: string; egress: string } {
-  if (!Number.isInteger(slot) || slot < 0 || slot > 127) throw new Error(`Slot ${slot} is not an integer from 0 to 127`);
   return {
-    internal: `10.213.${slot * 2}.0/25`,
-    relay: `10.213.${slot * 2}.128/25`,
-    agent: `10.213.${slot * 2 + 1}.0/25`,
-    egress: `10.213.${slot * 2 + 1}.128/25`,
+    internal: `${slotAddress(slot, 0)}/25`,
+    relay: `${slotAddress(slot, 128)}/25`,
+    agent: `${slotAddress(slot, 256)}/25`,
+    egress: `${slotAddress(slot, 384)}/25`,
   };
 }
 
 function openSlots(used: Cidr[], reserved: Set<number>): number[] {
-  return Array.from({ length: 128 }, (_, slot) => slot).filter((slot) => {
+  return Array.from({ length: networkRange().slots }, (_, slot) => slot).filter((slot) => {
     if (reserved.has(slot)) return false;
     const blocks = Object.values(slotSubnets(slot)).map(parseCidr);
     return !used.some((block) => blocks.some((own) => overlaps(block, own)));
@@ -107,7 +133,7 @@ export async function freeSlots(reserved: Set<number>): Promise<number> {
 
 export async function freeSlot(reserved: Set<number>): Promise<number> {
   const [slot] = openSlots(await usedBlocks(), reserved);
-  if (slot === undefined) throw new Error("No free network slot: every 10.213.x.0/23 block overlaps a Docker network, a host route, or a slot this run holds");
+  if (slot === undefined) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network, a host route, or a slot this run holds`);
   reserved.add(slot);
   return slot;
 }
@@ -129,10 +155,10 @@ function bind(source: string, target: string, readOnly: boolean) {
 }
 
 export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number): string {
-  if (spec.egress.length === 0) throw new Error(`Environment ${spec.name} has no egress hosts for qa-proxy`);
+  const proxied = spec.egress.length > 0;
   const { internal, relay, agent, egress } = slotSubnets(spec.slot);
   const relayHosts = spec.target?.settings.egress ?? [];
-  const relayAddress = `10.213.${spec.slot * 2}.254`;
+  const relayAddress = slotAddress(spec.slot, 254);
   const y = (value: unknown) => JSON.stringify(value);
   const isolated = (subnet: string) => ({ internal: true, driver_opts: { "com.docker.network.bridge.gateway_mode_ipv4": "isolated" }, ipam: { config: [{ subnet }] } });
   const logging = `    logging: !override ${y({ driver: "local", options: { "max-size": "10m", "max-file": "2" } })}`;
@@ -176,17 +202,21 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...spec.runner.mounts.map((mount) => bind(mount.source, mount.target, mount.readOnly)),
     ...spec.runner.files.map((file) => bind(generatedPath(spec, file), file.target, false)),
   ];
+  if (proxied) {
+    lines.push(
+      `  "qa-proxy":`,
+      `    image: ${y(spec.runner.image)}`,
+      `    pull_policy: ${y("never")}`,
+      `    command: ${y(["node", "/opt/qa-interns/proxy.mjs"])}`,
+      `    environment: ${y({ QA_PROXY_ALLOW: spec.egress.join(",") })}`,
+      `    networks: ${y(["qa_agent", "qa_egress"])}`,
+      ...hardening,
+      `    mem_limit: ${y("128m")}`,
+      "    cpus: 0.5",
+      "    pids_limit: 128",
+    );
+  }
   lines.push(
-    `  "qa-proxy":`,
-    `    image: ${y(spec.runner.image)}`,
-    `    pull_policy: ${y("never")}`,
-    `    command: ${y(["node", "/opt/qa-interns/proxy.mjs"])}`,
-    `    environment: ${y({ QA_PROXY_ALLOW: spec.egress.join(",") })}`,
-    `    networks: ${y(["qa_agent", "qa_egress"])}`,
-    ...hardening,
-    `    mem_limit: ${y("128m")}`,
-    "    cpus: 0.5",
-    "    pids_limit: 128",
     `  "qa-runner":`,
     `    image: ${y(spec.runner.image)}`,
     `    pull_policy: ${y("never")}`,
@@ -202,7 +232,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     `    ulimits: ${y({ fsize: outLimit })}`,
     `    mem_limit: ${y("2g")}`,
     "    cpus: 2",
-    `    networks: ${y(["qa_internal", "qa_agent"])}`,
+    `    networks: ${y(["qa_internal", ...(proxied ? ["qa_agent"] : [])])}`,
   );
   if (relayHosts.length > 0) {
     lines.push(
@@ -223,8 +253,8 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     "networks:",
     `  qa_internal: !override ${y(isolated(internal))}`,
     ...(relayHosts.length > 0 ? [`  qa_relay: !override ${y(isolated(relay))}`] : []),
-    `  qa_agent: !override ${y(isolated(agent))}`,
-    `  qa_egress: !override ${y({ ipam: { config: [{ subnet: egress }] } })}`,
+    ...(proxied ? [`  qa_agent: !override ${y(isolated(agent))}`] : []),
+    ...(proxied || relayHosts.length > 0 ? [`  qa_egress: !override ${y({ ipam: { config: [{ subnet: egress }] } })}`] : []),
   );
   return `${lines.join("\n")}\n`;
 }
@@ -328,16 +358,16 @@ async function runnerId(project: string): Promise<string> {
   return id;
 }
 
-function qaServices(target: Target): string[] {
-  return ["qa-proxy", "qa-runner", ...(target.settings.egress.length > 0 ? ["qa-relay"] : [])];
+function qaServices(spec: EnvironmentSpec, target: Target): string[] {
+  return [...(spec.egress.length > 0 ? ["qa-proxy"] : []), "qa-runner", ...(target.settings.egress.length > 0 ? ["qa-relay"] : [])];
 }
 
-function overrideConfig(target: Target, composeFile: string): Record<string, unknown> {
+function overrideConfig(spec: EnvironmentSpec, target: Target, composeFile: string): Record<string, unknown> {
   const runServices = target.config.runServices;
   return {
     ...target.config,
     dockerComposeFile: [...target.composeFiles, composeFile],
-    ...(Array.isArray(runServices) ? { runServices: [...runServices, ...qaServices(target)] } : {}),
+    ...(Array.isArray(runServices) ? { runServices: [...runServices, ...qaServices(spec, target)] } : {}),
   };
 }
 
@@ -376,7 +406,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const workspace = join(dir, project);
   const config = join(dir, "devcontainer.json");
   await execute(["cp", "-a", "--reflink=auto", join(spec.runDir, "source"), workspace]);
-  await Bun.write(config, `${JSON.stringify(overrideConfig(target, join(dir, "compose.qa.yml")), null, 2)}\n`);
+  await Bun.write(config, `${JSON.stringify(overrideConfig(spec, target, join(dir, "compose.qa.yml")), null, 2)}\n`);
 
   const upEnv = { ...env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp };
   const up = await capture(
@@ -397,7 +427,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   }
 
   const runServices = target.config.runServices;
-  const services = Array.isArray(runServices) ? [target.service, ...runServices, ...qaServices(target)] : [];
+  const services = Array.isArray(runServices) ? [target.service, ...runServices, ...qaServices(spec, target)] : [];
   await execute(
     ["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds, "--no-recreate", ...services],
     { env: upEnv, log },
@@ -467,14 +497,37 @@ async function projectObjects(project: string): Promise<string[]> {
   return left.join("\n").split("\n").filter((id) => id !== "");
 }
 
-async function down(project: string): Promise<void> {
+const relaySchema = z.object({ n: z.number().int().positive(), host: z.string().nullable(), outcome: z.enum(relayOutcomes), error: z.string().nullable() });
+
+const relayPrefix = "relay-";
+const relaySuffix = ".jsonl";
+
+export async function readRelayLogs(dir: string): Promise<RelayRecord[][]> {
+  const names = existsSync(dir) ? (await readdir(dir)).filter((name) => name.startsWith(relayPrefix) && name.endsWith(relaySuffix)).sort() : [];
+  return Promise.all(
+    names.map(async (name) => {
+      const lines = (await Bun.file(join(dir, name)).text()).split("\n").filter((line) => line !== "");
+      return lines.map((line) => relaySchema.parse(JSON.parse(line)));
+    }),
+  );
+}
+
+async function saveRelayLogs(project: string, dir: string): Promise<void> {
+  const labels = ["--filter", `label=com.docker.compose.project=${project}`, "--filter", "label=com.docker.compose.service=qa-relay"];
+  const ids = (await execute(["docker", "ps", "-aq", ...labels])).split("\n").filter((id) => id !== "");
+  for (const id of ids) await Bun.write(join(dir, `${relayPrefix}${id}${relaySuffix}`), await execute(["docker", "logs", id]));
+}
+
+async function down(project: string, relayDir: string): Promise<void> {
+  await execute(["docker", "compose", "-p", project, "stop", "--timeout", "2"]);
+  await saveRelayLogs(project, relayDir);
   await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
   const ids = await projectObjects(project);
   if (ids.length > 0) throw new Error(`docker compose down left objects of ${project} behind: ${ids.join(", ")}`);
 }
 
-export async function stopProject(project: string): Promise<void> {
-  if ((await projectObjects(project)).length > 0) await down(project);
+export async function stopProject(project: string, relayDir: string): Promise<void> {
+  if ((await projectObjects(project)).length > 0) await down(project, relayDir);
 }
 
 async function removeImages(prefixes: string[]): Promise<void> {
@@ -488,7 +541,7 @@ async function removeAsRoot(dir: string, image: string, paths: string[]): Promis
 }
 
 export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<void> {
-  await down(project);
+  await down(project, join(runDir, "interns", name));
   await removeImages([`vsc-${project}-`]);
   await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
   await saveDisks(runDir, name, project, image);
@@ -539,7 +592,7 @@ export async function removeCopies(runDir: string, runId: string, image: string)
   if (errors.length > 0) throw new Error(`Saving the output disks of ${runDir} failed:\n${errors.join("\n")}`);
 }
 
-export async function stopRun(runId: string): Promise<void> {
+export async function stopRun(runDir: string, runId: string): Promise<void> {
   const prefix = `qa-${runId}-`;
   const listing = ["--filter", "label=com.docker.compose.project", "--format", '{{.Label "com.docker.compose.project"}}'];
   const found = await Promise.all([
@@ -548,7 +601,7 @@ export async function stopRun(runId: string): Promise<void> {
     execute(["docker", "volume", "ls", ...listing]),
   ]);
   const projects = [...new Set(found.join("\n").split("\n"))].filter((project) => project.startsWith(prefix));
-  const results = await Promise.allSettled(projects.map(down));
+  const results = await Promise.allSettled(projects.map((project) => down(project, join(runDir, "interns", project.slice(prefix.length)))));
   const errors = results.flatMap((result) => (result.status === "rejected" ? [String(result.reason)] : []));
   if (errors.length > 0) throw new Error(`Teardown of run ${runId} failed:\n${errors.join("\n")}`);
   await removeImages([prefix, `vsc-${prefix}`]);
