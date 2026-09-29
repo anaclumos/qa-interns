@@ -16,11 +16,13 @@ Commands:
   doctor [--logins <file>]
       Check Docker, Compose, the isolated network mode, the Dev Container CLI,
       the runner image and its agents, the logins, and free memory.
-  run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]
+  run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]
       Run interns against the target at the commit, or with --dirty against a
       copy of its working tree: the tracked files as they are and the untracked
       files that Git does not ignore. Defaults: HEAD, 4 interns, 30 minutes
       each, 10 minutes per confirmation. Prints the run directory first.
+      With --on-end, run the shell command when the run ends, done, failed, or
+      interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
   replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]
       Hand each confirmed group of the earlier run, or each group --group names,
       to a confirming intern against the run's target at the commit. Defaults:
@@ -93,6 +95,7 @@ async function main(args: string[]): Promise<number> {
           minutes: { type: "string", default: "30" },
           "confirm-minutes": { type: "string", default: "10" },
           logins: { type: "string", default: defaultLoginsPath },
+          "on-end": { type: "string" },
         },
       });
       const [dir, ...extra] = positionals;
@@ -106,6 +109,7 @@ async function main(args: string[]): Promise<number> {
         minutes: minutes(values.minutes, "minutes"),
         confirmMinutes: minutes(values["confirm-minutes"], "confirm-minutes"),
         loginsFile: values.logins,
+        onEnd: values["on-end"],
       };
       await runQa({ ...options, replay: null, runnerImage: ensureRunnerImage, print });
       return 0;
@@ -163,7 +167,7 @@ async function main(args: string[]): Promise<number> {
     case "down": {
       const dir = await resolveRunDir(runArg(command, rest));
       const state = await readState(dir);
-      if (state.phase !== "done" && state.phase !== "failed" && running(state.pid, state.pidStart)) {
+      if (running(state.pid, state.pidStart)) {
         try {
           process.kill(state.pid, "SIGTERM");
           print(`Sent SIGTERM to run ${state.runId} (process ${state.pid}).`);

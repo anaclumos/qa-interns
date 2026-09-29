@@ -38,7 +38,7 @@ qa-interns doctor
 | Command | What it does |
 | --- | --- |
 | `qa-interns doctor [--logins <file>]` | Checks Docker, Compose, the isolated network mode, the Dev Container CLI, the runner image and its agents, and the logins. Builds the runner image when it is missing. |
-| `qa-interns run <target-dir> [--commit <rev> \| --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). With `--dirty`, runs them against a copy of the target's working tree, taken when the run starts: the tracked files that the working tree holds, as they are, and the untracked files that Git does not ignore. `state.json` and the `environment` of each finding record the commit of `HEAD` with `dirty: true`, and `report.md` names the uncommitted changes after the commit. Prints the run directory first. |
+| `qa-interns run <target-dir> [--commit <rev> \| --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). With `--dirty`, runs them against a copy of the target's working tree, taken when the run starts: the tracked files that the working tree holds, as they are, and the untracked files that Git does not ignore. `state.json` and the `environment` of each finding record the commit of `HEAD` with `dirty: true`, and `report.md` names the uncommitted changes after the commit. Prints the run directory first. With `--on-end`, runs the command when the run ends (see [Command when a run ends](#command-when-a-run-ends)). |
 | `qa-interns replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]` | Hands each confirmed group of the earlier run to a confirming intern against that run's target at the commit (default `HEAD`, 10 minutes per confirmation). See [Replay](#replay). Prints the run directory first. |
 | `qa-interns up <target-dir> [--commit <rev>]` | Starts one environment of the target at the commit (default `HEAD`) with no interns, runs its `ready` check and `seed`, and leaves it running. Prints the run directory first, then the Compose project, the IDs of the runner and the dev container, and the seed output. When a step fails, it tears the environment down. `qa-interns down` removes the environment. |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
@@ -174,6 +174,23 @@ The **Egress connections** section of `report.md` and the `egress` list of `find
 - `incomplete`: the connection closed before it sent a complete TLS record. `error` is `timeout` when the relay closed it after 10 seconds.
 - `unrecorded`: connections whose records Docker dropped from the relay's log (see [Known limits](#known-limits)). They have no host.
 
+## Command when a run ends
+
+`run --on-end <command>` runs `<command>` with `sh -c` on the host when the run ends, whether it is done, failed, or interrupted by SIGINT, SIGTERM, or SIGHUP. The command runs after the teardown and after `report.md`, `findings.json`, and `state.json` are written. It gets the environment of `qa-interns` and these variables:
+
+- `QA_INTERNS_RUN_DIR`: the run directory.
+- `QA_INTERNS_PHASE`: `done` when the run is done, and `failed` otherwise, including an interrupt and a failure to write `report.md`, `findings.json`, or `state.json`. The `error` in the `state.json` of an interrupted run starts with `interrupted`.
+
+Quote the command so that the shell that starts `run` does not expand these variables:
+
+```
+qa-interns run eval/ledger --on-end 'echo "$QA_INTERNS_PHASE $QA_INTERNS_RUN_DIR" >> "$HOME/qa-runs.log"'
+```
+
+The command writes to the standard output and error of `run`. `run` waits for the command to exit, then exits 0 when the run is done, 1 when it failed, and 130 after an interrupt. When the command exits with a code other than 0, `run` prints that code, and a run that is done exits 1. A run that fails before it prints its run directory, such as on a missing logins file, does not run the command.
+
+A signal to `run` while the command runs after a done or failed run, such as the SIGTERM that `qa-interns down` sends, sends SIGTERM to the command, and `run` exits 130. After an interrupt, `run` ignores further signals until it exits, so the wait of up to 120 seconds that `qa-interns down` allows includes the time the command takes.
+
 ## Replay
 
 `qa-interns replay <run>` reruns the confirmed findings of an earlier run against a fresh copy of the target, for example at the commit of a change. It resolves `--commit` in the repository that the earlier run tested, then exports, checks, and builds the target at the earlier run's path, as steps 1 and 2 of a run do. It hands the first finding of each confirmed group to a confirming intern in a fresh environment, as step 6 does, and runs no testing intern and no judge. `--group <id>` limits the replay to one confirmed group; repeat it to name more. The replay fails when no intern records a result for any group.
@@ -182,7 +199,7 @@ A replay is a run of its own, with its own run directory, and `status`, `report`
 
 ## Isolation
 
-- Every environment is its own Compose project with its networks in its own `/23` block of `10.213.0.0/16`. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. An environment that `up` starts has no proxy and no second network. When the target lists `egress` hosts, the target services and the relay share a third internal network. Only the proxy and the relay join the network that reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
+- Every environment is its own Compose project with its networks in its own `/23` block of the range that the `QA_INTERNS_SUBNET` environment variable sets, `10.213.0.0/16` when it is not set. The range is an IPv4 network address with a prefix length from 16 to 23, such as `10.100.0.0/20`, and holds one environment per `/23` block. A command that starts an environment skips a block that overlaps a Docker network or a host route. That command and `doctor` fail when `QA_INTERNS_SUBNET` is set to anything else. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. An environment that `up` starts has no proxy and no second network. When the target lists `egress` hosts, the target services and the relay share a third internal network. Only the proxy and the relay join the network that reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
 - The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential it was given, which is the credential file for Claude and Codex and the whole store directory for Cursor and Grok, and that write reaches the store on the host.
 - `/qa/out` is a 1 GiB ext4 disk of its own for each attempt, mounted on that attempt's folder under `interns/<id>/`. The kernel stops every write past the disk's size or its inode count, including writes to files deleted while still open and space reserved without writing. A privileged helper container from the runner image, with the host `/dev`, creates and mounts the disk before the environment starts. At teardown, the helper copies the disk into the folder and deletes the disk image. The runner cannot write a file larger than 1 GiB anywhere. While the agent runs, the orchestrator checks the disk once a second and stops the runner when the disk is full. The intern then ends as failed, and the findings it wrote stay in the report.
 - The orchestrator keeps an agent's output in memory until a newline arrives. An intern fails when its agent prints more than 64 MiB without a newline, or when the orchestrator's messages to the agent pass 64 MiB in total.
