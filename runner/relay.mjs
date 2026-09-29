@@ -6,11 +6,12 @@ if (allow.includes("")) {
   process.exit(1);
 }
 
+const maxName = 253;
 let count = 0;
 
 function record(host, outcome, error) {
   count += 1;
-  console.log(JSON.stringify({ n: count, host, outcome, error }));
+  console.log(JSON.stringify({ n: count, host: host === null ? null : host.slice(0, maxName), outcome, error }));
 }
 
 function serverName(data) {

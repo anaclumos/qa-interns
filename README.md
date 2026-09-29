@@ -170,7 +170,7 @@ The **Egress connections** section of `report.md` and the `egress` list of `find
 
 - `connected`: the relay opened a connection to the host on port 443. What happens on the connection after that is not recorded.
 - `failed`: the relay did not open a connection to the host. `error` is the Node.js error code of that attempt, such as `ENOTFOUND` or `ECONNREFUSED`, or `timeout` when the relay stopped waiting after 10 seconds. `error` is empty when the target service closed the connection first.
-- `denied`: the connection did not start with a TLS handshake that names an `egress` host. `host` is the name the handshake names, and is empty when the connection did not start with a TLS handshake that names a host.
+- `denied`: the connection did not start with a TLS handshake that names an `egress` host. `host` is the name the handshake names, cut to its first 253 characters, the longest a DNS name can be, and is empty when the connection did not start with a TLS handshake that names a host.
 - `incomplete`: the connection closed before it sent a complete TLS record. `error` is `timeout` when the relay closed it after 10 seconds.
 - `unrecorded`: connections whose records Docker dropped from the relay's log (see [Known limits](#known-limits)). They have no host.
 

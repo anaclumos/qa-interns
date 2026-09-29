@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
@@ -918,6 +918,20 @@ ${sleeper}    profiles: ["mail"]
   );
 });
 
+function u16(value: number): Buffer {
+  const buffer = Buffer.alloc(2);
+  buffer.writeUInt16BE(value);
+  return buffer;
+}
+
+function clientHello(name: Buffer): Buffer {
+  const entry = Buffer.concat([Buffer.from([0]), u16(name.length), name]);
+  const extension = Buffer.concat([u16(0), u16(entry.length + 2), u16(entry.length), entry]);
+  const body = Buffer.concat([Buffer.from([3, 3]), Buffer.alloc(32), Buffer.from([0]), u16(2), Buffer.from([0x13, 0x01]), Buffer.from([1, 0]), u16(extension.length), extension]);
+  const handshake = Buffer.concat([Buffer.from([1, body.length >> 16, (body.length >> 8) & 255, body.length & 255]), body]);
+  return Buffer.concat([Buffer.from([22, 3, 1]), u16(handshake.length), handshake]);
+}
+
 describe.skipIf(!dockerAvailable)("qa-relay", () => {
   test(
     "carry HTTPS from a target service to its egress hosts and to no other host, and record each connection's outcome through teardown",
@@ -968,6 +982,8 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         expect((await capture([...curl, "https://blocked.example.test/"])).code).toBe(6);
         await execute([...compose, "exec", "-T", "app", "node", "-e", "require('node:net').connect(443, 'api.example.test').on('connect', function () { this.end(); })"]);
         expect((await capture([...curl, "https://gone.example.test/"])).code).not.toBe(0);
+        const hello = clientHello(Buffer.alloc(30_000, 1)).toString("hex");
+        await execute([...compose, "exec", "-T", "app", "node", "-e", "require('node:net').connect(443, 'api.example.test', function () { this.end(Buffer.from(process.argv[1], 'hex')); })", hello]);
       } finally {
         await stopProject(project, saved);
       }
@@ -981,8 +997,12 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         [null, "denied", null],
         [null, "incomplete", null],
         ["gone.example.test", "failed", "ENOTFOUND"],
+        ["\u0001".repeat(253), "denied", null],
         [null, "denied", null],
       ]);
+      const [file = ""] = (await readdir(saved)).filter((name) => name.startsWith("relay-"));
+      const lines = (await Bun.file(join(saved, file)).text()).split("\n");
+      expect(Math.max(...lines.map((line) => Buffer.byteLength(line) + 1))).toBeLessThanOrEqual(4096);
     },
     20 * 60_000,
   );
