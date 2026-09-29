@@ -38,6 +38,7 @@ qa-interns doctor
 | Command | What it does |
 | --- | --- |
 | `qa-interns doctor [--logins <file>]` | Checks Docker, Compose, the isolated network mode, the Dev Container CLI, the runner image and its agents, and the logins. Builds the runner image when it is missing. |
+| `qa-interns validate <target-dir> [--commit <rev>]` | Checks the target's dev container and Compose files at the commit (default `HEAD`) as `run` does before it builds images. Needs no logins, no runner image, and no value for a `hostEnv` variable that no checked setting reads (see [Target environment contract](#target-environment-contract)). |
 | `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
 | `qa-interns report [<run>]` | Prints `report.md`. |
@@ -71,7 +72,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - `seed`: a shell command, run once in the dev container, that creates test accounts and data and prints them as one JSON document.
 - `focus` (optional): areas the project wants covered, dealt to interns before the built-in charters. A run with no more interns than focus entries deals no built-in charter; list fewer focus entries or raise `--interns` to get both.
 - `offLimits` (optional): actions interns must not take.
-- `hostEnv` (optional): names of variables the target takes from the environment that runs `qa-interns`. `run` fails when one of them is not set.
+- `hostEnv` (optional): names of variables the target takes from the environment that runs `qa-interns`. `run` fails when one of them is not set, and `validate` sets such a variable to a placeholder.
 - `egress` (optional): outside hosts that the target services reach over TLS on port 443, such as HTTPS, for a service that has no local stand-in, such as a hosted model API. Each entry is an exact lowercase host name; a wildcard or an IP address is rejected. When such a host needs a credential, a target service takes it from a variable that `hostEnv` names.
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
@@ -95,6 +96,8 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - A bind mount, `env_file`, secret or config `file`, build context, Dockerfile, additional build context, or project `.env` file (the `.env` beside the first Compose file, which Compose reads for interpolation) whose path lies outside the target directory, and an additional build context from an `oci-layout://` directory. A path is checked after its symbolic links are resolved, so a Docker socket is rejected whether it is mounted directly or through a symbolic link, and so is a missing path under a symbolic link that points outside the target.
 
 `devcontainer up` writes settings from `devcontainer.json`, its features, and the `devcontainer.metadata` label of the dev container image into its own Compose files. After `devcontainer up` creates an environment's dev container, `run` renders the environment's Compose files with and without the files the Dev Container CLI wrote. Those files may add volumes and may change only the `image`, `build`, `entrypoint`, `command`, `init`, `user`, `environment`, `labels`, `privileged`, `cap_add`, `security_opt`, and `volumes` of the dev container service. `run` then applies the checks above, except the build checks, to every target service in the environment's copy of the target, with the environment variables `devcontainer up` used. When a check fails, the environment is torn down before its intern starts.
+
+`qa-interns validate` exports the target at the commit as `run` does and applies the checks above, except the checks after `devcontainer up`, which need a started environment. It uses the host value of each `hostEnv` variable that the host sets. When a `hostEnv` variable is not set, `validate` renders the Compose files twice, with each unset `hostEnv` variable set to `./qa-interns-unset-<name>-1` and then to `./qa-interns-unset-<name>-2`, and fails when a setting that the checks read differs between the two renders, such as a bind mount source built from the variable. A variable that only a service's `environment` reads, such as an API key, needs no value. Set a variable that a checked setting reads to the value `run` uses.
 
 Published ports and build `tags` are allowed; QA Interns removes them. `logging` settings are allowed; QA Interns replaces them with its own log limit (see [Isolation](#isolation)).
 
@@ -177,6 +180,7 @@ A finding is confirmed when two or more interns reproduced it.
 - Single-container dev containers are not supported yet.
 - The runner image is x86-64 only.
 - Two runs that start an environment at the same moment can pick the same subnet; the second fails to start that environment.
+- `validate` sets an unset `hostEnv` variable to a placeholder that is not empty. A checked setting that changes only when the variable is empty, such as one built with `${VAR:+...}`, passes `validate` and can fail `run` when the variable is empty. A variable in a setting that Compose reads as a number or a boolean, such as `scale` or `privileged`, fails `validate` with a Compose error that quotes the placeholder.
 - A Cursor usage limit ends the intern early instead of moving it to another login.
 - An intern waits for a login only while its own run holds a lease. When other runs hold every login it could use, the intern ends as `limited`.
 - Credential locks and the store checks compare real paths, so two hard links to one credential file count as two credentials.

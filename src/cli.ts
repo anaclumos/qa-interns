@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor } from "./doctor.ts";
@@ -8,6 +10,7 @@ import { defaultLoginsPath } from "./logins.ts";
 import { runQa } from "./run.ts";
 import { ensureRunnerImage, runnerImage } from "./runner.ts";
 import { formatStatus, processStart, readState, resolveRunDir } from "./state.ts";
+import { exportTree, loadTarget, resolveTarget } from "./target.ts";
 
 const usage = `Usage: qa-interns <command> [options]
 
@@ -15,6 +18,10 @@ Commands:
   doctor [--logins <file>]
       Check Docker, Compose, the isolated network mode, the Dev Container CLI,
       the runner image and its agents, the logins, and free memory.
+  validate <target-dir> [--commit <rev>]
+      Check the target's dev container and Compose files at the commit (default
+      HEAD) as run does before it builds images, with no logins and no values
+      for hostEnv variables that no checked setting depends on.
   run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]
       Run interns against the target at the commit. Defaults: HEAD, 4 interns,
       30 minutes each, 10 minutes per confirmation. Prints the run directory first.
@@ -70,6 +77,23 @@ async function main(args: string[]): Promise<number> {
     case "doctor": {
       const { values } = parseArgs({ args: rest, options: { logins: { type: "string", default: defaultLoginsPath } } });
       return (await doctor(values.logins, print)) ? 0 : 1;
+    }
+    case "validate": {
+      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { commit: { type: "string", default: "HEAD" } } });
+      const [dir, ...extra] = positionals;
+      if (dir === undefined || extra.length > 0) throw new Error("validate takes exactly one target directory. Run qa-interns help for usage.");
+      const ref = await resolveTarget(dir, values.commit);
+      const source = await mkdtemp(join(tmpdir(), "qa-interns-validate-"));
+      try {
+        await exportTree(ref, source);
+        const { settings } = await loadTarget(ref, source, true);
+        print(`${join(ref.repo, ref.path)} at ${ref.commit} passes the checks that run makes before it builds images.`);
+        const unset = settings.hostEnv.filter((name) => process.env[name] === undefined);
+        if (unset.length > 0) print(`hostEnv names ${unset.join(", ")}, which the environment of qa-interns does not set. No checked setting depends on them.`);
+      } finally {
+        await rm(source, { recursive: true, force: true });
+      }
+      return 0;
     }
     case "run": {
       const { values, positionals } = parseArgs({

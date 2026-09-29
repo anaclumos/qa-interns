@@ -787,3 +787,54 @@ services:
     await expect(load(root)).rejects.toThrow(message);
   });
 });
+
+describe.skipIf(!dockerAvailable)("validate", () => {
+  const cli = join(import.meta.dir, "..", "src", "cli.ts");
+  const hostEnv = { ...settings, hostEnv: ["QA_INTERNS_TEST_KEY", "QA_INTERNS_TEST_DIR"] };
+
+  async function validate(root: string, set: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+    const tmp = await scratch("qa-interns-validate-tmp-");
+    const env = { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("QA_INTERNS_TEST_"))), ...set, TMPDIR: tmp };
+    const proc = Bun.spawn([process.execPath, cli, "validate", root], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    expect(await readdir(tmp)).toEqual([]);
+    return { code, stdout, stderr };
+  }
+
+  test("pass the Ledger target", async () => {
+    const root = await repo(await ledgerFiles(""));
+    const passed = `${await realpath(root)} at ${git(root, "rev-parse", "HEAD")} passes the checks that run makes before it builds images.\n`;
+    expect(await validate(root)).toEqual({ code: 0, stdout: passed, stderr: "" });
+  });
+
+  test("pass without the value of a hostEnv variable that only the environment of a service reads", async () => {
+    const compose = "services:\n  web:\n    image: nginx:1.29-alpine\n    environment:\n      API_KEY: ${QA_INTERNS_TEST_KEY:?set the API key}\n";
+    const root = await fixture(compose, devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_KEY"] }));
+    expect(await validate(root)).toEqual({
+      code: 0,
+      stdout: `${await realpath(root)} at ${git(root, "rev-parse", "HEAD")} passes the checks that run makes before it builds images.\nhostEnv names QA_INTERNS_TEST_KEY, which the environment of qa-interns does not set. No checked setting depends on them.\n`,
+      stderr: "",
+    });
+  });
+
+  test("reject a checked setting that depends on an unset hostEnv variable, and check it with the value when it is set", async () => {
+    const compose = 'services:\n  web:\n    image: nginx:1.29-alpine\n    environment:\n      API_KEY: ${QA_INTERNS_TEST_KEY}\n    volumes: ["${QA_INTERNS_TEST_DIR}/data:/data"]\n';
+    const root = await fixture(compose, devcontainer({}, hostEnv));
+    expect(await validate(root)).toEqual({
+      code: 1,
+      stdout: "",
+      stderr:
+        'qa-interns: customizations["qa-interns"].hostEnv names QA_INTERNS_TEST_KEY, QA_INTERNS_TEST_DIR, which the environment of qa-interns does not set, and these checked settings depend on one or more of them:\n- volumes of service web\n',
+    });
+    const outside = await validate(root, { QA_INTERNS_TEST_DIR: "/etc" });
+    expect(outside.code).toBe(1);
+    expect(outside.stderr).toContain("- service web mounts /etc/data, which resolves to /etc/data, outside the target directory");
+  });
+
+  test("reject unsafe Compose settings while a hostEnv variable is unset", async () => {
+    const compose = "services:\n  web:\n    image: nginx:1.29-alpine\n    container_name: shop-web\n    environment:\n      API_KEY: ${QA_INTERNS_TEST_KEY}\n";
+    const result = await validate(await fixture(compose, devcontainer({}, hostEnv)));
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("- service web sets container_name shop-web");
+  });
+});
