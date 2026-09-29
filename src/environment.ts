@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, mkdtemp, readdir, rm, stat, statfs } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -469,34 +469,35 @@ async function projectObjects(project: string): Promise<string[]> {
 
 const relaySchema = z.object({ n: z.number().int().positive(), host: z.string().nullable(), outcome: z.enum(relayOutcomes), error: z.string().nullable() });
 
-export function relayLog(runDir: string, name: string): string {
-  return join(runDir, "interns", name, "relay.jsonl");
+const relayPrefix = "relay-";
+const relaySuffix = ".jsonl";
+
+export async function readRelayLogs(dir: string): Promise<RelayRecord[][]> {
+  const names = existsSync(dir) ? (await readdir(dir)).filter((name) => name.startsWith(relayPrefix) && name.endsWith(relaySuffix)).sort() : [];
+  return Promise.all(
+    names.map(async (name) => {
+      const lines = (await Bun.file(join(dir, name)).text()).split("\n").filter((line) => line !== "");
+      return lines.map((line) => relaySchema.parse(JSON.parse(line)));
+    }),
+  );
 }
 
-export async function readRelayLog(file: string): Promise<RelayRecord[]> {
-  if (!existsSync(file)) return [];
-  const lines = (await Bun.file(file).text()).split("\n").filter((line) => line !== "");
-  return lines.map((line) => relaySchema.parse(JSON.parse(line)));
-}
-
-async function saveRelayLog(project: string, file: string): Promise<void> {
+async function saveRelayLogs(project: string, dir: string): Promise<void> {
   const labels = ["--filter", `label=com.docker.compose.project=${project}`, "--filter", "label=com.docker.compose.service=qa-relay"];
   const ids = (await execute(["docker", "ps", "-aq", ...labels])).split("\n").filter((id) => id !== "");
-  for (const id of ids) await appendFile(file, await execute(["docker", "logs", id]));
+  for (const id of ids) await Bun.write(join(dir, `${relayPrefix}${id}${relaySuffix}`), await execute(["docker", "logs", id]));
 }
 
-async function down(project: string, relay: string): Promise<void> {
-  try {
-    await saveRelayLog(project, relay);
-  } finally {
-    await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
-  }
+async function down(project: string, relayDir: string): Promise<void> {
+  await execute(["docker", "compose", "-p", project, "stop", "--timeout", "2"]);
+  await saveRelayLogs(project, relayDir);
+  await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
   const ids = await projectObjects(project);
   if (ids.length > 0) throw new Error(`docker compose down left objects of ${project} behind: ${ids.join(", ")}`);
 }
 
-export async function stopProject(project: string, relay: string): Promise<void> {
-  if ((await projectObjects(project)).length > 0) await down(project, relay);
+export async function stopProject(project: string, relayDir: string): Promise<void> {
+  if ((await projectObjects(project)).length > 0) await down(project, relayDir);
 }
 
 async function removeImages(prefixes: string[]): Promise<void> {
@@ -510,7 +511,7 @@ async function removeAsRoot(dir: string, image: string, paths: string[]): Promis
 }
 
 export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<void> {
-  await down(project, relayLog(runDir, name));
+  await down(project, join(runDir, "interns", name));
   await removeImages([`vsc-${project}-`]);
   await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
   await saveDisks(runDir, name, project, image);
@@ -570,7 +571,7 @@ export async function stopRun(runDir: string, runId: string): Promise<void> {
     execute(["docker", "volume", "ls", ...listing]),
   ]);
   const projects = [...new Set(found.join("\n").split("\n"))].filter((project) => project.startsWith(prefix));
-  const results = await Promise.allSettled(projects.map((project) => down(project, relayLog(runDir, project.slice(prefix.length)))));
+  const results = await Promise.allSettled(projects.map((project) => down(project, join(runDir, "interns", project.slice(prefix.length)))));
   const errors = results.flatMap((result) => (result.status === "rejected" ? [String(result.reason)] : []));
   if (errors.length > 0) throw new Error(`Teardown of run ${runId} failed:\n${errors.join("\n")}`);
   await removeImages([prefix, `vsc-${prefix}`]);

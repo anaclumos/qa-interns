@@ -9,7 +9,7 @@ import {
   environmentMemory,
   freeSlot,
   freeSlots,
-  readRelayLog,
+  readRelayLogs,
   removeCopies,
   renderOverride,
   runnerEnv,
@@ -907,7 +907,7 @@ ${sleeper}    profiles: ["mail"]
 
 describe.skipIf(!dockerAvailable)("qa-relay", () => {
   test(
-    "carry HTTPS from a target service to its egress hosts and to no other host, and record each connection's outcome",
+    "carry HTTPS from a target service to its egress hosts and to no other host, and record each connection's outcome through teardown",
     async () => {
       const image = await ensureRunnerImage();
       const source = await scratch();
@@ -926,7 +926,8 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
           customizations: { "qa-interns": { urls: { app: "http://app:3000" }, ready: "true", seed: "true", egress: ["api.example.test", "gone.example.test"] } },
         }),
       );
-      await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, volumes: ["../certs:/certs:ro"] } } }));
+      const onStop = 'process.on("SIGTERM", () => require("node:net").connect(443, "api.example.test", function () { this.write("GET / HTTP/1.1\\r\\n\\r\\n"); }).on("close", () => process.exit(0))); setInterval(() => {}, 60000)';
+      await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, command: ["node", "-e", onStop], volumes: ["../certs:/certs:ro"] } } }));
       const target = await loadTarget(ref, source);
       const runDir = await scratch();
       const slot = await freeSlot(new Set());
@@ -941,7 +942,7 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       );
       const project = `qair-relay-${crypto.randomUUID().slice(0, 8)}`;
       const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
-      const saved = join(runDir, "relay.jsonl");
+      const saved = join(runDir, "interns", "i1");
       try {
         await execute([...compose, "up", "-d", "--wait", "app", "upstream", "qa-relay"]);
         const curl = [...compose, "exec", "-T", "app", "curl", "-sS", "--max-time", "10", "--cacert", "/certs/cert.pem"];
@@ -957,7 +958,8 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       } finally {
         await stopProject(project, saved);
       }
-      const records = await readRelayLog(saved);
+      const [records = [], ...others] = await readRelayLogs(saved);
+      expect(others).toEqual([]);
       expect(records.map((entry) => entry.n)).toEqual(records.map((_, index) => index + 1));
       const retries = (entry: RelayRecord) => entry.host === "api.example.test" && entry.outcome === "failed";
       expect(records.filter((entry) => !retries(entry)).map((entry) => [entry.host, entry.outcome, entry.error])).toEqual([
@@ -966,6 +968,7 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         [null, "denied", null],
         [null, "incomplete", null],
         ["gone.example.test", "failed", "ENOTFOUND"],
+        [null, "denied", null],
       ]);
     },
     20 * 60_000,

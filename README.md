@@ -157,7 +157,7 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 - `interns/<id>/transcript.jsonl`: the agent traffic of each intern.
 - `interns/<id>/adapter.log`: the error output of each intern's agent.
 - Each transcript and error log stops growing at 64 MiB. Later traffic and output are not recorded.
-- `interns/<id>/relay.jsonl`: one JSON line for each connection that a target service opened through the relay of one of the intern's environments, saved before the environment is torn down. A line has `n`, its position in the log of its relay, and `host`, `outcome`, and `error`.
+- `interns/<id>/relay-<container>.jsonl`: the log of the relay container of one of the intern's environments, saved after the environment's containers stop and before they are removed. It has one JSON line for each connection that a target service opened through that relay, with `n`, the line's position in the relay's log, and `host`, `outcome`, and `error`.
 - `state.json`: the run's phase and every intern's status.
 
 A finding is confirmed when two or more interns reproduced it.

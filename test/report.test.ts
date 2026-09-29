@@ -90,7 +90,8 @@ const egress: Egress = {
   hosts: ["api.pwnedpasswords.com", "ai-gateway.vercel.sh"],
   relays: [
     { intern: "i1", records: [record(1, "api.pwnedpasswords.com", "connected"), record(2, "api.pwnedpasswords.com", "failed", "ENOTFOUND"), record(3, "api.pwnedpasswords.com", "connected")] },
-    { intern: "i2", records: [record(40001, "api.pwnedpasswords.com", "connected"), record(40002, null, "denied"), record(1, null, "incomplete", "timeout")] },
+    { intern: "i2", records: [record(40001, "api.pwnedpasswords.com", "connected"), record(40002, null, "denied")] },
+    { intern: "i2", records: [record(1, null, "incomplete", "timeout")] },
     { intern: "judge", records: [] },
     { intern: "c1", records: [record(1, "x|y.example", "denied"), record(2, "api.pwnedpasswords.com", "connected")] },
   ],

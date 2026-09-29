@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { readRelayLog, relayLog, removeCopies, writeChromePolicy } from "../src/environment.ts";
+import { readRelayLogs, removeCopies, writeChromePolicy } from "../src/environment.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { newRunId, readState } from "../src/state.ts";
@@ -272,7 +272,10 @@ USER qa
       const markdown = await Bun.file(join(runDir, "report.md")).text();
       expect(markdown).toContain("| api.example.test | failed | ENOTFOUND | 2 | i1, c1 |\n");
       expect(markdown).toContain("| silent.example.test | no connection |  | 0 |  |\n");
-      for (const internId of ["i1", "c1"]) expect((await readRelayLog(relayLog(runDir, internId))).map((entry) => entry.n)).toEqual([1, 2]);
+      for (const internId of ["i1", "c1"]) {
+        const logs = await readRelayLogs(join(runDir, "interns", internId));
+        expect(logs.map((records) => records.map((entry) => entry.n))).toEqual([[1, 2]]);
+      }
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
