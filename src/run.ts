@@ -32,6 +32,7 @@ import type { Confirmation, EnvironmentStats, Finding, FindingEnvironment, Group
 export type RunOptions = {
   dir: string;
   rev: string;
+  dirty: boolean;
   interns: number;
   minutes: number;
   confirmMinutes: number;
@@ -392,7 +393,7 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
 async function explore(ctx: Context, intern: InternState, target: Target, minutes: number): Promise<{ outcome: Outcome<void>; findings: Finding[]; rejected: Rejected[] }> {
   const attempts: { attempt: number; environment: FindingEnvironment }[] = [];
   const outcome = await agentTask(ctx, intern.id, target, [], async (session, attempt, env, provider, note) => {
-    const environment = { commit: target.commit, environment: env.project, provider, model: session.model };
+    const environment = { commit: target.commit, dirty: target.dirty, environment: env.project, provider, model: session.model };
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
@@ -571,7 +572,7 @@ async function newRun(ref: TargetRef, options: RunState["options"], print: (line
     runId,
     pid: process.pid,
     pidStart: processStart(process.pid),
-    target: { repo: ref.repo, path: ref.path, commit: ref.commit },
+    target: { repo: ref.repo, path: ref.path, commit: ref.commit, dirty: ref.dirty },
     options,
     phase: "preparing",
     error: null,
@@ -591,7 +592,7 @@ async function newRun(ref: TargetRef, options: RunState["options"], print: (line
 }
 
 export async function startCopy(opts: CopyOptions): Promise<string> {
-  const ref = await resolveTarget(opts.dir, opts.rev);
+  const ref = await resolveTarget(opts.dir, opts.rev, false);
   const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0 }, opts.print);
   const ctx = context(runId, runDir, "", new Scheduler([]), async () => {});
   const phase = async (next: RunPhase) => {
@@ -654,7 +655,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
 
 export async function runQa(opts: RunOptions): Promise<string> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
-  const ref = await resolveTarget(opts.dir, opts.rev);
+  const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
   const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 };
   const { runId, runDir, state, save } = await newRun(ref, options, opts.print);
 
@@ -699,9 +700,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
   });
 
   const phases = async () => {
-    ctx.runnerImage = await opts.runnerImage();
     const source = join(runDir, "source");
     await exportTree(ref, source);
+    ctx.runnerImage = await opts.runnerImage();
     const target = await loadTarget(ref, source);
     const memory = environmentMemory(target);
     const free = freemem();

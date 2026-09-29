@@ -26,7 +26,7 @@ import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
 const ledgerSource = join(import.meta.dir, "..", "eval", "ledger");
-const ref = { repo: "/home/dev/ledger", path: "", commit: "4f1c2a9e0b7d3c5a8e6f1d2b9c0a7e3f5d8b1c4a" };
+const ref = { repo: "/home/dev/ledger", path: "", commit: "4f1c2a9e0b7d3c5a8e6f1d2b9c0a7e3f5d8b1c4a", dirty: false };
 const roots: string[] = [];
 
 afterAll(async () => {

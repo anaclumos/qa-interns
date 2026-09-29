@@ -109,10 +109,14 @@ function providersOf(state: RunState) {
   return [...new Set(state.interns.flatMap((intern) => (intern.provider === null ? [] : [intern.provider])))];
 }
 
+function commit(target: RunState["target"]) {
+  return `\`${target.commit}\`${target.dirty ? ", with the uncommitted changes and untracked files of the working tree" : ""}`;
+}
+
 function ran(state: RunState) {
   return [
     `- Target: \`${state.target.repo}\`, path \`${state.target.path || "."}\``,
-    `- Commit: \`${state.target.commit}\``,
+    `- Commit: ${commit(state.target)}`,
     `- Ran: ${state.startedAt}${state.endedAt === null ? "" : ` to ${state.endedAt}`}`,
   ];
 }
@@ -214,7 +218,7 @@ export function renderReplay(state: RunState, replay: Replay, environments: Envi
   const unchecked = replay.groups.filter((group) => outcome(group) === null);
   const summary = {
     runId: state.runId,
-    replay: { runId: replay.runId, commit: replay.target.commit },
+    replay: { runId: replay.runId, commit: replay.target.commit, dirty: replay.target.dirty },
     target: state.target,
     phase: state.phase,
     error: state.error,
@@ -230,7 +234,7 @@ export function renderReplay(state: RunState, replay: Replay, environments: Envi
   const lines = [
     `# QA Interns run ${state.runId}`,
     "",
-    `- Replay of: run \`${replay.runId}\` at commit \`${replay.target.commit}\``,
+    `- Replay of: run \`${replay.runId}\` at commit ${commit(replay.target)}`,
     ...ran(state),
     `- Interns: ${summary.interns.confirming} confirming`,
     `- Providers: ${summary.providers.length > 0 ? summary.providers.join(", ") : "none"}`,
@@ -289,6 +293,7 @@ const storedGroupsSchema = z.object({
             evidence: z.array(z.string()),
             environment: z.object({
               commit: z.string(),
+              dirty: z.boolean(),
               environment: z.string(),
               provider: z.enum(["claude", "codex", "cursor", "grok"]),
               model: z.string().nullable(),
