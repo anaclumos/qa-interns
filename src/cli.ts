@@ -5,9 +5,10 @@ import { doctor } from "./doctor.ts";
 import { removeCopies, stopRun } from "./environment.ts";
 import { errorCode, stripControl } from "./findings.ts";
 import { defaultLoginsPath } from "./logins.ts";
-import { runQa } from "./run.ts";
+import { readReplay } from "./report.ts";
+import { runQa, startCopy } from "./run.ts";
 import { ensureRunnerImage, runnerImage } from "./runner.ts";
-import { formatStatus, processStart, readState, resolveRunDir } from "./state.ts";
+import { formatStatus, processStart, readState, resolveRunDir, writeState } from "./state.ts";
 
 const usage = `Usage: qa-interns <command> [options]
 
@@ -15,9 +16,21 @@ Commands:
   doctor [--logins <file>]
       Check Docker, Compose, the isolated network mode, the Dev Container CLI,
       the runner image and its agents, the logins, and free memory.
-  run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]
-      Run interns against the target at the commit. Defaults: HEAD, 4 interns,
-      30 minutes each, 10 minutes per confirmation. Prints the run directory first.
+  run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]
+      Run interns against the target at the commit, or with --dirty against a
+      copy of its working tree: the tracked files as they are and the untracked
+      files that Git does not ignore. Defaults: HEAD, 4 interns, 30 minutes
+      each, 10 minutes per confirmation. Prints the run directory first.
+      With --on-end, run the shell command when the run ends, done, failed, or
+      interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
+  replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]
+      Hand each confirmed group of the earlier run, or each group --group names,
+      to a confirming intern against the run's target at the commit. Defaults:
+      HEAD, 10 minutes per confirmation. Prints the run directory first.
+  up <target-dir> [--commit <rev>]
+      Start one environment of the target at the commit (default HEAD) with no
+      interns, run its ready check and seed, and leave it running. Prints the run
+      directory first. down removes the environment.
   status [<run>]
       Print the phase and every intern's status.
   report [<run>]
@@ -76,24 +89,65 @@ async function main(args: string[]): Promise<number> {
         args: rest,
         allowPositionals: true,
         options: {
-          commit: { type: "string", default: "HEAD" },
+          commit: { type: "string" },
+          dirty: { type: "boolean", default: false },
           interns: { type: "string", default: "4" },
           minutes: { type: "string", default: "30" },
           "confirm-minutes": { type: "string", default: "10" },
           logins: { type: "string", default: defaultLoginsPath },
+          "on-end": { type: "string" },
         },
       });
       const [dir, ...extra] = positionals;
       if (dir === undefined || extra.length > 0) throw new Error("run takes exactly one target directory. Run qa-interns help for usage.");
+      if (values.dirty && values.commit !== undefined) throw new Error("--dirty runs the working tree, so it takes no --commit");
       const options = {
         dir,
-        rev: values.commit,
+        rev: values.commit ?? "HEAD",
+        dirty: values.dirty,
         interns: count(values.interns, "interns"),
         minutes: minutes(values.minutes, "minutes"),
         confirmMinutes: minutes(values["confirm-minutes"], "confirm-minutes"),
         loginsFile: values.logins,
+        onEnd: values["on-end"],
       };
-      await runQa({ ...options, runnerImage: ensureRunnerImage, print });
+      await runQa({ ...options, replay: null, runnerImage: ensureRunnerImage, print });
+      return 0;
+    }
+    case "replay": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: {
+          commit: { type: "string", default: "HEAD" },
+          group: { type: "string", multiple: true, default: [] },
+          "confirm-minutes": { type: "string", default: "10" },
+          logins: { type: "string", default: defaultLoginsPath },
+        },
+      });
+      const [run, ...extra] = positionals;
+      if (run === undefined || extra.length > 0) throw new Error("replay takes exactly one run id or run directory. Run qa-interns help for usage.");
+      const confirmMinutes = minutes(values["confirm-minutes"], "confirm-minutes");
+      const replay = await readReplay(await resolveRunDir(run), values.group);
+      await runQa({
+        dir: join(replay.target.repo, replay.target.path),
+        rev: values.commit,
+        dirty: false,
+        interns: 0,
+        minutes: 0,
+        confirmMinutes,
+        loginsFile: values.logins,
+        replay,
+        runnerImage: ensureRunnerImage,
+        print,
+      });
+      return 0;
+    }
+    case "up": {
+      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { commit: { type: "string", default: "HEAD" } } });
+      const [dir, ...extra] = positionals;
+      if (dir === undefined || extra.length > 0) throw new Error("up takes exactly one target directory. Run qa-interns help for usage.");
+      await startCopy({ dir, rev: values.commit, runnerImage: ensureRunnerImage, print });
       return 0;
     }
     case "status": {
@@ -113,7 +167,7 @@ async function main(args: string[]): Promise<number> {
     case "down": {
       const dir = await resolveRunDir(runArg(command, rest));
       const state = await readState(dir);
-      if (state.phase !== "done" && state.phase !== "failed" && running(state.pid, state.pidStart)) {
+      if (running(state.pid, state.pidStart)) {
         try {
           process.kill(state.pid, "SIGTERM");
           print(`Sent SIGTERM to run ${state.runId} (process ${state.pid}).`);
@@ -129,8 +183,13 @@ async function main(args: string[]): Promise<number> {
         }
         print(`Process ${state.pid} exited.`);
       }
-      await stopRun(state.runId);
+      await stopRun(dir, state.runId);
       await removeCopies(dir, state.runId, await runnerImage());
+      const after = await readState(dir);
+      if (after.phase === "up") {
+        const ended = new Date().toISOString();
+        await writeState(dir, { ...after, phase: "done", updatedAt: ended, endedAt: ended });
+      }
       print(`Run ${state.runId} has no environments left.`);
       return 0;
     }

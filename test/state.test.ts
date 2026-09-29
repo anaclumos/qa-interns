@@ -44,7 +44,7 @@ function runState(runId: string, startedAt: string): RunState {
     runId,
     pid: 48213,
     pidStart: 8312765,
-    target: { repo: "/home/qa/src/ledger", path: "apps/web", commit: "8d2f1c07b9e4a3f6d5c2b1a0e9f8d7c6b5a4f3e2" },
+    target: { repo: "/home/qa/src/ledger", path: "apps/web", commit: "8d2f1c07b9e4a3f6d5c2b1a0e9f8d7c6b5a4f3e2", dirty: false },
     options: { interns: 3, minutes: 30, confirmMinutes: 10, concurrency: 3 },
     phase: "testing",
     error: null,
@@ -186,6 +186,12 @@ describe("formatStatus", () => {
       "i2      intern  codex     done     1         Stopped at minute 12: I tested the invoice list. Nothing else to report.",
       "i3      intern  -         limited  0         No login has spare capacity",
     ]);
+  });
+
+  test("names the uncommitted changes of a dirty run after the commit", () => {
+    const base = runState("3f9a1c2e", "2026-09-26T09:10:00.000Z");
+    const state = { ...base, target: { ...base.target, dirty: true } };
+    expect(formatStatus(state).split("\n")[2]).toBe("Commit  8d2f1c07b9e4a3f6d5c2b1a0e9f8d7c6b5a4f3e2 with uncommitted changes");
   });
 
   test("prints the error when the run failed", () => {

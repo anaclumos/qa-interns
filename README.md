@@ -38,12 +38,16 @@ qa-interns doctor
 | Command | What it does |
 | --- | --- |
 | `qa-interns doctor [--logins <file>]` | Checks Docker, Compose, the isolated network mode, the Dev Container CLI, the runner image and its agents, and the logins. Builds the runner image when it is missing. |
-| `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. |
+| `qa-interns run <target-dir> [--commit <rev> \| --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). With `--dirty`, runs them against a copy of the target's working tree, taken when the run starts: the tracked files that the working tree holds, as they are, and the untracked files that Git does not ignore. `state.json` and the `environment` of each finding record the commit of `HEAD` with `dirty: true`, and `report.md` names the uncommitted changes after the commit. Prints the run directory first. With `--on-end`, runs the command when the run ends (see [Command when a run ends](#command-when-a-run-ends)). |
+| `qa-interns replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]` | Hands each confirmed group of the earlier run to a confirming intern against that run's target at the commit (default `HEAD`, 10 minutes per confirmation). See [Replay](#replay). Prints the run directory first. |
+| `qa-interns up <target-dir> [--commit <rev>]` | Starts one environment of the target at the commit (default `HEAD`) with no interns, runs its `ready` check and `seed`, and leaves it running. Prints the run directory first, then the Compose project, the IDs of the runner and the dev container, and the seed output. When a step fails, it tears the environment down. `qa-interns down` removes the environment. |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
 | `qa-interns report [<run>]` | Prints `report.md`. |
-| `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when that process, matched by its pid and start time, is still running. Then tears down every environment the run still has, saves each output disk the run left into its folder, and deletes the run's leftover workspace copies, with containers of the current runner image. When disks or copies are left and that image does not exist, it fails; build the image with `qa-interns doctor` and run `down` again. |
+| `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when that process, matched by its pid and start time, is still running. Then tears down every environment the run still has, saves the relay log of each of those environments and each output disk the run left into its folder, and deletes the run's leftover workspace copies, with containers of the current runner image. When disks or copies are left and that image does not exist, it fails; build the image with `qa-interns doctor` and run `down` again. |
 
 `<run>` is a run id or a run directory. Without it, the command uses the most recent run.
+
+`up` starts the environment an intern gets, with the same checks, networks, relay, and limits, except that its runner holds no login and has no proxy. The runner reaches the target services and nothing else, so it sees the application as an intern does, for example with `docker exec <runner> curl -sS http://web:3000/health`. The runner's `/qa/out` is an output disk like an intern's, and `down` saves it into `interns/up/out/`.
 
 ## Target environment contract
 
@@ -77,7 +81,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 
 `run` rejects a target whose Compose files have any of these, because each collides across copies or gives the application the interns attack access to the host:
 
-- A `dockerComposeFile` entry outside the target directory, so the tested services always come from the commit.
+- A `dockerComposeFile` entry outside the target directory, so the tested services always come from the run's copy of the target.
 - An `include` path, `project_directory`, or `env_file`, or an `extends.file`, that is not an existing path inside the target directory. These paths are checked as written: a path that contains `$` or `:`, or starts with `~` or `github.com/`, is rejected, because Compose may expand it or load it from a remote source. The `.env` file that Compose reads from an included project's directory must also resolve inside the target. An `include` inside an included file cannot set a relative `project_directory` or `env_file`, because Compose resolves those against the directory it runs in.
 - A `container_name`.
 - An external volume or network, or a volume or network with an explicit `name:`.
@@ -139,7 +143,7 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 ## What a run does
 
-1. Exports the target at the commit and checks its dev container and Compose files.
+1. Exports the target at the commit, or copies its working tree with `--dirty`, and checks its dev container and Compose files.
 2. Builds the target's images once.
 3. Starts one environment per intern, each as its own Compose project on its own isolated network, at most as many at once as free memory, login capacity, and free network slots allow, and at most four starting at a time. Checks each dev container that `devcontainer up` created.
 4. Starts one agent per intern inside that intern's runner container, over the Agent Client Protocol.
@@ -151,19 +155,52 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when set):
 
-- `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the interns.
+- `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the interns, then the connections that target services opened through the relay.
 - `findings.json`: the same data as JSON.
+- `tickets/<group>/`: a ticket draft for each confirmed group, for a person to review and file on a tracker. QA Interns files nothing. `title.txt` holds the title of the group's first finding. `body.md` holds the run id, the commit, the kind, the reproductions, the conditions, steps, observation, contradiction, and evidence paths of the first finding, the intern and observation of each other finding in the group, and the confirmation. Each text an intern wrote is in a Markdown code block with no escape characters added, so a Markdown renderer shows it as written. The folder holds a hard link to each evidence file that `body.md` lists, at the same path, so the draft takes no extra disk space, a copy of the folder holds the files, and a change to a file in the folder changes the run's evidence file too. An evidence file that is not a regular file at exactly that path, for example because it is missing or its path passes through a symbolic link, is not linked, and `body.md` ends with a list of those files and the reason for each.
 - `interns/<id>/out/`: each intern's findings and evidence (screenshots, recordings, HAR files, console logs). After a move to another login, the next attempt writes to `interns/<id>/out-2/`, the one after it to `out-3/`, and so on. The id of a finding from such an attempt names its folder, as in `i1/out-2/<slug>`.
 - `interns/<id>/transcript.jsonl`: the agent traffic of each intern.
 - `interns/<id>/adapter.log`: the error output of each intern's agent.
 - Each transcript and error log stops growing at 64 MiB. Later traffic and output are not recorded.
+- `interns/<id>/relay-<container>.jsonl`: the log of the relay container of one of the intern's environments, saved after the environment's containers stop and before they are removed. It has one JSON line for each connection that a target service opened through that relay, with `n`, the line's position in the relay's log, and `host`, `outcome`, and `error`.
 - `state.json`: the run's phase and every intern's status.
 
 A finding is confirmed when two or more interns reproduced it.
 
+The **Egress connections** section of `report.md` and the `egress` list of `findings.json` count the relayed connections of the whole run, with one row for each host, outcome, and error, and the interns whose environments opened them. An `egress` host that no target service connected to has a row with no outcome and 0 connections. The relay passes TLS through unchanged, so it counts connections, not HTTP requests, and one connection can carry many requests. The relay records a connection when its outcome is known, with one of these outcomes:
+
+- `connected`: the relay opened a connection to the host on port 443. What happens on the connection after that is not recorded.
+- `failed`: the relay did not open a connection to the host. `error` is the Node.js error code of that attempt, such as `ENOTFOUND` or `ECONNREFUSED`, or `timeout` when the relay stopped waiting after 10 seconds. `error` is empty when the target service closed the connection first.
+- `denied`: the connection did not start with a TLS handshake that names an `egress` host. `host` is the name the handshake names, cut to its first 253 characters, the longest a DNS name can be, and is empty when the connection did not start with a TLS handshake that names a host.
+- `incomplete`: the connection closed before it sent a complete TLS record. `error` is `timeout` when the relay closed it after 10 seconds.
+- `unrecorded`: connections whose records Docker dropped from the relay's log (see [Known limits](#known-limits)). They have no host.
+
+## Command when a run ends
+
+`run --on-end <command>` runs `<command>` with `sh -c` on the host when the run ends, whether it is done, failed, or interrupted by SIGINT, SIGTERM, or SIGHUP. The command runs after the teardown and after `report.md`, `findings.json`, and `state.json` are written. It gets the environment of `qa-interns` and these variables:
+
+- `QA_INTERNS_RUN_DIR`: the run directory.
+- `QA_INTERNS_PHASE`: `done` when the run is done, and `failed` otherwise, including an interrupt and a failure to write `report.md`, `findings.json`, or `state.json`. The `error` in the `state.json` of an interrupted run starts with `interrupted`.
+
+Quote the command so that the shell that starts `run` does not expand these variables:
+
+```
+qa-interns run eval/ledger --on-end 'echo "$QA_INTERNS_PHASE $QA_INTERNS_RUN_DIR" >> "$HOME/qa-runs.log"'
+```
+
+The command writes to the standard output and error of `run`. `run` waits for the command to exit, then exits 0 when the run is done, 1 when it failed, and 130 after an interrupt. When the command exits with a code other than 0, `run` prints that code, and a run that is done exits 1. A run that fails before it prints its run directory, such as on a missing logins file, does not run the command.
+
+A signal to `run` while the command runs after a done or failed run, such as the SIGTERM that `qa-interns down` sends, sends SIGTERM to the command, and `run` exits 130. After an interrupt, `run` ignores further signals until it exits, so the wait of up to 120 seconds that `qa-interns down` allows includes the time the command takes.
+
+## Replay
+
+`qa-interns replay <run>` reruns the confirmed findings of an earlier run against a fresh copy of the target, for example at the commit of a change. It resolves `--commit` in the repository that the earlier run tested, then exports, checks, and builds the target at the earlier run's path, as steps 1 and 2 of a run do. It hands the first finding of each confirmed group to a confirming intern in a fresh environment, as step 6 does, and runs no testing intern and no judge. `--group <id>` limits the replay to one confirmed group; repeat it to name more. The replay fails when no intern records a result for any group.
+
+A replay is a run of its own, with its own run directory, and `status`, `report`, and `down` work on it. Its `report.md` lists the groups that the interns reproduced, then the groups that they did not reproduce, then the groups that no intern checked. It ends with the interns and the connections through the relay, as the report of a run does. Each group keeps the id it has in the earlier run and shows the finding the intern followed and the intern's confirmation. `findings.json` carries the same data. Each finding in it is as the earlier run recorded it, so its evidence paths are relative to the earlier run's directory. A replay writes no ticket drafts. A replay cannot be replayed; replay the earlier run again.
+
 ## Isolation
 
-- Every environment is its own Compose project with its networks in its own `/23` block of `10.213.0.0/16`. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. When the target lists `egress` hosts, the target services and the relay share a third internal network. Only the proxy and the relay join the network that reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
+- Every environment is its own Compose project with its networks in its own `/23` block of the range that the `QA_INTERNS_SUBNET` environment variable sets, `10.213.0.0/16` when it is not set. The range is an IPv4 network address with a prefix length from 16 to 23, such as `10.100.0.0/20`, and holds one environment per `/23` block. A command that starts an environment skips a block that overlaps a Docker network or a host route. That command and `doctor` fail when `QA_INTERNS_SUBNET` is set to anything else. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. An environment that `up` starts has no proxy and no second network. When the target lists `egress` hosts, the target services and the relay share a third internal network. Only the proxy and the relay join the network that reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
 - The runner container holds the agents, agent-browser with Chrome for Testing, ffmpeg, and curl. It has no source mount, no Docker socket, a read-only root file system, and no capabilities. It can write only to `/qa/out`, `/tmp`, and its home directory, and holds no credential beyond its own login. It can also write the login credential it was given, which is the credential file for Claude and Codex and the whole store directory for Cursor and Grok, and that write reaches the store on the host.
 - `/qa/out` is a 1 GiB ext4 disk of its own for each attempt, mounted on that attempt's folder under `interns/<id>/`. The kernel stops every write past the disk's size or its inode count, including writes to files deleted while still open and space reserved without writing. A privileged helper container from the runner image, with the host `/dev`, creates and mounts the disk before the environment starts. At teardown, the helper copies the disk into the folder and deletes the disk image. The runner cannot write a file larger than 1 GiB anywhere. While the agent runs, the orchestrator checks the disk once a second and stops the runner when the disk is full. The intern then ends as failed, and the findings it wrote stay in the report.
 - The orchestrator keeps an agent's output in memory until a newline arrives. An intern fails when its agent prints more than 64 MiB without a newline, or when the orchestrator's messages to the agent pass 64 MiB in total.
@@ -187,6 +224,9 @@ A finding is confirmed when two or more interns reproduced it.
 - When a Grok token refresh fails for good, Grok deletes `auth.json` from the store, and the next run rejects the logins file until you log in to that store again.
 - Compose and the Dev Container CLI get only the variables the [target environment contract](#target-environment-contract) lists, and a Docker client configuration without `proxies`. A Docker credential helper that needs another variable, such as `DBUS_SESSION_BUS_ADDRESS`, fails the image pull with `error getting credentials`, the Dev Container CLI downloads features without the proxy variables, and a target image build runs without a proxy. A target that needs one of them lists it in `hostEnv`, and a build that needs a proxy also passes the proxy variables as build arguments.
 - BuildKit leaves the proxy build arguments out of its cache key. A target image build therefore reuses a layer that an earlier build on the host cached with the Docker client proxies, and a Dockerfile step that wrote a proxy value into that layer keeps it.
+- Docker keeps the relay's log in the same two 10 MB files as every container log, and the two files hold about 190,000 relay records. When an environment's relay records more connections, Docker drops the older file, about 95,000 records at a time, and the report counts the dropped connections as `unrecorded`.
+- A replay intern follows the steps as the earlier run wrote them, with the seed output of the replayed commit. When a change alters the seed output, the steps can name accounts or data that the seed no longer creates, and the intern reports what it saw.
+- A replay hands each group to one intern, so a failure that shows only some of the time can land under Not reproduced.
 - The login store of a Cursor or Grok intern is a host directory outside the output disk. The runner can write any number of files there, each up to 1 GiB. The Claude and Codex credential files and the generated Codex configuration file are single host files, each capped at 1 GiB.
 
 ## Evaluation target

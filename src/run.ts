@@ -7,6 +7,8 @@ import {
   environmentMemory,
   freeSlot,
   freeSlots,
+  networkRange,
+  readRelayLogs,
   removeCopies,
   runnerEnv,
   saveDisks,
@@ -23,18 +25,28 @@ import { outDir, parseGroups, readAgentFile, readConfirmation, readFindings, str
 import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
-import { renderReport } from "./report.ts";
+import { renderReplay, renderReport, writeTickets } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
-import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
-import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
+import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
+import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
   dir: string;
   rev: string;
+  dirty: boolean;
   interns: number;
   minutes: number;
   confirmMinutes: number;
   loginsFile: string;
+  replay: Replay | null;
+  onEnd?: string;
+  runnerImage(): Promise<string>;
+  print(line: string): void;
+};
+
+export type CopyOptions = {
+  dir: string;
+  rev: string;
   runnerImage(): Promise<string>;
   print(line: string): void;
 };
@@ -79,6 +91,7 @@ const settleMs = 60_000;
 const stopWaitMs = 30_000;
 const gib = 1024 ** 3;
 const noLogin = "no login has spare capacity";
+const copyName = "up";
 
 function now(): string {
   return new Date().toISOString();
@@ -366,7 +379,7 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
 async function explore(ctx: Context, intern: InternState, target: Target, minutes: number): Promise<{ outcome: Outcome<void>; findings: Finding[]; rejected: Rejected[] }> {
   const attempts: { attempt: number; environment: FindingEnvironment }[] = [];
   const outcome = await agentTask(ctx, intern.id, target, [], async (session, attempt, env, provider, note) => {
-    const environment = { commit: target.commit, environment: env.project, provider, model: session.model };
+    const environment = { commit: target.commit, dirty: target.dirty, environment: env.project, provider, model: session.model };
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
@@ -513,7 +526,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
   const finish = once(async (): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     try {
-      await stopProject(project);
+      await stopProject(project, join(opts.runDir, "interns", opts.name));
       await saveDisks(opts.runDir, opts.name, project, opts.runnerImage);
     } catch (reason) {
       teardowns.push(message(reason));
@@ -536,9 +549,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
   );
 }
 
-export async function runQa(opts: RunOptions): Promise<string> {
-  const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
-  const ref = await resolveTarget(opts.dir, opts.rev);
+async function newRun(ref: TargetRef, options: RunState["options"], print: (line: string) => void) {
   const runId = newRunId();
   const runDir = runDirFor(runId);
   await mkdir(runsDir(), { recursive: true });
@@ -547,8 +558,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     runId,
     pid: process.pid,
     pidStart: processStart(process.pid),
-    target: { repo: ref.repo, path: ref.path, commit: ref.commit },
-    options: { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 },
+    target: { repo: ref.repo, path: ref.path, commit: ref.commit, dirty: ref.dirty },
+    options,
     phase: "preparing",
     error: null,
     startedAt: now(),
@@ -561,8 +572,78 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await writeState(runDir, state);
   };
   await save();
-  opts.print(runDir);
-  opts.print(`phase ${state.phase}`);
+  print(runDir);
+  print(`phase ${state.phase}`);
+  return { runId, runDir, state, save };
+}
+
+export async function startCopy(opts: CopyOptions): Promise<string> {
+  const ref = await resolveTarget(opts.dir, opts.rev, false);
+  const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0 }, opts.print);
+  const ctx = context(runId, runDir, "", new Scheduler([]), async () => {});
+  const phase = async (next: RunPhase) => {
+    checkStopping(ctx);
+    state.phase = next;
+    opts.print(`phase ${next}`);
+    await save();
+  };
+  const finish = once(async (error: string): Promise<void> => {
+    const problems = [error];
+    for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
+      try {
+        await step();
+      } catch (reason) {
+        problems.push(`teardown failed: ${message(reason)}`);
+      }
+    }
+    state.phase = "failed";
+    state.error = stripControl(problems.join("; "));
+    state.endedAt = now();
+    await save();
+  });
+  return guard(
+    ctx,
+    async () => {
+      try {
+        ctx.runnerImage = await opts.runnerImage();
+        const source = join(runDir, "source");
+        await exportTree(ref, source);
+        const target = await loadTarget(ref, source);
+        await writeChromePolicy(runDir, target.settings.urls);
+        await phase("building");
+        const images = await buildImages(runId, target, source);
+        await phase("starting");
+        const env = await startEnvironment({
+          runId,
+          runDir,
+          name: copyName,
+          slot: await freeSlot(ctx.reserved),
+          target,
+          images,
+          runner: { image: ctx.runnerImage, out: join(runDir, outDir(copyName, 1)), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] },
+          egress: [],
+        });
+        await phase("up");
+        opts.print(`project ${env.project}`);
+        opts.print(`runner ${env.runner}`);
+        opts.print(`dev container ${env.devContainer}`);
+        opts.print(`seed ${JSON.stringify(env.seed)}`);
+        opts.print(`Remove it with qa-interns down ${runId}.`);
+      } catch (error) {
+        if (!ctx.stopping) await finish(message(error));
+        throw error;
+      }
+      return runDir;
+    },
+    () => finish("interrupted"),
+  );
+}
+
+export async function runQa(opts: RunOptions): Promise<string> {
+  const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
+  const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
+  const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 };
+  const { runId, runDir, state, save } = await newRun(ref, options, opts.print);
 
   const ctx = context(runId, runDir, "", scheduler, async (id, patch) => {
     const intern = state.interns.find((entry) => entry.id === id);
@@ -581,11 +662,12 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
   let findings: Finding[] = [];
   let rejected: Rejected[] = [];
-  let groups: Group[] | null = null;
+  let groups: Group[] | null = opts.replay?.groups ?? null;
+  let egress: string[] = [];
 
   const finish = once(async (error: string | null): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
-    for (const step of [() => stopRun(runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
+    for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
         await step();
       } catch (reason) {
@@ -597,23 +679,27 @@ export async function runQa(opts: RunOptions): Promise<string> {
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
-    const report = renderReport(state, groups ?? singles, rejected);
+    const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
+    const traffic = { hosts: egress, relays: logs.flat() };
+    const report = opts.replay === null ? renderReport(state, groups ?? singles, rejected, traffic) : { ...renderReplay(state, opts.replay, traffic), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
+    await writeTickets(runDir, report.tickets);
     await save();
     return teardowns.length === 0 ? null : teardowns.join("; ");
   });
 
   const phases = async () => {
-    ctx.runnerImage = await opts.runnerImage();
     const source = join(runDir, "source");
     await exportTree(ref, source);
+    ctx.runnerImage = await opts.runnerImage();
     const target = await loadTarget(ref, source);
+    egress = target.settings.egress;
     const memory = environmentMemory(target);
     const free = freemem();
     const slots = await freeSlots(ctx.reserved);
-    if (slots === 0) throw new Error("No free network slot: every 10.213.x.0/23 block overlaps a Docker network or a host route");
-    const concurrency = Math.min(opts.interns, Math.floor(free / memory), scheduler.capacity(), slots);
+    if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
+    const concurrency = Math.min(opts.replay?.groups.length ?? opts.interns, Math.floor(free / memory), scheduler.capacity(), slots);
     if (concurrency < 1) {
       throw new Error(`Free memory is ${(free / gib).toFixed(1)} GiB, and one environment of this target reserves ${(memory / gib).toFixed(1)} GiB`);
     }
@@ -629,59 +715,85 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     await phase("building");
     ctx.images = await buildImages(runId, target, source);
-
-    await phase("testing");
     const running = limit(concurrency);
-    const results = await settle(state.interns.map((intern) => running(() => explore(ctx, intern, target, opts.minutes))));
-    findings = results.flatMap((result) => result.findings);
-    rejected = results.flatMap((result) => result.rejected);
-    if (results.every((result) => result.outcome.status !== "done")) {
-      throw new Error(`No testing intern completed: ${state.interns.map((intern) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
-    }
 
-    await phase("grouping");
-    let members = findings.map((finding) => [finding.id]);
-    if (findings.length >= 2) {
-      state.interns.push(internState("judge", "judge", "Group duplicate findings", null));
-      await save();
-      const ids = findings.map((finding) => finding.id);
-      members = await askWith(ctx, "judge", judgePrompt(findings), "groups.json", (raw) => parseGroups(raw, ids));
+    if (groups === null) {
+      await phase("testing");
+      const results = await settle(state.interns.map((intern) => running(() => explore(ctx, intern, target, opts.minutes))));
+      findings = results.flatMap((result) => result.findings);
+      rejected = results.flatMap((result) => result.rejected);
+      if (results.every((result) => result.outcome.status !== "done")) {
+        throw new Error(`No testing intern completed: ${state.interns.map((intern) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
+      }
+
+      await phase("grouping");
+      let members = findings.map((finding) => [finding.id]);
+      if (findings.length >= 2) {
+        state.interns.push(internState("judge", "judge", "Group duplicate findings", null));
+        await save();
+        const ids = findings.map((finding) => finding.id);
+        members = await askWith(ctx, "judge", judgePrompt(findings), "groups.json", (raw) => parseGroups(raw, ids));
+      }
+      const byId = new Map(findings.map((finding) => [finding.id, finding]));
+      groups = members.map((list, index) => ({
+        id: `g${index + 1}`,
+        findings: list.map((id) => {
+          const finding = byId.get(id);
+          if (finding === undefined) throw new Error(`The judge grouped unknown finding ${id}`);
+          return finding;
+        }),
+        confirmation: null,
+      }));
     }
-    const byId = new Map(findings.map((finding) => [finding.id, finding]));
-    groups = members.map((list, index) => ({
-      id: `g${index + 1}`,
-      findings: list.map((id) => {
-        const finding = byId.get(id);
-        if (finding === undefined) throw new Error(`The judge grouped unknown finding ${id}`);
-        return finding;
-      }),
-      confirmation: null,
-    }));
 
     await phase("confirming");
     const confirmations = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id) }));
     state.interns.push(...confirmations.map((entry) => entry.intern));
     await save();
     await settle(confirmations.map(({ group, intern }) => running(() => reproduce(ctx, intern, group, target, opts.confirmMinutes))));
+    if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null)) {
+      throw new Error(`No confirming intern recorded a result: ${confirmations.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
+    }
 
     await phase("reporting");
+  };
+
+  const ended = once(async (phase: RunPhase): Promise<string | null> => {
+    if (opts.onEnd === undefined) return null;
+    const env = { ...process.env, QA_INTERNS_RUN_DIR: runDir, QA_INTERNS_PHASE: phase };
+    const code = await trackGroup(Bun.spawn(["sh", "-c", opts.onEnd], { env, stdin: "ignore", stdout: "inherit", stderr: "inherit", detached: true })).exited;
+    return code === 0 ? null : `The --on-end command exited with ${code}`;
+  });
+
+  const run = async (): Promise<string> => {
+    try {
+      await phases();
+    } catch (error) {
+      if (!ctx.stopping) await finish(message(error));
+      throw error;
+    }
+    const teardown = await finish(null);
+    if (teardown !== null) throw new Error(`Teardown of run ${runId} failed: ${teardown}`);
+    return runDir;
   };
 
   return guard(
     ctx,
     async () => {
-      try {
-        await phases();
-      } catch (error) {
-        if (!ctx.stopping) await finish(message(error));
-        throw error;
-      }
-      const teardown = await finish(null);
-      if (teardown !== null) throw new Error(`Teardown of run ${runId} failed: ${teardown}`);
-      return runDir;
+      const [result] = await Promise.allSettled([run()]);
+      checkStopping(ctx);
+      const hook = await ended(result.status === "fulfilled" ? "done" : "failed");
+      if (result.status === "rejected") throw hook === null ? result.reason : new Error(`${message(result.reason)}; ${hook}`);
+      if (hook !== null) throw new Error(hook);
+      return result.value;
     },
     async () => {
-      await finish("interrupted");
+      try {
+        await finish("interrupted");
+      } finally {
+        const hook = await ended("failed");
+        if (hook !== null) process.stderr.write(`${hook}\n`);
+      }
     },
   );
 }

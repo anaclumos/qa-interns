@@ -25,13 +25,13 @@ export type InternState = {
   endedAt: string | null;
 };
 
-export type RunPhase = "preparing" | "building" | "testing" | "grouping" | "confirming" | "reporting" | "done" | "failed";
+export type RunPhase = "preparing" | "building" | "starting" | "up" | "testing" | "grouping" | "confirming" | "reporting" | "done" | "failed";
 
 export type RunState = {
   runId: string;
   pid: number;
   pidStart: number;
-  target: { repo: string; path: string; commit: string };
+  target: { repo: string; path: string; commit: string; dirty: boolean };
   options: { interns: number; minutes: number; confirmMinutes: number; concurrency: number };
   phase: RunPhase;
   error: string | null;
@@ -45,7 +45,7 @@ export const kinds = ["crash", "error", "wrong-data", "data-loss", "inconsistenc
 
 export type Kind = (typeof kinds)[number];
 
-export type FindingEnvironment = { commit: string; environment: string; provider: Provider; model: string | null };
+export type FindingEnvironment = { commit: string; dirty: boolean; environment: string; provider: Provider; model: string | null };
 
 export type Finding = {
   id: string;
@@ -64,8 +64,14 @@ export type Rejected = { intern: string; file: string; reason: string };
 
 export type Confirmation = { reproduced: boolean; observed: string; evidence: string[] };
 
+export const relayOutcomes = ["connected", "failed", "denied", "incomplete"] as const;
+
+export type RelayRecord = { n: number; host: string | null; outcome: (typeof relayOutcomes)[number]; error: string | null };
+
 export type Group = {
   id: string;
   findings: Finding[];
   confirmation: { intern: string; provider: Provider | null; result: Confirmation | null; error: string | null } | null;
 };
+
+export type Replay = { runId: string; target: RunState["target"]; groups: Group[] };
