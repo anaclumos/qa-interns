@@ -52,13 +52,13 @@ export async function capture(cmd: string[], options: CommandOptions = {}): Prom
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (options.log !== undefined) await appendFile(options.log, stderr);
   if (options.timeout !== undefined && (code === 124 || code === 137) && performance.now() - started >= options.timeout) {
-    throw new Error(`${cmd.join(" ")} timed out after ${options.timeout / 1000} seconds: ${redact(stderr.trim()).slice(-2000)}`);
+    throw new Error(`${cmd.join(" ")} timed out after ${options.timeout / 1000} seconds: ${redact(stderr).trim().slice(-2000)}`);
   }
   return { code, stdout, stderr };
 }
 
 export function failure(cmd: string[], code: number, stderr: string): Error {
-  return new Error(`${cmd.join(" ")} exited with ${code}: ${redact(stderr.trim()).slice(-2000)}`);
+  return new Error(`${cmd.join(" ")} exited with ${code}: ${redact(stderr).trim().slice(-2000)}`);
 }
 
 export async function execute(cmd: string[], options: CommandOptions = {}): Promise<string> {
@@ -527,7 +527,8 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const parsed = configSchema.safeParse(config);
   if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
   const { dockerComposeFile, service, runServices, customizations } = parsed.data;
-  keepHostSecrets(customizations["qa-interns"].secrets.hostEnv);
+  const unkept = keepHostSecrets(customizations["qa-interns"].secrets.hostEnv);
+  if (unkept !== null) throw new Error(unkept);
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
   const root = await realpath(sourceDir);
   const paths = composeFiles.map((entry) => resolve(sourceDir, ".devcontainer", entry));

@@ -546,6 +546,8 @@ USER qa
       expect(text(["envs", "i1", "env.log"])).toContain("initialize with [redacted]");
       expect(text(["interns", "i1", "out", "evidence", "prompt.txt"])).toContain('"password": "[redacted]"');
       expect(text(["interns", "i1", "transcript.jsonl"])).toContain('\\"password\\": \\"[redacted]\\"');
+      expect(text(["interns", "i1", "transcript.jsonl"])).toContain('"text":"Signed in as owner@acme.test with [redacted]"');
+      expect(text(["interns", "i1", "transcript.jsonl"])).not.toContain("ner-pass.");
       expect(JSON.parse(text(["interns", "i1", "out", "findings", "fake-home.json"])).steps).toContain("Sign in as owner@acme.test with the password [redacted].");
       const report = JSON.parse(text(["findings.json"]));
       expect(report.groups[0].findings[0].steps).toContain("Sign in as owner@acme.test with the password [redacted].");

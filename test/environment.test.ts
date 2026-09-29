@@ -19,6 +19,7 @@ import {
   type EnvironmentSpec,
 } from "../src/environment.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
+import { redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
@@ -687,6 +688,38 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       } finally {
         delete process.env.QA_INTERNS_TEST_LISTED;
         delete process.env.QA_INTERNS_TEST_UNLISTED;
+        await stopRun(runId);
+        await removeCopies(runDir, runId, image);
+      }
+    },
+    20 * 60_000,
+  );
+
+  test(
+    "keep the secret values of a seed that prints its output and then fails, before its error quotes them",
+    async () => {
+      const runId = crypto.randomUUID().slice(0, 8);
+      const runDir = await scratch();
+      const source = join(runDir, "source");
+      const key = `sk_seed_${runId}`;
+      await Bun.write(join(source, ".devcontainer", "compose.yml"), 'services:\n  web:\n    image: busybox:1.37\n    command: ["sleep", "86400"]\n    init: true\n');
+      const seed = `echo '{"apiKey":"${key}"}'; echo 'seeding failed after ${key}' >&2; exit 1`;
+      const settings = { urls: { app: "http://web:8080" }, ready: "true", seed, secrets: { seed: ["apiKey"] } };
+      await Bun.write(join(source, ".devcontainer", "devcontainer.json"), JSON.stringify({ dockerComposeFile: "compose.yml", service: "web", customizations: { "qa-interns": settings } }));
+      const image = await ensureRunnerImage();
+      try {
+        const target = await loadTarget(ref, source);
+        await writeChromePolicy(runDir, target.settings.urls);
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
+        const failed = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), runner })).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        expect(failed).toBeInstanceOf(Error);
+        expect(String(failed)).toContain(" exited with 1: ");
+        expect(String(failed)).toEndWith("\nseeding failed after [redacted]");
+        expect(redact(key)).toBe("[redacted]");
+      } finally {
         await stopRun(runId);
         await removeCopies(runDir, runId, image);
       }

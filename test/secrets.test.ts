@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { keepHostSecrets, keepSeedSecrets, redact, redactFiles, redactJson } from "../src/secrets.ts";
+import { keepHostSecrets, keepSeedSecrets, redact, redactAcross, redactFiles, redactJson } from "../src/secrets.ts";
 import { failure } from "../src/target.ts";
 
 const asRoot = process.getuid?.() === 0;
@@ -27,23 +27,24 @@ describe("keepSeedSecrets", () => {
       ],
       data: { summary: "North has 12 invoices.", invoiceCount: 12 },
     };
-    keepSeedSecrets(seed, ["password", "apiKey"]);
+    expect(keepSeedSecrets(seed, ["password", "apiKey"])).toBeNull();
     expect(redact("owner@north.test north-owner-pass north-viewer-pass sk_live_north_4f9a1c North has 12 invoices.")).toBe(
       "owner@north.test [redacted] [redacted] [redacted] North has 12 invoices.",
     );
   });
 
-  test("keep the values it found, then fail when a listed field is in no object of the seed output", () => {
-    expect(() => keepSeedSecrets({ accounts: [{ password: "south-owner-pass" }] }, ["password", "token"])).toThrow(
+  test("keep the values it found, then report a listed field that is in no object of the seed output", () => {
+    expect(keepSeedSecrets({ accounts: [{ password: "south-owner-pass" }] }, ["password", "token"])).toBe(
       'customizations["qa-interns"].secrets.seed names token, which the seed output has no field for',
     );
     expect(redact("south-owner-pass")).toBe("[redacted]");
   });
 
-  test("keep the long values, then fail on a short one without quoting it", () => {
+  test("keep the long values, then report a short one without quoting it", () => {
     const seed = { accounts: [{ pin: "4821" }, { pin: "east-owner-pin" }] };
-    expect(() => keepSeedSecrets(seed, ["pin"])).toThrow("A value under the seed field pin has fewer than 8 characters");
-    expect(() => keepSeedSecrets(seed, ["pin"])).not.toThrow("4821");
+    const problem = keepSeedSecrets(seed, ["pin"]);
+    expect(problem).toStartWith("A value under the seed field pin has fewer than 8 characters");
+    expect(problem).not.toContain("4821");
     expect(redact("east-owner-pin 4821")).toBe("[redacted] 4821");
   });
 });
@@ -53,7 +54,7 @@ describe("keepHostSecrets", () => {
     process.env.QA_INTERNS_TEST_TOKEN = "tok_9c2e7b4f1a";
     process.env.QA_INTERNS_TEST_EMPTY = "";
     try {
-      keepHostSecrets(["QA_INTERNS_TEST_TOKEN", "QA_INTERNS_TEST_EMPTY"]);
+      expect(keepHostSecrets(["QA_INTERNS_TEST_TOKEN", "QA_INTERNS_TEST_EMPTY"])).toBeNull();
       expect(redact("Bearer tok_9c2e7b4f1a.")).toBe("Bearer [redacted].");
     } finally {
       delete process.env.QA_INTERNS_TEST_TOKEN;
@@ -61,10 +62,10 @@ describe("keepHostSecrets", () => {
     }
   });
 
-  test("fail on a value too short to remove", () => {
+  test("report a value too short to remove", () => {
     process.env.QA_INTERNS_TEST_TOKEN = "1";
     try {
-      expect(() => keepHostSecrets(["QA_INTERNS_TEST_TOKEN"])).toThrow("The value of QA_INTERNS_TEST_TOKEN has fewer than 8 characters");
+      expect(keepHostSecrets(["QA_INTERNS_TEST_TOKEN"])).toStartWith("The value of QA_INTERNS_TEST_TOKEN has fewer than 8 characters");
     } finally {
       delete process.env.QA_INTERNS_TEST_TOKEN;
     }
@@ -94,6 +95,21 @@ describe("failure", () => {
     expect(error.message).toStartWith("docker compose up exited with 1: ");
     expect(error.message).not.toContain("e7b5d");
     expect(error.message).toEndWith("y".repeat(1995));
+  });
+
+  test("replace a value that ends in a newline before trimming the error output", () => {
+    const pem = "-----BEGIN KEY-----\nMIIBOgIBAAJBAKj34GkxFhD9\n-----END KEY-----\n";
+    keepSeedSecrets({ key: pem }, ["key"]);
+    expect(failure(["seed"], 1, `loaded ${pem}`).message).toBe("seed exited with 1: loaded [redacted]");
+  });
+});
+
+describe("redactAcross", () => {
+  test("replace a value that spans parts with one marker in the part where it starts", () => {
+    keepSeedSecrets({ key: "sk_split_4f9a1c2e7b" }, ["key"]);
+    const parts = [{ text: "Signed in with sk_spl" }, { text: "it_4f9a" }, { text: "1c2e7b and done." }, { text: " Nothing else." }];
+    redactAcross(parts);
+    expect(parts.map((part) => part.text)).toEqual(["Signed in with [redacted]", "", " and done.", " Nothing else."]);
   });
 });
 

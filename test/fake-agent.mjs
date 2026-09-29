@@ -149,6 +149,11 @@ const charterTurn = async (text) => {
     evidence: ["evidence/page.html"],
   });
   update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" });
+  if (account !== undefined) {
+    const cut = Math.floor(account.password.length / 2);
+    say(`Signed in as ${account.email} with ${account.password.slice(0, cut)}`);
+    say(`${account.password.slice(cut)}.`);
+  }
   say("Recorded one finding.");
   if (login().flood === true) {
     hold("/qa/out/evidence/held.bin", 600);

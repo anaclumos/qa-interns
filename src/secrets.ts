@@ -7,23 +7,23 @@ const minLength = 8;
 const secrets = new Set<string>();
 let cached: string[] | null = null;
 
-function keep(found: { value: string; where: string }[]): void {
+function keep(found: { value: string; where: string }[]): string | null {
   for (const { value } of found) if (value.length >= minLength) secrets.add(value);
   cached = null;
   const short = found.find(({ value }) => value.length < minLength);
-  if (short !== undefined) throw new Error(`${short.where} has fewer than ${minLength} characters, so removing it from the run directory would remove unrelated text too`);
+  return short === undefined ? null : `${short.where} has fewer than ${minLength} characters, so removing it from the run directory would remove unrelated text too`;
 }
 
-export function keepHostSecrets(names: string[]): void {
+export function keepHostSecrets(names: string[]): string | null {
   const found = names.map((name) => {
     const value = process.env[name];
     if (value === undefined) throw new Error(`customizations["qa-interns"].secrets.hostEnv names ${name}, which the environment of qa-interns does not set`);
     return { value, where: `The value of ${name}` };
   });
-  keep(found.filter(({ value }) => value !== ""));
+  return keep(found.filter(({ value }) => value !== ""));
 }
 
-export function keepSeedSecrets(seed: unknown, fields: string[]): void {
+export function keepSeedSecrets(seed: unknown, fields: string[]): string | null {
   const named = new Set<string>();
   const found: { value: string; where: string }[] = [];
   const walk = (value: unknown, field: string | null): void => {
@@ -39,9 +39,9 @@ export function keepSeedSecrets(seed: unknown, fields: string[]): void {
     }
   };
   walk(seed, null);
-  keep(found);
+  const short = keep(found);
   const missing = fields.filter((field) => !named.has(field));
-  if (missing.length > 0) throw new Error(`customizations["qa-interns"].secrets.seed names ${missing.join(", ")}, which the seed output has no field for`);
+  return missing.length > 0 ? `customizations["qa-interns"].secrets.seed names ${missing.join(", ")}, which the seed output has no field for` : short;
 }
 
 function forms(): string[] {
@@ -64,6 +64,30 @@ export function longestSecret(): number {
 
 export function redact(text: string): string {
   return replace(text, forms());
+}
+
+export function redactAcross(parts: { text: string }[]): void {
+  const joined = parts.map((part) => part.text).join("");
+  const spans: { start: number; end: number }[] = [];
+  for (const form of forms()) {
+    for (let start = joined.indexOf(form); start !== -1; start = joined.indexOf(form, start + form.length)) {
+      const end = start + form.length;
+      if (!spans.some((span) => start < span.end && span.start < end)) spans.push({ start, end });
+    }
+  }
+  if (spans.length === 0) return;
+  let offset = 0;
+  for (const part of parts) {
+    const { length } = part.text;
+    let out = "";
+    for (let index = offset; index < offset + length; index += 1) {
+      const span = spans.find((entry) => entry.start <= index && index < entry.end);
+      if (span === undefined) out += joined[index];
+      else if (span.start === index) out += marker;
+    }
+    part.text = out;
+    offset += length;
+  }
 }
 
 export function redactJson<T>(value: T): T {
