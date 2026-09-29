@@ -128,7 +128,7 @@ describe("renderReport", () => {
 
   test("the header names the commit, and the uncommitted changes when the run copied the working tree", () => {
     expect(markdown.split("\n")).toContain(`- Commit: \`${state.target.commit}\``);
-    const dirty = renderReport({ ...state, target: { ...state.target, dirty: true } }, [], []).markdown;
+    const dirty = renderReport({ ...state, target: { ...state.target, dirty: true } }, [], [], []).markdown;
     expect(dirty.split("\n")).toContain(`- Commit: \`${state.target.commit}\`, with the uncommitted changes and untracked files of the working tree`);
   });
 
@@ -312,7 +312,7 @@ describe("renderReplay", () => {
   });
 
   test("names the uncommitted changes of an earlier run that copied the working tree", () => {
-    const dirty = renderReplay(replayState, { ...replay, target: { ...state.target, dirty: true } });
+    const dirty = renderReplay(replayState, { ...replay, target: { ...state.target, dirty: true } }, []);
     expect(dirty.markdown).toContain(`- Replay of: run \`7c1e9a04\` at commit \`${state.target.commit}\`, with the uncommitted changes and untracked files of the working tree\n`);
     expect((dirty.json as { run: unknown }).run).toMatchObject({ replay: { runId: "7c1e9a04", commit: state.target.commit, dirty: true } });
   });
