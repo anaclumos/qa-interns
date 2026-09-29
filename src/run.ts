@@ -25,7 +25,7 @@ import { outDir, parseGroups, readAgentFile, readConfirmation, readFindings, str
 import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
-import { renderReplay, renderReport } from "./report.ts";
+import { renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
@@ -696,9 +696,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const report =
       opts.replay === null
         ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic)
-        : renderReplay(redactJson(state), redactJson(opts.replay), traffic);
+        : { ...renderReplay(redactJson(state), redactJson(opts.replay), traffic), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
+    await writeTickets(runDir, report.tickets);
     await save();
     return teardowns.length === 0 ? null : teardowns.join("; ");
   });
