@@ -4,6 +4,7 @@ import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { removeCopies, writeChromePolicy } from "../src/environment.ts";
+import { readReplay } from "../src/report.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { newRunId, readState } from "../src/state.ts";
@@ -170,6 +171,7 @@ USER qa
           { id: "grok-1", provider: "grok" },
           { id: "cursor-1", provider: "cursor" },
         ]),
+        replay: null,
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
@@ -244,6 +246,95 @@ USER qa
   );
 
   test(
+    "a replay hands the confirmed group of an earlier run to a confirming intern at a new commit and reports that it reproduced",
+    async () => {
+      const loginsFile = await logins("replay", [{ id: "claude-1", provider: "claude" }]);
+      const sourceDir = await runQa({ dir: target, rev: "HEAD", interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+      const source = await readState(sourceDir);
+      const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false"];
+      const next = (await execute([...git, "commit-tree", "-p", source.target.commit, "-m", "Next", `${source.target.commit}^{tree}`])).trim();
+      await expect(readReplay(sourceDir, ["g1", "g2"])).rejects.toThrow(`Run ${source.runId} has no confirmed group g2. Its confirmed groups are g1.`);
+
+      const replay = await readReplay(sourceDir, ["g1"]);
+      const lines: string[] = [];
+      const runDir = await runQa({
+        dir: join(replay.target.repo, replay.target.path),
+        rev: next,
+        interns: 0,
+        minutes: 0,
+        confirmMinutes: 0.5,
+        loginsFile,
+        replay,
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      expect(lines[0]).toBe(runDir);
+      expect(lines.filter((line) => line.startsWith("phase "))).toEqual(["phase preparing", "phase building", "phase confirming", "phase reporting"]);
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger", commit: next }, options: { interns: 0, minutes: 0, confirmMinutes: 0.5 } });
+      expect(state.interns.map((entry) => [entry.id, entry.role, entry.group, entry.charter, entry.status, entry.detail])).toEqual([["c1", "confirm", "g1", title, "done", "reproduced"]]);
+      const prompts = (await Bun.file(join(runDir, "interns", "c1", "transcript.jsonl")).text())
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.from === "client" && line.message.method === "session/prompt")
+        .map((line) => JSON.stringify(line.message.params));
+      expect(prompts[0]).toContain("Another intern reported the finding below");
+      expect(prompts[0]).toContain(title);
+
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.run).toMatchObject({ replay: { runId: source.runId, commit: source.target.commit }, reproducedGroups: 1, notReproducedGroups: 0, uncheckedGroups: 0, refusedConnections: 2 });
+      expect(report.refused).toEqual([{ intern: "c1", attempt: 1, host: limitedHost, connections: 2 }]);
+      expect(report.groups).toHaveLength(1);
+      expect(report.groups[0]).toMatchObject({
+        id: "g1",
+        reproduced: true,
+        finding: { id: "i1/fake-home", title, environment: { commit: source.target.commit, environment: `qa-${source.runId}-i1` } },
+        confirmation: { intern: "c1", provider: "claude", result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] }, error: null },
+      });
+      const markdown = await Bun.file(join(runDir, "report.md")).text();
+      expect(markdown).toContain(`- Replay of: run \`${source.runId}\` at commit \`${source.target.commit}\`\n`);
+      const reproduced = markdown.slice(markdown.indexOf("## Reproduced"), markdown.indexOf("## Not reproduced"));
+      expect(reproduced).toContain(`### ${title}`);
+      expect(reproduced).toContain(`- Group: g1 in run ${source.runId}`);
+      await expect(readReplay(runDir, [])).rejects.toThrow(`Run ${state.runId} is a replay of run ${source.runId}. Replay run ${source.runId} instead.`);
+
+      const failedLines: string[] = [];
+      await expect(
+        runQa({
+          dir: join(replay.target.repo, replay.target.path),
+          rev: next,
+          interns: 0,
+          minutes: 0,
+          confirmMinutes: 0.5,
+          loginsFile: await logins("replay-silent", [{ id: "claude-no-confirm", provider: "claude", confirms: false }]),
+          replay: await readReplay(sourceDir, []),
+          runnerImage: async () => fakeImage,
+          print: (line) => failedLines.push(line),
+        }),
+      ).rejects.toThrow("No confirming intern recorded a result: c1 done: confirmation failed: no confirmation.json written");
+      const failedDir = failedLines[0] ?? "";
+      const failed = await readState(failedDir);
+      expect(failed.phase).toBe("failed");
+      const failedReport = await Bun.file(join(failedDir, "findings.json")).json();
+      expect(failedReport.run).toMatchObject({ reproducedGroups: 0, notReproducedGroups: 0, uncheckedGroups: 1 });
+      expect(failedReport.groups[0]).toMatchObject({ id: "g1", reproduced: null, confirmation: { intern: "c1", result: null, error: "no confirmation.json written" } });
+
+      for (const [dir, run] of [
+        [sourceDir, source],
+        [runDir, state],
+        [failedDir, failed],
+      ] as const) {
+        expect(await leftovers(run.runId)).toEqual([]);
+        expect(await workspaces(dir, run)).toEqual([]);
+        expect(await disks(dir, run)).toEqual([]);
+      }
+    },
+    timeout,
+  );
+
+  test(
     "an intern at a usage limit moves to another login and restarts its charter in a free subnet, and each attempt keeps its own output",
     async () => {
       const lines: string[] = [];
@@ -261,6 +352,7 @@ USER qa
           { id: "claude-confirm-limit", provider: "claude", limit: "confirmation", model: "fake-model-b" },
           { id: "claude-no-confirm", provider: "claude", confirms: false, model: "fake-model-c" },
         ]),
+        replay: null,
         runnerImage: async () => fakeImage,
         print: (line) => {
           lines.push(line);
@@ -345,6 +437,7 @@ USER qa
         minutes: 0.5,
         confirmMinutes: 0.5,
         loginsFile: await logins("relay", [{ id: "claude-relay", provider: "claude" }]),
+        replay: null,
         runnerImage: async () => fakeImage,
         print: (line) => {
           lines.push(line);
@@ -440,7 +533,7 @@ USER qa
       process.env.QA_PROBE_DIR = probe;
       let error: unknown = null;
       try {
-        await runQa({ dir: hostile, rev: "HEAD", interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+        await runQa({ dir: hostile, rev: "HEAD", interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
       } catch (reason) {
         error = reason;
       } finally {
@@ -558,6 +651,7 @@ USER qa
         minutes: 5,
         confirmMinutes: 0.5,
         loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
+        replay: null,
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
