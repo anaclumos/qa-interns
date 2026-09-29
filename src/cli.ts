@@ -5,9 +5,9 @@ import { doctor } from "./doctor.ts";
 import { removeCopies, stopRun } from "./environment.ts";
 import { errorCode, stripControl } from "./findings.ts";
 import { defaultLoginsPath } from "./logins.ts";
-import { runQa } from "./run.ts";
+import { runQa, startCopy } from "./run.ts";
 import { ensureRunnerImage, runnerImage } from "./runner.ts";
-import { formatStatus, processStart, readState, resolveRunDir } from "./state.ts";
+import { formatStatus, processStart, readState, resolveRunDir, writeState } from "./state.ts";
 
 const usage = `Usage: qa-interns <command> [options]
 
@@ -20,6 +20,10 @@ Commands:
       30 minutes each, 10 minutes per confirmation. Prints the run directory first.
       With --on-end, run the shell command when the run ends, done, failed, or
       interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
+  up <target-dir> [--commit <rev>]
+      Start one environment of the target at the commit (default HEAD) with no
+      interns, run its ready check and seed, and leave it running. Prints the run
+      directory first. down removes the environment.
   status [<run>]
       Print the phase and every intern's status.
   report [<run>]
@@ -100,6 +104,13 @@ async function main(args: string[]): Promise<number> {
       await runQa({ ...options, runnerImage: ensureRunnerImage, print });
       return 0;
     }
+    case "up": {
+      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { commit: { type: "string", default: "HEAD" } } });
+      const [dir, ...extra] = positionals;
+      if (dir === undefined || extra.length > 0) throw new Error("up takes exactly one target directory. Run qa-interns help for usage.");
+      await startCopy({ dir, rev: values.commit, runnerImage: ensureRunnerImage, print });
+      return 0;
+    }
     case "status": {
       print(formatStatus(await readState(await resolveRunDir(runArg(command, rest)))));
       return 0;
@@ -135,6 +146,11 @@ async function main(args: string[]): Promise<number> {
       }
       await stopRun(state.runId);
       await removeCopies(dir, state.runId, await runnerImage());
+      const after = await readState(dir);
+      if (after.phase === "up") {
+        const ended = new Date().toISOString();
+        await writeState(dir, { ...after, phase: "done", updatedAt: ended, endedAt: ended });
+      }
       print(`Run ${state.runId} has no environments left.`);
       return 0;
     }
