@@ -156,6 +156,7 @@ USER qa
       const runDir = await runQa({
         dir: target,
         rev: "HEAD",
+        dirty: false,
         interns: 2,
         minutes: 0.5,
         confirmMinutes: 0.5,
@@ -209,7 +210,7 @@ USER qa
       expect(report.groups[0].findings[0]).toMatchObject({
         title,
         evidence: ["interns/i1/out/evidence/page.html"],
-        environment: { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: intern(state, "i1").provider, model: "fake-model-1" },
+        environment: { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, provider: intern(state, "i1").provider, model: "fake-model-1" },
       });
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "page.html")).text()).toContain("<form");
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "browser.json")).json()).toEqual({
@@ -235,7 +236,7 @@ USER qa
     "a replay hands the confirmed group of an earlier run to a confirming intern at a new commit and reports that it reproduced",
     async () => {
       const loginsFile = await logins("replay", [{ id: "claude-1", provider: "claude" }]);
-      const sourceDir = await runQa({ dir: target, rev: "HEAD", interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+      const sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
       const source = await readState(sourceDir);
       const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false"];
       const next = (await execute([...git, "commit-tree", "-p", source.target.commit, "-m", "Next", `${source.target.commit}^{tree}`])).trim();
@@ -246,6 +247,7 @@ USER qa
       const runDir = await runQa({
         dir: join(replay.target.repo, replay.target.path),
         rev: next,
+        dirty: false,
         interns: 0,
         minutes: 0,
         confirmMinutes: 0.5,
@@ -290,6 +292,7 @@ USER qa
         runQa({
           dir: join(replay.target.repo, replay.target.path),
           rev: next,
+          dirty: false,
           interns: 0,
           minutes: 0,
           confirmMinutes: 0.5,
@@ -329,6 +332,7 @@ USER qa
       const runDir = await runQa({
         dir: target,
         rev: "HEAD",
+        dirty: false,
         interns: 1,
         minutes: 0.5,
         confirmMinutes: 0.5,
@@ -387,8 +391,8 @@ USER qa
       });
       const findings: Finding[] = report.groups[0].findings;
       expect(findings.map((finding) => [finding.id, finding.evidence, finding.environment])).toEqual([
-        ["i1/fake-home", ["interns/i1/out/evidence/page.html"], { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-a" }],
-        ["i1/out-2/fake-home", ["interns/i1/out-2/evidence/page.html"], { commit: state.target.commit, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-b" }],
+        ["i1/fake-home", ["interns/i1/out/evidence/page.html"], { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-a" }],
+        ["i1/out-2/fake-home", ["interns/i1/out-2/evidence/page.html"], { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-b" }],
       ]);
       expect(await Bun.file(join(runDir, "interns", "c1", "out-2", "confirmation.json")).exists()).toBe(false);
 
@@ -468,7 +472,7 @@ USER qa
       process.env.QA_PROBE_DIR = probe;
       let error: unknown = null;
       try {
-        await runQa({ dir: hostile, rev: "HEAD", interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+        await runQa({ dir: hostile, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
       } catch (reason) {
         error = reason;
       } finally {
@@ -582,6 +586,7 @@ USER qa
       const run = runQa({
         dir: target,
         rev: "HEAD",
+        dirty: false,
         interns: 1,
         minutes: 5,
         confirmMinutes: 0.5,
@@ -608,6 +613,52 @@ USER qa
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups.map((group: { findings: { id: string }[] }) => group.findings.map((finding) => finding.id))).toEqual([["i1/fake-home"]]);
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "a dirty run serves the uncommitted changes and untracked files of the working tree and records the run as dirty",
+    async () => {
+      const dirty = join(root, "dirty");
+      await cp(target, dirty, { recursive: true });
+      const git = ["git", "-C", dirty, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Ledger"]);
+      const head = (await execute([...git, "rev-parse", "HEAD"])).trim();
+      const html = join(dirty, "src", "html.ts");
+      const page = (await Bun.file(html).text()).replace("<h1>Sign in to Ledger</h1>", "<h1>Sign in to Ledger</h1>${notice}");
+      await Bun.write(html, `import { notice } from "./notice.ts";\n${page}`);
+      await Bun.write(join(dirty, "src", "notice.ts"), 'export const notice = "<p id=\\"notice\\">Uncommitted notice</p>";\n');
+      await Bun.write(join(dirty, "node_modules", "ignored.txt"), "ignored\n");
+
+      const lines: string[] = [];
+      const runDir = await runQa({
+        dir: dirty,
+        rev: "HEAD",
+        dirty: true,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("dirty", [{ id: "claude-1", provider: "claude" }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null, target: { path: "", commit: head, dirty: true } });
+      expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "page.html")).text()).toContain('<p id="notice">Uncommitted notice</p>');
+      expect(await Bun.file(join(runDir, "source", "node_modules", "ignored.txt")).exists()).toBe(false);
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.run.target).toEqual(state.target);
+      expect(report.groups[0].findings[0].environment).toEqual({ commit: head, dirty: true, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-1" });
+      expect((await Bun.file(join(runDir, "report.md")).text()).split("\n")).toContain(`- Commit: \`${head}\`, with the uncommitted changes and untracked files of the working tree`);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);

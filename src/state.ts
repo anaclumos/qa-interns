@@ -10,7 +10,7 @@ const stateSchema = z.object({
   runId: z.string().min(1),
   pid: z.int().positive(),
   pidStart: z.int().nonnegative(),
-  target: z.object({ repo: z.string(), path: z.string(), commit: z.string() }),
+  target: z.object({ repo: z.string(), path: z.string(), commit: z.string(), dirty: z.boolean() }),
   options: z.object({ interns: z.number(), minutes: z.number(), confirmMinutes: z.number(), concurrency: z.number() }),
   phase: z.enum(["preparing", "building", "starting", "up", "testing", "grouping", "confirming", "reporting", "done", "failed"]),
   error: z.string().nullable(),
@@ -114,7 +114,7 @@ export function formatStatus(state: RunState): string {
   const summary = [
     ["Run", state.runId],
     ["Target", join(state.target.repo, state.target.path)],
-    ["Commit", state.target.commit],
+    ["Commit", state.target.dirty ? `${state.target.commit} with uncommitted changes` : state.target.commit],
     ["Phase", state.phase],
     ...(state.error === null ? [] : [["Error", state.error]]),
   ];
