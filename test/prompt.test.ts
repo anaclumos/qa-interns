@@ -19,6 +19,8 @@ const env: PromptEnvironment = {
   offLimits: ["Do not change the password of a seeded account."],
 };
 
+const knownGaps = ["The environment has no media support.", "The environment has no video model."];
+
 function finding(id: string, title: string, evidence: string[]): Finding {
   const intern = id.slice(0, id.indexOf("/"));
   return {
@@ -53,10 +55,16 @@ describe("deck", () => {
 
 describe("internPrompt", () => {
   const charter = deck(["What viewers can change."]).at(0) ?? "";
-  const prompt = internPrompt(charter, env);
+  const prompt = internPrompt(charter, env, knownGaps);
 
   test("carries the charter as its own Charter line", () => {
     expect(prompt.split("\n")).toContain(`Charter: ${charter}`);
+  });
+
+  test("lists every known gap in the findings section", () => {
+    const lines = prompt.split("\n");
+    const findings = lines.slice(lines.indexOf("Findings:"));
+    for (const entry of knownGaps) expect(findings).toContain(`  - ${entry}`);
   });
 
   test("names every URL, every seeded account, and every off-limits entry", () => {
