@@ -80,29 +80,39 @@ export async function openSession(opts: { container: string; provider: ProviderS
   ]);
 
   const line = (t: string, from: "client" | "agent", message: unknown) => transcript(`${JSON.stringify({ t, from, message })}\n`);
-  const pending: { t: string; chunk: z.infer<typeof chunkSchema> }[] = [];
+  const queue: { t: string; from: "client" | "agent"; message: unknown; content: { text: string } | null; bytes: number }[] = [];
+  const texts: { text: string }[] = [];
+  let queued = 0;
   const release = (all: boolean) => {
-    redactAcross(pending.map((entry) => entry.chunk.params.update.content));
-    let held = 0;
-    let after = 0;
-    for (const entry of pending.toReversed()) {
-      if (all || after >= longestSecret() - 1) break;
-      after += entry.chunk.params.update.content.text.length;
-      held += 1;
+    redactAcross(texts);
+    let after = texts.reduce((sum, part) => sum + part.text.length, 0);
+    let count = 0;
+    let released = 0;
+    for (const entry of queue) {
+      if (entry.content !== null) {
+        after -= entry.content.text.length;
+        if (!all && after < longestSecret() - 1) break;
+        released += 1;
+      }
+      count += 1;
     }
-    for (const entry of pending.splice(0, pending.length - held)) line(entry.t, "agent", entry.chunk);
+    texts.splice(0, released);
+    for (const entry of queue.splice(0, count)) {
+      queued -= entry.bytes;
+      line(entry.t, entry.from, entry.message);
+    }
   };
   const record = (from: "client" | "agent", message: AnyMessage) => {
-    const t = new Date().toISOString();
-    const chunk = from === "agent" ? chunkSchema.safeParse(message) : null;
-    const kind = chunk?.success ? chunk.data.params.update.sessionUpdate : null;
-    if (pending[0] !== undefined && pending[0].chunk.params.update.sessionUpdate !== kind) release(true);
-    if (!chunk?.success) {
-      line(t, from, message);
-      return;
-    }
-    pending.push({ t, chunk: chunk.data });
-    release(false);
+    const parsed = from === "agent" ? chunkSchema.safeParse(message) : null;
+    const chunk = parsed?.success && parsed.data.params.update.content.text !== "" ? parsed.data : null;
+    const entry = { t: new Date().toISOString(), from, message: chunk ?? message, content: chunk?.params.update.content ?? null, bytes: 0 };
+    queue.push(entry);
+    if (entry.content !== null) texts.push(entry.content);
+    release(!(from === "agent" && "method" in message && message.method === methods.client.session.update));
+    if (queue.at(-1) !== entry) return;
+    entry.bytes = JSON.stringify(entry.message).length;
+    queued += entry.bytes;
+    if (queued > lineLimit) release(true);
   };
   const overlong = new Error(`${argv.join(" ")} printed more than ${lineLimit / 1024 ** 2} MiB without a newline`);
   const oversent = new Error(`qa-interns sent more than ${sentLimit / 1024 ** 2} MiB to ${argv.join(" ")}`);

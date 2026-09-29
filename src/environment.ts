@@ -5,7 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { keepSeedSecrets, redact } from "./secrets.ts";
-import { capture, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
 import { relayOutcomes, type GeneratedFile, type Mount, type RelayRecord } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
@@ -437,16 +437,22 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const exec = [process.execPath, devcontainer, "exec", "--container-id", devContainer, "--workspace-folder", workspace, "--override-config", config];
   await waitReady(target.settings.ready, runner, exec, env, log);
   const seedCommand = [...exec, "sh", "-c", target.settings.seed];
-  const seeded = await capture(seedCommand, { env, log, timeout: 10 * minute });
+  const seeded = await capture(seedCommand, { env, log, timeout: 10 * minute }).then(
+    (result) => ({ stdout: result.stdout, fail: result.code === 0 ? null : () => failure(seedCommand, result.code, result.stderr) }),
+    (error: unknown) => {
+      if (!(error instanceof CommandTimeout)) throw error;
+      return { stdout: error.stdout, fail: () => new CommandTimeout(error.cmd, error.seconds, error.stdout, error.stderr) };
+    },
+  );
   let seed: unknown;
   try {
     seed = JSON.parse(seeded.stdout);
   } catch (error) {
-    if (seeded.code !== 0) throw failure(seedCommand, seeded.code, seeded.stderr);
+    if (seeded.fail !== null) throw seeded.fail();
     throw new Error(`The seed command ${target.settings.seed} did not print one JSON document (${String(error)}); it printed: ${redact(seeded.stdout).slice(0, 500)}`);
   }
   const unkept = keepSeedSecrets(seed, target.settings.secrets.seed);
-  if (seeded.code !== 0) throw failure(seedCommand, seeded.code, seeded.stderr);
+  if (seeded.fail !== null) throw seeded.fail();
   if (unkept !== null) throw new Error(unkept);
   await disableRestarts(project);
   return { project, runner, out: spec.runner.out, devContainer, seed };

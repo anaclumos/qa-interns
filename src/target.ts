@@ -60,9 +60,25 @@ export async function capture(cmd: string[], options: CommandOptions = {}): Prom
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (options.log !== undefined) await appendFile(options.log, stderr);
   if (options.timeout !== undefined && (code === 124 || code === 137) && performance.now() - started >= options.timeout) {
-    throw new Error(`${cmd.join(" ")} timed out after ${options.timeout / 1000} seconds: ${redact(stderr).trim().slice(-2000)}`);
+    throw new CommandTimeout(cmd, options.timeout / 1000, stdout, stderr);
   }
   return { code, stdout, stderr };
+}
+
+export class CommandTimeout extends Error {
+  cmd: string[];
+  seconds: number;
+  stdout: string;
+  stderr: string;
+
+  constructor(cmd: string[], seconds: number, stdout: string, stderr: string) {
+    super(`${cmd.join(" ")} timed out after ${seconds} seconds: ${redact(stderr).trim().slice(-2000)}`);
+    this.name = "CommandTimeout";
+    this.cmd = cmd;
+    this.seconds = seconds;
+    this.stdout = stdout;
+    this.stderr = stderr;
+  }
 }
 
 export function failure(cmd: string[], code: number, stderr: string): Error {

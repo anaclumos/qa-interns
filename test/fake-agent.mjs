@@ -148,12 +148,10 @@ const charterTurn = async (text) => {
     observed: "The home page body contains the fake defect marker.",
     evidence: ["evidence/page.html"],
   });
+  const cut = Math.floor((account?.password.length ?? 0) / 2);
+  if (account !== undefined) say(`Signed in as ${account.email} with ${account.password.slice(0, cut)}`);
   update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" });
-  if (account !== undefined) {
-    const cut = Math.floor(account.password.length / 2);
-    say(`Signed in as ${account.email} with ${account.password.slice(0, cut)}`);
-    say(`${account.password.slice(cut)}.`);
-  }
+  if (account !== undefined) say(`${account.password.slice(cut)}.`);
   say("Recorded one finding.");
   if (login().flood === true) {
     hold("/qa/out/evidence/held.bin", 600);

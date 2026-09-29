@@ -3,7 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs
 import os from "node:os";
 import path from "node:path";
 import { forgetSecrets, keepHostSecrets, keepSeedSecrets, redact, redactAcross, redactFiles, redactJson } from "../src/secrets.ts";
-import { failure } from "../src/target.ts";
+import { capture, CommandTimeout, failure } from "../src/target.ts";
 
 const asRoot = process.getuid?.() === 0;
 const roots: string[] = [];
@@ -102,6 +102,20 @@ describe("failure", () => {
     const pem = "-----BEGIN KEY-----\nMIIBOgIBAAJBAKj34GkxFhD9\n-----END KEY-----\n";
     keepSeedSecrets({ key: pem }, ["key"]);
     expect(failure(["seed"], 1, `loaded ${pem}`).message).toBe("seed exited with 1: loaded [redacted]");
+  });
+});
+
+describe("CommandTimeout", () => {
+  test("carry the output of a command that timed out, so its values can be kept before the error quotes them", async () => {
+    const script = "echo '{\"key\":\"sk_late_4f9a1c2e7b\"}'; echo 'late sk_late_4f9a1c2e7b' >&2; exec sleep 30";
+    const error = await capture(["sh", "-c", script], { timeout: 1000 }).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    if (!(error instanceof CommandTimeout)) throw new Error("capture did not time out");
+    expect(error.stdout).toBe('{"key":"sk_late_4f9a1c2e7b"}\n');
+    expect(keepSeedSecrets(JSON.parse(error.stdout), ["key"])).toBeNull();
+    expect(new CommandTimeout(error.cmd, error.seconds, error.stdout, error.stderr).message).toBe(`sh -c ${script} timed out after 1 seconds: late [redacted]`);
   });
 });
 

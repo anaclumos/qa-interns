@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { AgentError, openSession, type Session } from "../src/acp.ts";
 import { providers } from "../src/providers.ts";
+import { forgetSecrets, keepSeedSecrets } from "../src/secrets.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -279,6 +280,41 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     } finally {
       await between.close();
     }
+  });
+
+  test("the transcript replaces a value that the agent's chunks split around another update, and keeps the order of the records", async () => {
+    expect(keepSeedSecrets({ key: "sk_chunk_4f9a1c2e7b" }, ["key"])).toBeNull();
+    const split = await fakeSession("split");
+    const file = path.join(internDir, "split-transcript.jsonl");
+    try {
+      expect(await split.prompt("Keep testing your charter.")).toEqual({ stopReason: "end_turn", toolCalls: 0, lastMessage: "Nothing more to test." });
+      const chunk = (text: string) => ({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+      const lines = updateLines(
+        chunk("Key sk_chu"),
+        { sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" },
+        chunk("nk_4f9a1c2e7b in use."),
+        chunk(" The rest of the message follows here."),
+      );
+      await printAsAdapter(JSON.stringify([lines]));
+      await until(() => readFileSync(file, "utf8").includes(" in use."), "the chunks before the last one to reach the transcript");
+    } finally {
+      await split.close();
+      forgetSecrets();
+    }
+    const text = readFileSync(file, "utf8");
+    expect(text).not.toContain("sk_chu");
+    expect(text).not.toContain("nk_4f9a");
+    const updates = text
+      .split("\n")
+      .filter((entry) => entry.includes('"method":"session/update"'))
+      .map((entry) => JSON.parse(entry).message.params.update);
+    expect(updates.map((update) => update.content?.text ?? update.status)).toEqual([
+      "Nothing more to test.",
+      "Key [redacted]",
+      "completed",
+      " in use.",
+      " The rest of the message follows here.",
+    ]);
   });
 
   test("a turn keeps the first 300 characters of the agent's text, printed one byte at a time", async () => {
