@@ -4,6 +4,7 @@ import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { removeCopies, writeChromePolicy } from "../src/environment.ts";
+import { errorCode } from "../src/findings.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { newRunId, readState } from "../src/state.ts";
@@ -474,7 +475,7 @@ USER qa
           "--on-end",
           `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; echo 'no notification' >&2; exit 3`,
         ],
-        { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+        { env: { ...process.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
       );
       const reader = cli.stdout.getReader();
       const decoder = new TextDecoder();
@@ -510,6 +511,7 @@ USER qa
       await execute([...git, "add", "-A"]);
       await execute([...git, "commit", "-q", "-m", "No dev container"]);
       const ended = join(root, "down-ended.txt");
+      const child = join(root, "down-child.txt");
       const cli = Bun.spawn(
         [
           process.execPath,
@@ -519,18 +521,30 @@ USER qa
           "--logins",
           await logins("down", [{ id: "claude-1", provider: "claude" }]),
           "--on-end",
-          `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}.tmp' && mv '${ended}.tmp' '${ended}' && exec sleep 600`,
+          `sleep 600 & echo $! > '${child}'; printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}.tmp' && mv '${ended}.tmp' '${ended}'; wait`,
         ],
-        { stdin: "ignore", stdout: "ignore", stderr: "pipe" },
+        { env: { ...process.env }, stdin: "ignore", stdout: "ignore", stderr: "pipe" },
       );
       while (!existsSync(ended) && cli.exitCode === null) await Bun.sleep(50);
       const [runDir = "", phase] = (await Bun.file(ended).text()).split("\n");
       expect(phase).toBe("failed");
+      const sleeper = Number((await Bun.file(child).text()).trim());
+      const alive = () => {
+        try {
+          return !readFileSync(`/proc/${sleeper}/stat`, "utf8").includes(") Z ");
+        } catch (error) {
+          if (errorCode(error) === "ENOENT") return false;
+          throw error;
+        }
+      };
+      expect(alive()).toBe(true);
 
-      const down = await capture([process.execPath, cliScript, "down", runDir]);
+      const down = await capture([process.execPath, cliScript, "down", runDir], { env: { ...process.env } });
       expect(down.code).toBe(0);
       expect(down.stdout).toContain(`(process ${cli.pid})`);
       expect(await cli.exited).toBe(130);
+      for (let tries = 0; tries < 100 && alive(); tries += 1) await Bun.sleep(50);
+      expect(alive()).toBe(false);
       expect(await new Response(cli.stderr).text()).toContain("The --on-end command exited with");
       expect(await readState(runDir)).toMatchObject({ phase: "failed" });
     },

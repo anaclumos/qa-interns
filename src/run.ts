@@ -25,7 +25,7 @@ import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, ju
 import { providers } from "./providers.ts";
 import { renderReport } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
-import { execute, exportTree, killCommands, loadTarget, resolveTarget, track, type Target } from "./target.ts";
+import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target } from "./target.ts";
 import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
@@ -671,7 +671,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const ended = once(async (phase: RunPhase): Promise<string | null> => {
     if (opts.onEnd === undefined) return null;
     const env = { ...process.env, QA_INTERNS_RUN_DIR: runDir, QA_INTERNS_PHASE: phase };
-    const code = await track(Bun.spawn(["sh", "-c", opts.onEnd], { env, stdin: "ignore", stdout: "inherit", stderr: "inherit" })).exited;
+    const code = await trackGroup(Bun.spawn(["sh", "-c", opts.onEnd], { env, stdin: "ignore", stdout: "inherit", stderr: "inherit", detached: true })).exited;
     return code === 0 ? null : `The --on-end command exited with ${code}`;
   });
 
