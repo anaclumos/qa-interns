@@ -1,5 +1,5 @@
 import { constants, existsSync } from "node:fs";
-import { open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
+import { link, lstat, mkdir, open, readdir, readlink, realpath, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { kinds, type Confirmation, type Finding, type FindingEnvironment, type Rejected } from "./types.ts";
@@ -240,4 +240,47 @@ export async function readConfirmation(runDir: string, intern: string, attempt: 
   const out = outDir(intern, attempt);
   const data = parse(confirmationSchema, await readAgentFile(path.join(runDir, out, "confirmation.json")));
   return { reproduced: data.reproduced, observed: data.observed, evidence: (await evidence(runDir, out, data.evidence)).map(stripControl) };
+}
+
+const linkFailures = new Map([
+  ...openFailures,
+  ["ENOTDIR", "a folder in the path is not a directory"],
+  ["ENAMETOOLONG", "the path is too long"],
+  ["EXDEV", "the file is on another file system"],
+  ["EMLINK", "the file has too many links"],
+  ["EEXIST", "another listed path names the same file"],
+]);
+
+function linkFailure(error: unknown): string {
+  const reason = linkFailures.get(errorCode(error) ?? "");
+  if (reason === undefined) throw error;
+  return reason;
+}
+
+export async function linkEvidence(runDir: string, entry: string, target: string): Promise<string | null> {
+  if (entry.split("/").includes("..")) return "the path has a .. component";
+  const expected = path.join(await realpath(runDir), entry);
+  let handle: FileHandle;
+  try {
+    handle = await open(path.join(runDir, entry), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    return linkFailure(error);
+  }
+  try {
+    if ((await readlink(`/proc/self/fd/${handle.fd}`)) !== expected) return "its real path is not the listed path";
+    const file = await handle.stat();
+    if (!file.isFile()) return "the file is not a regular file";
+    try {
+      await mkdir(path.dirname(target), { recursive: true });
+      await link(expected, target);
+    } catch (error) {
+      return linkFailure(error);
+    }
+    const linked = await lstat(target);
+    if (linked.dev === file.dev && linked.ino === file.ino) return null;
+    await unlink(target);
+    return "the file changed while QA Interns linked it";
+  } finally {
+    await handle.close();
+  }
 }
