@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { removeCopies, writeChromePolicy } from "../src/environment.ts";
+import { readRelayLog, relayLog, removeCopies, writeChromePolicy } from "../src/environment.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { newRunId, readState } from "../src/state.ts";
@@ -177,6 +177,7 @@ USER qa
       expect(intern(state, "judge").provider).toBe("grok");
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.egress).toEqual([]);
       expect(report.groups).toHaveLength(1);
       expect(report.groups[0]).toMatchObject({
         id: "g1",
@@ -207,6 +208,57 @@ USER qa
       const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Seen once"));
       expect(confirmed).toContain(`### ${title}`);
       expect(confirmed).toContain("- Reproductions: 3 (i1, i2, c1)");
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "the report counts the connections that target services open through the relay, per egress host and outcome",
+    async () => {
+      const relayed = join(root, "relayed");
+      await cp(target, relayed, { recursive: true });
+      const file = join(relayed, ".devcontainer", "devcontainer.json");
+      const config = await Bun.file(file).json();
+      const settings = config.customizations["qa-interns"];
+      const calls = "await fetch('https://api.example.test/').catch(() => {}); await fetch('http://api.example.test:443/').catch(() => {});";
+      const qa = { ...settings, egress: ["api.example.test", "silent.example.test"], seed: `bun -e "${calls}" && ${settings.seed}` };
+      await Bun.write(file, JSON.stringify({ ...config, customizations: { "qa-interns": qa } }));
+      const git = ["git", "-C", relayed, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Relayed Ledger"]);
+
+      const runDir = await runQa({
+        dir: relayed,
+        rev: "HEAD",
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("relayed", [{ id: "claude-1", provider: "claude" }]),
+        runnerImage: async () => fakeImage,
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state.phase).toBe("done");
+      expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([
+        ["i1", "done"],
+        ["c1", "done"],
+      ]);
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.egress).toEqual([
+        { host: "api.example.test", outcome: "failed", error: "ENOTFOUND", connections: 2, interns: ["i1", "c1"] },
+        { host: "silent.example.test", outcome: null, error: null, connections: 0, interns: [] },
+        { host: null, outcome: "denied", error: null, connections: 2, interns: ["i1", "c1"] },
+      ]);
+      const markdown = await Bun.file(join(runDir, "report.md")).text();
+      expect(markdown).toContain("| api.example.test | failed | ENOTFOUND | 2 | i1, c1 |\n");
+      expect(markdown).toContain("| silent.example.test | no connection |  | 0 |  |\n");
+      for (const internId of ["i1", "c1"]) expect((await readRelayLog(relayLog(runDir, internId))).map((entry) => entry.n)).toEqual([1, 2]);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);

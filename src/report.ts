@@ -1,10 +1,37 @@
 import { stripControl } from "./findings.ts";
-import type { Group, InternState, Rejected, RunState } from "./types.ts";
+import type { Group, InternState, RelayRecord, Rejected, RunState } from "./types.ts";
+
+export type Egress = { hosts: string[]; relays: { intern: string; records: RelayRecord[] }[] };
+
+type EgressRow = { host: string | null; outcome: RelayRecord["outcome"] | "unrecorded" | null; error: string | null; connections: number; interns: string[] };
 
 export function reproductions(group: Group): string[] {
   const interns = new Set(group.findings.map((finding) => finding.intern));
   if (group.confirmation?.result?.reproduced) interns.add(group.confirmation.intern);
   return [...interns];
+}
+
+function egressRows({ hosts, relays }: Egress): EgressRow[] {
+  const rows = new Map<string, EgressRow>();
+  const add = (intern: string, host: string | null, outcome: EgressRow["outcome"], error: string | null, connections: number) => {
+    const key = JSON.stringify([host, outcome, error]);
+    const row = rows.get(key) ?? { host, outcome, error, connections: 0, interns: [] };
+    row.connections += connections;
+    if (!row.interns.includes(intern)) row.interns.push(intern);
+    rows.set(key, row);
+  };
+  for (const { intern, records } of relays) {
+    let previous = 0;
+    for (const record of records) {
+      if (record.n > 1 && record.n !== previous + 1) add(intern, null, "unrecorded", null, record.n - 1);
+      previous = record.n;
+      add(intern, record.host, record.outcome, record.error, 1);
+    }
+  }
+  const contacted = new Set([...rows.values()].map((row) => row.host));
+  const silent = hosts.filter((host) => !contacted.has(host)).map((host): EgressRow => ({ host, outcome: null, error: null, connections: 0, interns: [] }));
+  const rank = (row: EgressRow) => (row.host === null ? hosts.length + 1 : hosts.includes(row.host) ? hosts.indexOf(row.host) : hosts.length);
+  return [...rows.values(), ...silent].sort((a, b) => rank(a) - rank(b));
 }
 
 const markdown = new Set(["\\", "`", "*", "_", "[", "]", "!", "#", "|", "~"]);
@@ -87,8 +114,9 @@ function section(group: Group, interns: string[]) {
   return lines;
 }
 
-export function renderReport(state: RunState, groups: Group[], rejected: Rejected[]): { markdown: string; json: unknown } {
+export function renderReport(state: RunState, groups: Group[], rejected: Rejected[], egress: Egress): { markdown: string; json: unknown } {
   const rows = groups.map((group) => ({ group, interns: reproductions(group) }));
+  const connections = egressRows(egress);
   const confirmed = rows.filter((row) => row.interns.length >= 2);
   const seenOnce = rows.filter((row) => row.interns.length < 2);
   const role = (name: InternState["role"]) => state.interns.filter((intern) => intern.role === name).length;
@@ -138,6 +166,14 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
       );
     }
   }
+  lines.push("", "## Egress connections", "");
+  if (connections.length === 0) lines.push("No connection went through a relay.");
+  else {
+    lines.push("| Host | Outcome | Error | Connections | Interns |", "| --- | --- | --- | --- | --- |");
+    for (const row of connections) {
+      lines.push(`| ${[row.host, row.outcome ?? "no connection", row.error, row.connections, row.interns.join(", ")].map(cell).join(" | ")} |`);
+    }
+  }
 
   return {
     markdown: stripControl(`${lines.join("\n")}\n`),
@@ -152,6 +188,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
       })),
       rejected,
       interns: state.interns,
+      egress: connections,
     },
   };
 }

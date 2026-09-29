@@ -1,11 +1,11 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, stat, statfs } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { capture, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
-import type { GeneratedFile, Mount } from "./types.ts";
+import { relayOutcomes, type GeneratedFile, type Mount, type RelayRecord } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
 export type EnvironmentSpec = {
@@ -467,14 +467,36 @@ async function projectObjects(project: string): Promise<string[]> {
   return left.join("\n").split("\n").filter((id) => id !== "");
 }
 
-async function down(project: string): Promise<void> {
-  await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
+const relaySchema = z.object({ n: z.number().int().positive(), host: z.string().nullable(), outcome: z.enum(relayOutcomes), error: z.string().nullable() });
+
+export function relayLog(runDir: string, name: string): string {
+  return join(runDir, "interns", name, "relay.jsonl");
+}
+
+export async function readRelayLog(file: string): Promise<RelayRecord[]> {
+  if (!existsSync(file)) return [];
+  const lines = (await Bun.file(file).text()).split("\n").filter((line) => line !== "");
+  return lines.map((line) => relaySchema.parse(JSON.parse(line)));
+}
+
+async function saveRelayLog(project: string, file: string): Promise<void> {
+  const labels = ["--filter", `label=com.docker.compose.project=${project}`, "--filter", "label=com.docker.compose.service=qa-relay"];
+  const ids = (await execute(["docker", "ps", "-aq", ...labels])).split("\n").filter((id) => id !== "");
+  for (const id of ids) await appendFile(file, await execute(["docker", "logs", id]));
+}
+
+async function down(project: string, relay: string): Promise<void> {
+  try {
+    await saveRelayLog(project, relay);
+  } finally {
+    await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
+  }
   const ids = await projectObjects(project);
   if (ids.length > 0) throw new Error(`docker compose down left objects of ${project} behind: ${ids.join(", ")}`);
 }
 
-export async function stopProject(project: string): Promise<void> {
-  if ((await projectObjects(project)).length > 0) await down(project);
+export async function stopProject(project: string, relay: string): Promise<void> {
+  if ((await projectObjects(project)).length > 0) await down(project, relay);
 }
 
 async function removeImages(prefixes: string[]): Promise<void> {
@@ -488,7 +510,7 @@ async function removeAsRoot(dir: string, image: string, paths: string[]): Promis
 }
 
 export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<void> {
-  await down(project);
+  await down(project, relayLog(runDir, name));
   await removeImages([`vsc-${project}-`]);
   await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
   await saveDisks(runDir, name, project, image);
@@ -539,7 +561,7 @@ export async function removeCopies(runDir: string, runId: string, image: string)
   if (errors.length > 0) throw new Error(`Saving the output disks of ${runDir} failed:\n${errors.join("\n")}`);
 }
 
-export async function stopRun(runId: string): Promise<void> {
+export async function stopRun(runDir: string, runId: string): Promise<void> {
   const prefix = `qa-${runId}-`;
   const listing = ["--filter", "label=com.docker.compose.project", "--format", '{{.Label "com.docker.compose.project"}}'];
   const found = await Promise.all([
@@ -548,7 +570,7 @@ export async function stopRun(runId: string): Promise<void> {
     execute(["docker", "volume", "ls", ...listing]),
   ]);
   const projects = [...new Set(found.join("\n").split("\n"))].filter((project) => project.startsWith(prefix));
-  const results = await Promise.allSettled(projects.map(down));
+  const results = await Promise.allSettled(projects.map((project) => down(project, relayLog(runDir, project.slice(prefix.length)))));
   const errors = results.flatMap((result) => (result.status === "rejected" ? [String(result.reason)] : []));
   if (errors.length > 0) throw new Error(`Teardown of run ${runId} failed:\n${errors.join("\n")}`);
   await removeImages([prefix, `vsc-${prefix}`]);

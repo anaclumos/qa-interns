@@ -7,6 +7,8 @@ import {
   environmentMemory,
   freeSlot,
   freeSlots,
+  readRelayLog,
+  relayLog,
   removeCopies,
   runnerEnv,
   saveDisks,
@@ -513,7 +515,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
   const finish = once(async (): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     try {
-      await stopProject(project);
+      await stopProject(project, relayLog(opts.runDir, opts.name));
       await saveDisks(opts.runDir, opts.name, project, opts.runnerImage);
     } catch (reason) {
       teardowns.push(message(reason));
@@ -582,10 +584,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let findings: Finding[] = [];
   let rejected: Rejected[] = [];
   let groups: Group[] | null = null;
+  let egress: string[] = [];
 
   const finish = once(async (error: string | null): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
-    for (const step of [() => stopRun(runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
+    for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
         await step();
       } catch (reason) {
@@ -597,7 +600,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
-    const report = renderReport(state, groups ?? singles, rejected);
+    const relays = await Promise.all(state.interns.map(async (intern) => ({ intern: intern.id, records: await readRelayLog(relayLog(runDir, intern.id)) })));
+    const report = renderReport(state, groups ?? singles, rejected, { hosts: egress, relays });
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await save();
@@ -609,6 +613,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const source = join(runDir, "source");
     await exportTree(ref, source);
     const target = await loadTarget(ref, source);
+    egress = target.settings.egress;
     const memory = environmentMemory(target);
     const free = freemem();
     const slots = await freeSlots(ctx.reserved);

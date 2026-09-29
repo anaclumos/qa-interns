@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { renderReport, reproductions } from "../src/report.ts";
-import type { Finding, Group, InternState, Provider, RunState } from "../src/types.ts";
+import { renderReport, reproductions, type Egress } from "../src/report.ts";
+import type { Finding, Group, InternState, Provider, RelayRecord, RunState } from "../src/types.ts";
 
 function intern(id: string, role: InternState["role"], provider: Provider | null, status: InternState["status"], findings: number, detail: string | null): InternState {
   return {
@@ -82,6 +82,22 @@ const negative: Group = {
 
 const rejected = [{ intern: "i2", file: "interns/i2/out/findings/slow-export.json", reason: "steps must have at least one entry" }];
 
+function record(n: number, host: string | null, outcome: RelayRecord["outcome"], error: string | null = null): RelayRecord {
+  return { n, host, outcome, error };
+}
+
+const egress: Egress = {
+  hosts: ["api.pwnedpasswords.com", "ai-gateway.vercel.sh"],
+  relays: [
+    { intern: "i1", records: [record(1, "api.pwnedpasswords.com", "connected"), record(2, "api.pwnedpasswords.com", "failed", "ENOTFOUND"), record(3, "api.pwnedpasswords.com", "connected")] },
+    { intern: "i2", records: [record(40001, "api.pwnedpasswords.com", "connected"), record(40002, null, "denied"), record(1, null, "incomplete", "timeout")] },
+    { intern: "judge", records: [] },
+    { intern: "c1", records: [record(1, "x|y.example", "denied"), record(2, "api.pwnedpasswords.com", "connected")] },
+  ],
+};
+
+const none: Egress = { hosts: [], relays: [] };
+
 describe("reproductions", () => {
   test("counts distinct reporters plus the confirming intern only when it reproduced", () => {
     expect(reproductions(overlap)).toEqual(["i1", "i2", "c1"]);
@@ -92,11 +108,11 @@ describe("reproductions", () => {
 });
 
 describe("renderReport", () => {
-  const { markdown, json } = renderReport(state, [exportTotal, overlap, negative], rejected);
+  const { markdown, json } = renderReport(state, [exportTotal, overlap, negative], rejected, egress);
 
-  test("orders the sections: confirmed, seen once, rejected files, interns", () => {
+  test("orders the sections: confirmed, seen once, rejected files, interns, egress connections", () => {
     const headings = markdown.split("\n").filter((line) => line.startsWith("## "));
-    expect(headings).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"]);
+    expect(headings).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns", "## Egress connections"]);
     const at = (text: string) => markdown.indexOf(text);
     expect(at("## Confirmed")).toBeLessThan(at(`### ${overlap.findings[0]!.title}`));
     expect(at(`### ${overlap.findings[0]!.title}`)).toBeLessThan(at("## Seen once"));
@@ -105,6 +121,31 @@ describe("renderReport", () => {
     expect(at(`### ${negative.findings[0]!.title}`)).toBeLessThan(at("## Rejected finding files"));
     expect(at("## Rejected finding files")).toBeLessThan(at(rejected[0]!.file));
     expect(at(rejected[0]!.file)).toBeLessThan(at("## Interns"));
+    expect(at("## Interns")).toBeLessThan(at("## Egress connections"));
+  });
+
+  test("the egress table counts connections per host, outcome, and error, lists each egress host without connections, and counts records the relay log dropped", () => {
+    expect((json as { egress: unknown }).egress).toEqual([
+      { host: "api.pwnedpasswords.com", outcome: "connected", error: null, connections: 4, interns: ["i1", "i2", "c1"] },
+      { host: "api.pwnedpasswords.com", outcome: "failed", error: "ENOTFOUND", connections: 1, interns: ["i1"] },
+      { host: "ai-gateway.vercel.sh", outcome: null, error: null, connections: 0, interns: [] },
+      { host: "x|y.example", outcome: "denied", error: null, connections: 1, interns: ["c1"] },
+      { host: null, outcome: "unrecorded", error: null, connections: 40000, interns: ["i2"] },
+      { host: null, outcome: "denied", error: null, connections: 1, interns: ["i2"] },
+      { host: null, outcome: "incomplete", error: "timeout", connections: 1, interns: ["i2"] },
+    ]);
+    const rows = markdown.slice(markdown.indexOf("## Egress connections")).split("\n").filter((line) => line.startsWith("| "));
+    expect(rows).toEqual([
+      "| Host | Outcome | Error | Connections | Interns |",
+      "| --- | --- | --- | --- | --- |",
+      "| api.pwnedpasswords.com | connected |  | 4 | i1, i2, c1 |",
+      "| api.pwnedpasswords.com | failed | ENOTFOUND | 1 | i1 |",
+      "| ai-gateway.vercel.sh | no connection |  | 0 |  |",
+      "| x\\|y.example | denied |  | 1 | c1 |",
+      "|  | unrecorded |  | 40000 | i2 |",
+      "|  | denied |  | 1 | i2 |",
+      "|  | incomplete | timeout | 1 | i2 |",
+    ]);
   });
 
   test("a confirmed group lists its reproduction count and interns", () => {
@@ -117,7 +158,7 @@ describe("renderReport", () => {
   });
 
   test("the intern table has one row per intern and escapes pipes in cells", () => {
-    const rows = markdown.slice(markdown.indexOf("## Interns")).split("\n").filter((line) => line.startsWith("| "));
+    const rows = markdown.slice(markdown.indexOf("## Interns"), markdown.indexOf("## Egress connections")).split("\n").filter((line) => line.startsWith("| "));
     expect(rows).toHaveLength(state.interns.length + 2);
     for (const intern of state.interns) expect(rows.filter((row) => row.startsWith(`| ${intern.id} |`))).toHaveLength(1);
     expect(rows.find((row) => row.startsWith("| i2 |"))).toContain("I found \\| nothing else");
@@ -142,20 +183,22 @@ describe("renderReport", () => {
       findings: [{ ...finding("i1/bidi", "Totals \u{202e}disagree", "Row \u001b[31mred\u001b[0m"), evidence: ["interns/i1/out/evidence/a\u0007.png"] }],
       confirmation: { intern: "c1", provider: "codex", result: null, error: "adapter said \u009bno" },
     };
-    const text = renderReport(state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }]).markdown;
+    const relays = [{ intern: "i1", records: [record(1, "a\u001b[31m\u{202e}.example", "denied")] }];
+    const text = renderReport(state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }], { hosts: [], relays }).markdown;
     for (const char of ["\u{202e}", "\u001b", "\u0007", "\u009b", "\u{2066}", "\u0000"]) expect(text.includes(char)).toBe(false);
     expect(text).toContain("### Totals disagree\n");
     expect(text).toContain("> Row \\[31mred\\[0m\n");
     expect(text).toContain("- interns/i1/out/evidence/a.png\n");
     expect(text).toContain("Confirmation: c1 (codex) failed: adapter said no\n");
     expect(text).toContain("- interns/i2/out/findings/xy.json: bad input\n");
-    expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"]);
+    expect(text).toContain("| a\\[31m.example | denied |  | 1 | i1 |\n");
+    expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns", "## Egress connections"]);
   });
 
   test("agent text cannot add a heading or inline HTML", () => {
     const base = finding("i1/forged", "Totals disagree", "Row <script>alert(1)</script>\n## Interns");
     const forged: Group = { id: "g1", findings: [{ ...base, conditions: { ...base.conditions, account: "x\n\n## Interns" } }], confirmation: null };
-    const text = renderReport(state, [forged], []).markdown;
+    const text = renderReport(state, [forged], [], none).markdown;
     expect(text.split("\n").filter((line) => line.trimStart().startsWith("## Interns"))).toEqual(["## Interns"]);
     expect(text).not.toContain("<script>");
     expect(text).toContain("  - Account: x  \\#\\# Interns\n");
@@ -164,15 +207,15 @@ describe("renderReport", () => {
 
   test("agent text cannot add links or images", () => {
     const linked = finding("i1/linked", "See ![x](http://attacker.test/p.png)", "Click [here](http://attacker.test)");
-    const text = renderReport(state, [{ id: "g1", findings: [linked], confirmation: null }], []).markdown;
+    const text = renderReport(state, [{ id: "g1", findings: [linked], confirmation: null }], [], none).markdown;
     expect(text).toContain("### See \\!\\[x\\](http://attacker.test/p.png)\n");
     expect(text).toContain("> Click \\[here\\](http://attacker.test)\n");
   });
 
   test("a run with nothing to report still has a line in every section", () => {
-    const empty = renderReport({ ...state, interns: [] }, [], []).markdown;
+    const empty = renderReport({ ...state, interns: [] }, [], [], none).markdown;
     const lines = empty.split("\n");
-    const headings = ["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns"];
+    const headings = ["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns", "## Egress connections"];
     for (const heading of headings) {
       const start = lines.indexOf(heading);
       const next = lines.findIndex((line, index) => index > start && line.startsWith("## "));

@@ -129,7 +129,7 @@ async function main(args: string[]): Promise<number> {
         }
         print(`Process ${state.pid} exited.`);
       }
-      await stopRun(state.runId);
+      await stopRun(dir, state.runId);
       await removeCopies(dir, state.runId, await runnerImage());
       print(`Run ${state.runId} has no environments left.`);
       return 0;

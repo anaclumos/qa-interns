@@ -41,7 +41,7 @@ qa-interns doctor
 | `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
 | `qa-interns report [<run>]` | Prints `report.md`. |
-| `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when that process, matched by its pid and start time, is still running. Then tears down every environment the run still has, saves each output disk the run left into its folder, and deletes the run's leftover workspace copies, with containers of the current runner image. When disks or copies are left and that image does not exist, it fails; build the image with `qa-interns doctor` and run `down` again. |
+| `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when that process, matched by its pid and start time, is still running. Then tears down every environment the run still has, saves the relay log of each of those environments and each output disk the run left into its folder, and deletes the run's leftover workspace copies, with containers of the current runner image. When disks or copies are left and that image does not exist, it fails; build the image with `qa-interns doctor` and run `down` again. |
 
 `<run>` is a run id or a run directory. Without it, the command uses the most recent run.
 
@@ -150,15 +150,24 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when set):
 
-- `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the interns.
+- `report.md`: confirmed findings first, then findings seen once, then finding files that failed validation, then the interns, then the connections that target services opened through the relay.
 - `findings.json`: the same data as JSON.
 - `interns/<id>/out/`: each intern's findings and evidence (screenshots, recordings, HAR files, console logs). After a move to another login, the next attempt writes to `interns/<id>/out-2/`, the one after it to `out-3/`, and so on. The id of a finding from such an attempt names its folder, as in `i1/out-2/<slug>`.
 - `interns/<id>/transcript.jsonl`: the agent traffic of each intern.
 - `interns/<id>/adapter.log`: the error output of each intern's agent.
 - Each transcript and error log stops growing at 64 MiB. Later traffic and output are not recorded.
+- `interns/<id>/relay.jsonl`: one JSON line for each connection that a target service opened through the relay of one of the intern's environments, saved before the environment is torn down. A line has `n`, its position in the log of its relay, and `host`, `outcome`, and `error`.
 - `state.json`: the run's phase and every intern's status.
 
 A finding is confirmed when two or more interns reproduced it.
+
+The **Egress connections** section of `report.md` and the `egress` list of `findings.json` count the relayed connections of the whole run, with one row for each host, outcome, and error, and the interns whose environments opened them. An `egress` host that no target service connected to has a row with no outcome and 0 connections. The relay passes TLS through unchanged, so it counts connections, not HTTP requests, and one connection can carry many requests. The relay records a connection when its outcome is known, with one of these outcomes:
+
+- `connected`: the relay opened a connection to the host on port 443. What happens on the connection after that is not recorded.
+- `failed`: the relay did not open a connection to the host. `error` is the Node.js error code of that attempt, such as `ENOTFOUND` or `ECONNREFUSED`, or `timeout` when the relay stopped waiting after 10 seconds. `error` is empty when the target service closed the connection first.
+- `denied`: the connection did not start with a TLS handshake that names an `egress` host. `host` is the name the handshake names, and is empty when the connection did not start with a TLS handshake that names a host.
+- `incomplete`: the connection closed before it sent a complete TLS record. `error` is `timeout` when the relay closed it after 10 seconds.
+- `unrecorded`: connections whose records Docker dropped from the relay's log (see [Known limits](#known-limits)). They have no host.
 
 ## Isolation
 
@@ -186,6 +195,7 @@ A finding is confirmed when two or more interns reproduced it.
 - When a Grok token refresh fails for good, Grok deletes `auth.json` from the store, and the next run rejects the logins file until you log in to that store again.
 - Compose and the Dev Container CLI get only the variables the [target environment contract](#target-environment-contract) lists, and a Docker client configuration without `proxies`. A Docker credential helper that needs another variable, such as `DBUS_SESSION_BUS_ADDRESS`, fails the image pull with `error getting credentials`, the Dev Container CLI downloads features without the proxy variables, and a target image build runs without a proxy. A target that needs one of them lists it in `hostEnv`, and a build that needs a proxy also passes the proxy variables as build arguments.
 - BuildKit leaves the proxy build arguments out of its cache key. A target image build therefore reuses a layer that an earlier build on the host cached with the Docker client proxies, and a Dockerfile step that wrote a proxy value into that layer keeps it.
+- Docker keeps the relay's log in the same two 10 MB files as every container log, and the two files hold about 190,000 relay records. When an environment's relay records more connections, Docker drops the older file, about 95,000 records at a time, and the report counts the dropped connections as `unrecorded`.
 - The login store of a Cursor or Grok intern is a host directory outside the output disk. The runner can write any number of files there, each up to 1 GiB. The Claude and Codex credential files and the generated Codex configuration file are single host files, each capped at 1 GiB.
 
 ## Evaluation target
