@@ -833,6 +833,21 @@ describe.skipIf(!dockerAvailable)("validate", () => {
     expect(outside.stderr).toContain("- service web mounts /etc/app/../data, which resolves to /etc/data, outside the target directory");
   });
 
+  test("reject a checked setting that depends on an unset hostEnv variable in an included or extended file", async () => {
+    const root = await repo({
+      ".devcontainer/devcontainer.json": devcontainer({}, hostEnv),
+      ".devcontainer/compose.yml": "include:\n  - sub/included.yml\nservices:\n  web:\n    extends:\n      file: sub/base.yml\n      service: base\n",
+      ".devcontainer/sub/included.yml": 'services:\n  other:\n    image: nginx:1.29-alpine\n    volumes: ["${QA_INTERNS_TEST_DIR}/../data:/data"]\n',
+      ".devcontainer/sub/base.yml": 'services:\n  base:\n    image: nginx:1.29-alpine\n    volumes: ["${QA_INTERNS_TEST_DIR}/../data:/data"]\n',
+    });
+    expect(await validate(root)).toEqual({
+      code: 1,
+      stdout: "",
+      stderr:
+        'qa-interns: customizations["qa-interns"].hostEnv names QA_INTERNS_TEST_KEY, QA_INTERNS_TEST_DIR, which the environment of qa-interns does not set, and these checked settings depend on one or more of them:\n- volumes of service other\n- volumes of service web\n',
+    });
+  });
+
   test("reject unsafe Compose settings while a hostEnv variable is unset", async () => {
     const compose = "services:\n  web:\n    image: nginx:1.29-alpine\n    container_name: shop-web\n    environment:\n      API_KEY: ${QA_INTERNS_TEST_KEY}\n";
     const result = await validate(await fixture(compose, devcontainer({}, hostEnv)));

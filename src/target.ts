@@ -253,8 +253,8 @@ export async function composeVersion(): Promise<string> {
   return version;
 }
 
-async function render(projectName: string, files: string[], env?: Record<string, string | undefined>, options: string[] = []): Promise<unknown> {
-  const cmd = ["docker", "compose", "-p", projectName, ...files.flatMap((file) => ["-f", file]), "--profile", "*", "config", "--format", "json", "--no-env-resolution", ...options];
+async function render(projectName: string, files: string[], env?: Record<string, string | undefined>): Promise<unknown> {
+  const cmd = ["docker", "compose", "-p", projectName, ...files.flatMap((file) => ["-f", file]), "--profile", "*", "config", "--format", "json", "--no-env-resolution"];
   return JSON.parse(await execute(cmd, { env }));
 }
 
@@ -525,23 +525,24 @@ export async function loadTarget(ref: TargetRef, sourceDir: string, placeholders
   const hostEnv = customizations["qa-interns"].hostEnv;
   const unset = placeholders ? hostEnv.filter((name) => process.env[name] === undefined) : [];
   const files = paths.flatMap((path) => ["-f", path]);
-  const renderWith = (round: number, options: string[] = []) =>
+  const renderWith = (placeholder: (name: string) => string) =>
     withTargetEnv(
       hostEnv.filter((name) => !unset.includes(name)),
       async (hostValues) => {
-        const env = { ...hostValues, ...Object.fromEntries(unset.map((name) => [name, `./qa-interns-unset-${name}-${round}`])) };
-        const project = composeSchema.parse(await render(checkProject, paths, env, options));
+        const env = { ...hostValues, ...Object.fromEntries(unset.map((name) => [name, placeholder(name)])) };
+        const project = composeSchema.parse(await render(checkProject, paths, env));
         if (!Object.hasOwn(project.services, service)) throw new Error(`${file} names service ${service}, which is not in its Compose files`);
         const selection = await execute(
-          ["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", "--no-env-resolution", ...options, ...(runServices === undefined ? [] : [service, ...runServices])],
+          ["docker", "compose", "-p", checkProject, ...files, "config", "--format", "json", "--no-env-resolution", ...(runServices === undefined ? [] : [service, ...runServices])],
           { env },
         );
         return { project, started: composeSchema.parse(JSON.parse(selection)).services };
       },
     );
-  const { project, started } = await renderWith(1);
+  const rendered = await renderWith((name) => `/qa-interns-unset/${name}`);
+  const { project, started } = rendered;
   if (unset.length > 0) {
-    const [one, two] = [checkedSettings(await renderWith(1, ["--no-path-resolution"])), checkedSettings(await renderWith(2, ["--no-path-resolution"]))];
+    const [one, two] = [checkedSettings(rendered), checkedSettings(await renderWith((name) => `/qa-interns-unset/${name}/${name}`))];
     const dependent = [...new Set([...Object.keys(one), ...Object.keys(two)])].filter((setting) => !Bun.deepEquals(one[setting], two[setting]));
     if (dependent.length > 0) {
       throw new Error(
