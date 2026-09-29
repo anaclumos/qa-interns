@@ -23,10 +23,10 @@ import { outDir, parseGroups, readAgentFile, readConfirmation, readFindings, str
 import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
-import { renderReport } from "./report.ts";
+import { renderReplay, renderReport } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target, type TargetRef } from "./target.ts";
-import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
+import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
   dir: string;
@@ -36,6 +36,7 @@ export type RunOptions = {
   minutes: number;
   confirmMinutes: number;
   loginsFile: string;
+  replay: Replay | null;
   runnerImage(): Promise<string>;
   print(line: string): void;
 };
@@ -658,7 +659,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
   let findings: Finding[] = [];
   let rejected: Rejected[] = [];
-  let groups: Group[] | null = null;
+  let groups: Group[] | null = opts.replay?.groups ?? null;
 
   const finish = once(async (error: string | null): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
@@ -674,7 +675,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
-    const report = renderReport(state, groups ?? singles, rejected);
+    const report = opts.replay === null ? renderReport(state, groups ?? singles, rejected) : renderReplay(state, opts.replay);
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await save();
@@ -690,7 +691,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const free = freemem();
     const slots = await freeSlots(ctx.reserved);
     if (slots === 0) throw new Error("No free network slot: every 10.213.x.0/23 block overlaps a Docker network or a host route");
-    const concurrency = Math.min(opts.interns, Math.floor(free / memory), scheduler.capacity(), slots);
+    const concurrency = Math.min(opts.replay?.groups.length ?? opts.interns, Math.floor(free / memory), scheduler.capacity(), slots);
     if (concurrency < 1) {
       throw new Error(`Free memory is ${(free / gib).toFixed(1)} GiB, and one environment of this target reserves ${(memory / gib).toFixed(1)} GiB`);
     }
@@ -706,40 +707,45 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     await phase("building");
     ctx.images = await buildImages(runId, target, source);
-
-    await phase("testing");
     const running = limit(concurrency);
-    const results = await settle(state.interns.map((intern) => running(() => explore(ctx, intern, target, opts.minutes))));
-    findings = results.flatMap((result) => result.findings);
-    rejected = results.flatMap((result) => result.rejected);
-    if (results.every((result) => result.outcome.status !== "done")) {
-      throw new Error(`No testing intern completed: ${state.interns.map((intern) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
-    }
 
-    await phase("grouping");
-    let members = findings.map((finding) => [finding.id]);
-    if (findings.length >= 2) {
-      state.interns.push(internState("judge", "judge", "Group duplicate findings", null));
-      await save();
-      const ids = findings.map((finding) => finding.id);
-      members = await askWith(ctx, "judge", judgePrompt(findings), "groups.json", (raw) => parseGroups(raw, ids));
+    if (groups === null) {
+      await phase("testing");
+      const results = await settle(state.interns.map((intern) => running(() => explore(ctx, intern, target, opts.minutes))));
+      findings = results.flatMap((result) => result.findings);
+      rejected = results.flatMap((result) => result.rejected);
+      if (results.every((result) => result.outcome.status !== "done")) {
+        throw new Error(`No testing intern completed: ${state.interns.map((intern) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
+      }
+
+      await phase("grouping");
+      let members = findings.map((finding) => [finding.id]);
+      if (findings.length >= 2) {
+        state.interns.push(internState("judge", "judge", "Group duplicate findings", null));
+        await save();
+        const ids = findings.map((finding) => finding.id);
+        members = await askWith(ctx, "judge", judgePrompt(findings), "groups.json", (raw) => parseGroups(raw, ids));
+      }
+      const byId = new Map(findings.map((finding) => [finding.id, finding]));
+      groups = members.map((list, index) => ({
+        id: `g${index + 1}`,
+        findings: list.map((id) => {
+          const finding = byId.get(id);
+          if (finding === undefined) throw new Error(`The judge grouped unknown finding ${id}`);
+          return finding;
+        }),
+        confirmation: null,
+      }));
     }
-    const byId = new Map(findings.map((finding) => [finding.id, finding]));
-    groups = members.map((list, index) => ({
-      id: `g${index + 1}`,
-      findings: list.map((id) => {
-        const finding = byId.get(id);
-        if (finding === undefined) throw new Error(`The judge grouped unknown finding ${id}`);
-        return finding;
-      }),
-      confirmation: null,
-    }));
 
     await phase("confirming");
     const confirmations = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id) }));
     state.interns.push(...confirmations.map((entry) => entry.intern));
     await save();
     await settle(confirmations.map(({ group, intern }) => running(() => reproduce(ctx, intern, group, target, opts.confirmMinutes))));
+    if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null)) {
+      throw new Error(`No confirming intern recorded a result: ${confirmations.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
+    }
 
     await phase("reporting");
   };
