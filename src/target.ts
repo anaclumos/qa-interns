@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 import { errorCode } from "./findings.ts";
+import { keepHostSecrets, redact } from "./secrets.ts";
 
 export type ConnectionLimits = { concurrent?: number; perMinute?: number; total?: number };
 export type QaSettings = {
@@ -16,6 +17,7 @@ export type QaSettings = {
   offLimits: string[];
   knownGaps: string[];
   hostEnv: string[];
+  secrets: { hostEnv: string[]; seed: string[] };
   egress: string[];
   connectionLimits: Record<string, ConnectionLimits>;
 };
@@ -70,13 +72,29 @@ export async function capture(cmd: string[], options: CommandOptions = {}): Prom
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (options.log !== undefined) await appendFile(options.log, stderr);
   if (options.timeout !== undefined && (code === 124 || code === 137) && performance.now() - started >= options.timeout) {
-    throw new Error(`${cmd.join(" ")} timed out after ${options.timeout / 1000} seconds: ${stderr.trim().slice(-2000)}`);
+    throw new CommandTimeout(cmd, options.timeout / 1000, stdout, stderr);
   }
   return { code, stdout, stderr };
 }
 
+export class CommandTimeout extends Error {
+  cmd: string[];
+  seconds: number;
+  stdout: string;
+  stderr: string;
+
+  constructor(cmd: string[], seconds: number, stdout: string, stderr: string) {
+    super(`${cmd.join(" ")} timed out after ${seconds} seconds: ${redact(stderr).trim().slice(-2000)}`);
+    this.name = "CommandTimeout";
+    this.cmd = cmd;
+    this.seconds = seconds;
+    this.stdout = stdout;
+    this.stderr = stderr;
+  }
+}
+
 export function failure(cmd: string[], code: number, stderr: string): Error {
-  return new Error(`${cmd.join(" ")} exited with ${code}: ${stderr.trim().slice(-2000)}`);
+  return new Error(`${cmd.join(" ")} exited with ${code}: ${redact(stderr).trim().slice(-2000)}`);
 }
 
 export async function execute(cmd: string[], options: CommandOptions = {}): Promise<string> {
@@ -161,10 +179,16 @@ const settingsSchema = z
     offLimits: z.array(z.string().min(1)).default([]),
     knownGaps: z.array(z.string().min(1)).default([]),
     hostEnv: z.array(z.string().min(1)).default([]),
+    secrets: z
+      .strictObject({ hostEnv: z.array(z.string().min(1)).default([]), seed: z.array(z.string().min(1)).default([]) })
+      .default({ hostEnv: [], seed: [] }),
     egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
     connectionLimits: z.record(z.string(), connectionLimitsSchema).default({}),
   })
   .superRefine((settings, ctx) => {
+    for (const name of settings.secrets.hostEnv) {
+      if (!settings.hostEnv.includes(name)) ctx.addIssue({ code: "custom", path: ["secrets", "hostEnv"], message: `names ${name}, which hostEnv does not list` });
+    }
     for (const host of Object.keys(settings.connectionLimits)) {
       if (!settings.egress.includes(host)) ctx.addIssue({ code: "custom", path: ["connectionLimits", host], message: `names ${host}, which egress does not list` });
     }
@@ -573,6 +597,8 @@ export async function loadTarget(ref: TargetRef, sourceDir: string, placeholders
   const checkProject = `qa-check-${crypto.randomUUID().slice(0, 8)}`;
   const hostEnv = customizations["qa-interns"].hostEnv;
   const unset = placeholders ? hostEnv.filter((name) => process.env[name] === undefined) : [];
+  const unkept = keepHostSecrets(customizations["qa-interns"].secrets.hostEnv.filter((name) => !unset.includes(name)));
+  if (unkept !== null) throw new Error(unkept);
   const files = paths.flatMap((path) => ["-f", path]);
   const renderWith = (placeholder: (name: string) => string) =>
     withTargetEnv(

@@ -5,7 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { errorCode } from "./findings.ts";
-import { capture, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
+import { keepSeedSecrets, redact } from "./secrets.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type GeneratedFile, type Mount, type RelayRecord } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
@@ -389,7 +390,7 @@ async function waitReady(ready: string, runner: string, exec: string[], env: Rec
     const status = Number(result.stdout.trim());
     if (result.code === 0 && (!url || (status >= 200 && status < 300))) return;
     if (Date.now() >= deadline) {
-      throw new Error(`The ready check ${ready} did not pass within 5 minutes: exit ${result.code}, ${url ? `status ${result.stdout.trim()}, ` : ""}${result.stderr.trim().slice(-500)}`);
+      throw new Error(`The ready check ${ready} did not pass within 5 minutes: exit ${result.code}, ${url ? `status ${result.stdout.trim()}, ` : ""}${redact(result.stderr).trim().slice(-500)}`);
     }
     await Bun.sleep(2000);
   }
@@ -422,7 +423,7 @@ export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void
   const last = up.stdout.trim().split("\n").at(-1) ?? "";
   const result = upSchema.safeParse(last.startsWith("{") ? JSON.parse(last) : null);
   if (up.code !== 0 || !result.success || result.data.outcome !== "success" || result.data.containerId === undefined) {
-    const detail = result.success ? [result.data.message, result.data.description].filter((part) => part !== undefined).join(" ") : up.stderr.trim().slice(-2000);
+    const detail = result.success ? [result.data.message, result.data.description].filter((part) => part !== undefined).join(" ") : redact(up.stderr).trim().slice(-2000);
     throw new Error(`devcontainer up for ${project} exited with ${up.code}: ${detail} (log: ${log})`);
   }
   const devContainer = result.data.containerId;
@@ -442,13 +443,24 @@ export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void
   const exec = [process.execPath, devcontainer, "exec", "--container-id", devContainer, "--workspace-folder", workspace, "--override-config", config];
   await waitReady(target.settings.ready, runner, exec, env, log);
   ready?.();
-  const output = await execute([...exec, "sh", "-c", target.settings.seed], { env, log, timeout: 10 * minute });
+  const seedCommand = [...exec, "sh", "-c", target.settings.seed];
+  const seeded = await capture(seedCommand, { env, log, timeout: 10 * minute }).then(
+    (result) => ({ stdout: result.stdout, fail: result.code === 0 ? null : () => failure(seedCommand, result.code, result.stderr) }),
+    (error: unknown) => {
+      if (!(error instanceof CommandTimeout)) throw error;
+      return { stdout: error.stdout, fail: () => new CommandTimeout(error.cmd, error.seconds, error.stdout, error.stderr) };
+    },
+  );
   let seed: unknown;
   try {
-    seed = JSON.parse(output);
+    seed = JSON.parse(seeded.stdout);
   } catch (error) {
-    throw new Error(`The seed command ${target.settings.seed} did not print one JSON document (${String(error)}); it printed: ${output.slice(0, 500)}`);
+    if (seeded.fail !== null) throw seeded.fail();
+    throw new Error(`The seed command ${target.settings.seed} did not print one JSON document (${String(error)}); it printed: ${redact(seeded.stdout).slice(0, 500)}`);
   }
+  const unkept = keepSeedSecrets(seed, target.settings.secrets.seed);
+  if (seeded.fail !== null) throw seeded.fail();
+  if (unkept !== null) throw new Error(unkept);
   await disableRestarts(project);
   return { project, runner, out: spec.runner.out, devContainer, seed };
 }

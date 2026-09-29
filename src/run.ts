@@ -27,6 +27,7 @@ import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
 import { renderReplay, renderReport, writeTickets } from "./report.ts";
+import { forgetSecrets, hasSecrets, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Confirmation, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
@@ -483,7 +484,7 @@ function internState(id: string, role: InternState["role"], charter: string, gro
 function progress(intern: InternState): string {
   if (intern.status === "starting" || intern.status === "testing") return `${intern.id} ${intern.status} on ${intern.login} (${intern.provider})`;
   if (intern.detail === null) return `${intern.id} ${intern.status}`;
-  return `${intern.id} ${intern.status}: ${oneLine(intern.detail).slice(0, 300)}`;
+  return `${intern.id} ${intern.status}: ${oneLine(redact(intern.detail)).slice(0, 300)}`;
 }
 
 function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
@@ -533,6 +534,7 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
     return result.value;
   } finally {
     for (const signal of signals) process.off(signal, handler);
+    forgetSecrets();
   }
 }
 
@@ -586,7 +588,7 @@ async function newRun(ref: TargetRef, options: RunState["options"], print: (line
   };
   const save = async () => {
     state.updatedAt = now();
-    await writeState(runDir, state);
+    await writeState(runDir, redactJson(state));
   };
   await save();
   print(runDir);
@@ -648,7 +650,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         opts.print(`Remove it with qa-interns down ${runId}.`);
       } catch (error) {
         if (!ctx.stopping) await finish(message(error));
-        throw error;
+        throw new Error(redact(message(error)));
       }
       return runDir;
     },
@@ -691,14 +693,28 @@ export async function runQa(opts: RunOptions): Promise<string> {
         teardowns.push(message(reason));
       }
     }
+    const dirs = [join(runDir, "envs"), join(runDir, "interns")];
+    if (teardowns.length > ctx.teardowns.length) {
+      if (hasSecrets()) teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}`);
+    } else {
+      try {
+        await redactFiles(dirs);
+      } catch (reason) {
+        teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}: ${message(reason)}`);
+      }
+    }
     const problems = [error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
     const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
-    const traffic = { hosts: egress, relays: logs.flat() };
-    const report = opts.replay === null ? renderReport(state, groups ?? singles, rejected, traffic, ctx.environments) : { ...renderReplay(state, opts.replay, traffic, ctx.environments), tickets: [] };
+    const traffic = redactJson({ hosts: egress, relays: logs.flat() });
+    const environments = redactJson(ctx.environments);
+    const report =
+      opts.replay === null
+        ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
+        : { ...renderReplay(redactJson(state), redactJson(opts.replay), traffic, environments), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await writeTickets(runDir, report.tickets);
@@ -787,10 +803,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
       await phases();
     } catch (error) {
       if (!ctx.stopping) await finish(message(error));
-      throw error;
+      throw new Error(redact(message(error)));
     }
     const teardown = await finish(null);
-    if (teardown !== null) throw new Error(`Teardown of run ${runId} failed: ${teardown}`);
+    if (teardown !== null) throw new Error(redact(`Teardown of run ${runId} failed: ${teardown}`));
     return runDir;
   };
 

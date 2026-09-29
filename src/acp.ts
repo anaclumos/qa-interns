@@ -3,8 +3,10 @@ import { spawn } from "node:child_process";
 import { appendFileSync, statSync } from "node:fs";
 import { Writable } from "node:stream";
 import { ReadableStream } from "node:stream/web";
+import { z } from "zod";
 import { version } from "../package.json";
 import type { ProviderSpec } from "./providers.ts";
+import { longestSecret, redact, redactAcross } from "./secrets.ts";
 
 const startupMs = 5 * 60_000;
 const logLimit = 64 * 1024 ** 2;
@@ -12,6 +14,12 @@ const lineLimit = 64 * 1024 ** 2;
 const heldReads = 1024;
 const sentLimit = 64 * 1024 ** 2;
 const lastMessageLength = 300;
+const chunkSchema = z.looseObject({
+  method: z.literal(methods.client.session.update),
+  params: z.looseObject({
+    update: z.looseObject({ sessionUpdate: z.enum(["agent_message_chunk", "agent_thought_chunk"]), content: z.looseObject({ type: z.literal("text"), text: z.string() }) }),
+  }),
+});
 
 export class AgentError extends Error {
   code: number;
@@ -71,8 +79,42 @@ export async function openSession(opts: { container: string; provider: ProviderS
     new Promise<void>((resolve) => stderr.once("close", () => resolve())),
   ]);
 
-  const record = (from: "client" | "agent", message: AnyMessage) =>
-    transcript(`${JSON.stringify({ t: new Date().toISOString(), from, message })}\n`);
+  const line = (t: string, from: "client" | "agent", message: unknown) => transcript(`${JSON.stringify({ t, from, message })}\n`);
+  const queue: { t: string; from: "client" | "agent"; message: unknown; content: { text: string } | null; bytes: number }[] = [];
+  const texts: { text: string }[] = [];
+  let queued = 0;
+  const release = (all: boolean) => {
+    const total = texts.reduce((sum, part) => sum + part.text.length, 0);
+    let final = 0;
+    let count = 0;
+    let released = 0;
+    for (const entry of queue) {
+      if (entry.content !== null) {
+        if (!all && total - (final + entry.content.text.length) < longestSecret() - 1) break;
+        final += entry.content.text.length;
+        released += 1;
+      }
+      count += 1;
+    }
+    redactAcross(texts, final);
+    texts.splice(0, released);
+    for (const entry of queue.splice(0, count)) {
+      queued -= entry.bytes;
+      line(entry.t, entry.from, entry.message);
+    }
+  };
+  const record = (from: "client" | "agent", message: AnyMessage) => {
+    const parsed = from === "agent" ? chunkSchema.safeParse(message) : null;
+    const chunk = parsed?.success && parsed.data.params.update.content.text !== "" ? parsed.data : null;
+    const entry = { t: new Date().toISOString(), from, message: chunk ?? message, content: chunk?.params.update.content ?? null, bytes: 0 };
+    queue.push(entry);
+    if (entry.content !== null) texts.push(entry.content);
+    release(!(from === "agent" && "method" in message && message.method === methods.client.session.update));
+    if (queue.at(-1) !== entry) return;
+    entry.bytes = JSON.stringify(entry.message).length;
+    queued += entry.bytes;
+    if (queued > lineLimit) release(true);
+  };
   const overlong = new Error(`${argv.join(" ")} printed more than ${lineLimit / 1024 ** 2} MiB without a newline`);
   const oversent = new Error(`qa-interns sent more than ${sentLimit / 1024 ** 2} MiB to ${argv.join(" ")}`);
   let unterminated = 0;
@@ -155,13 +197,14 @@ export async function openSession(opts: { container: string; provider: ProviderS
       await exited;
       clearTimeout(kill);
       connection.close();
+      release(true);
     })());
 
   const failure = async (error: unknown) => {
     if (error instanceof RequestError) return new AgentError(error.code, error.message, error.data);
     await close();
     if (error === overlong || error === oversent) return error;
-    const stderr = (await Bun.file(opts.adapterLog).text()).slice(-2000);
+    const stderr = redact(await Bun.file(opts.adapterLog).text()).slice(-2000);
     return new Error(`${argv.join(" ")} exited with ${child.exitCode ?? child.signalCode}: ${stderr}`, { cause: error });
   };
 
@@ -193,19 +236,21 @@ export async function openSession(opts: { container: string; provider: ProviderS
       async prompt(text) {
         let toolCalls = 0;
         let lastMessage = "";
+        let complete = false;
         const drain = async () => {
           for (;;) {
             const message = await session.nextUpdate();
             if (message.kind === "stop") return;
             if (message.update.sessionUpdate === "tool_call") toolCalls += 1;
-            if (message.update.sessionUpdate === "agent_message_chunk" && message.update.content.type === "text") {
-              lastMessage = (lastMessage + message.update.content.text).slice(0, lastMessageLength);
+            if (!complete && message.update.sessionUpdate === "agent_message_chunk" && message.update.content.type === "text") {
+              lastMessage += message.update.content.text;
+              complete = redact(lastMessage).length >= lastMessageLength + 2 * longestSecret();
             }
           }
         };
         try {
           const [response] = await Promise.all([session.prompt(text), drain()]);
-          return { stopReason: response.stopReason, toolCalls, lastMessage };
+          return { stopReason: response.stopReason, toolCalls, lastMessage: redact(lastMessage).slice(0, lastMessageLength) };
         } catch (error) {
           throw await failure(error);
         }

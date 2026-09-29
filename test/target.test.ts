@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, readlink, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { forgetSecrets, redact } from "../src/secrets.ts";
 import { exportTree, loadTarget, resolveTarget } from "../src/target.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
@@ -165,6 +166,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       offLimits: ["Do not change the password of a seeded account."],
       knownGaps: [],
       hostEnv: [],
+      secrets: { hostEnv: [], seed: [] },
       egress: [],
       connectionLimits: {},
     });
@@ -318,6 +320,20 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       const listed = devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_MOUNT"] });
       await expect(load(await fixture(compose, listed))).rejects.toThrow("service web mounts /etc, which resolves to /etc, outside the target directory");
     } finally {
+      delete process.env.QA_INTERNS_TEST_MOUNT;
+    }
+  });
+
+  test("keep the value of each secrets.hostEnv variable for redaction before a check can quote it", async () => {
+    const mount = await scratch("qa-interns-secret-mount-");
+    process.env.QA_INTERNS_TEST_MOUNT = mount;
+    try {
+      const compose = 'services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: ["${QA_INTERNS_TEST_MOUNT}:/data"]\n';
+      const listed = devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_MOUNT"], secrets: { hostEnv: ["QA_INTERNS_TEST_MOUNT"] } });
+      await expect(load(await fixture(compose, listed))).rejects.toThrow(`service web mounts ${mount}`);
+      expect(redact(`service web mounts ${mount}`)).toBe("service web mounts [redacted]");
+    } finally {
+      forgetSecrets();
       delete process.env.QA_INTERNS_TEST_MOUNT;
     }
   });
@@ -778,6 +794,7 @@ services:
       offLimits: [],
       knownGaps: [],
       hostEnv: [],
+      secrets: { hostEnv: [], seed: [] },
       egress: [],
       connectionLimits: {},
     });
@@ -813,6 +830,8 @@ services:
     ["a missing seed", { urls: settings.urls, ready: settings.ready }, "seed"],
     ["a misspelled key", { ...settings, offlimits: ["Do not delete teams."] }, "offlimits"],
     ["a hostEnv name the host does not set", { ...settings, hostEnv: ["QA_INTERNS_TEST_UNSET"] }, "hostEnv names QA_INTERNS_TEST_UNSET, which the environment of qa-interns does not set"],
+    ["a secret variable that hostEnv does not name", { ...settings, hostEnv: ["PATH"], secrets: { hostEnv: ["HOME"] } }, "names HOME, which hostEnv does not list"],
+    ["a misspelled secrets key", { ...settings, secrets: { seeds: ["password"] } }, "seeds"],
     ["a wildcard egress host", { ...settings, egress: ["*.vercel.sh"] }, "must be a lowercase host name"],
     ["an egress IP address", { ...settings, egress: ["203.0.113.7"] }, "must be a lowercase host name"],
     ["an egress IP address in short form", { ...settings, egress: ["169.16689662"] }, "must be a lowercase host name"],
@@ -866,6 +885,14 @@ describe.skipIf(!dockerAvailable)("validate", () => {
     expect(dirty.code).toBe(1);
     expect(dirty.stderr).toContain("- service web sets container_name shop-web");
     expect(await validate(root, {}, ["--dirty", "--commit", "HEAD"])).toEqual({ code: 1, stdout: "", stderr: "qa-interns: --dirty checks the working tree, so it takes no --commit\n" });
+  });
+
+  test("pass without the value of a hostEnv variable that secrets.hostEnv names", async () => {
+    const compose = "services:\n  web:\n    image: nginx:1.29-alpine\n    environment:\n      API_KEY: ${QA_INTERNS_TEST_KEY:?set the API key}\n";
+    const root = await fixture(compose, devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_KEY"], secrets: { hostEnv: ["QA_INTERNS_TEST_KEY"] } }));
+    const result = await validate(root);
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    expect(result.stdout).toEndWith("hostEnv names QA_INTERNS_TEST_KEY, which the environment of qa-interns does not set. No checked setting depends on them.\n");
   });
 
   test("pass without the value of a hostEnv variable that only the environment of a service reads", async () => {
