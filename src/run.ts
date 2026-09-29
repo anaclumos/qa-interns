@@ -372,7 +372,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
-    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes)), deadline, async (turn, idle) => {
+    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
       if (idle) {
         await note(`stopped at minute ${Math.floor((Date.now() - start) / minute)}: "${turn.lastMessage}"`);
         return null;
