@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { removeCopies, writeChromePolicy } from "../src/environment.ts";
+import { readRelayLogs, removeCopies, writeChromePolicy } from "../src/environment.ts";
 import { errorCode } from "../src/findings.ts";
 import { readReplay } from "../src/report.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
@@ -199,6 +199,7 @@ USER qa
       expect(confirmationPrompt).not.toContain(knownGap);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.egress).toEqual([]);
       expect(report.groups).toHaveLength(1);
       expect(report.groups[0]).toMatchObject({
         id: "g1",
@@ -244,6 +245,62 @@ USER qa
       const web = usage.split("\n").filter((line) => line.startsWith("| web-1 | running | "));
       expect(web).toHaveLength(3);
       for (const line of web) expect(line).toEndWith(" MiB | no | 0 |");
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "the report counts the connections that target services open through the relay, per egress host and outcome",
+    async () => {
+      const relayed = join(root, "relayed");
+      await cp(target, relayed, { recursive: true });
+      const file = join(relayed, ".devcontainer", "devcontainer.json");
+      const config = await Bun.file(file).json();
+      const settings = config.customizations["qa-interns"];
+      const calls = "await fetch('https://api.example.test/').catch(() => {}); await fetch('http://api.example.test:443/').catch(() => {});";
+      const qa = { ...settings, egress: ["api.example.test", "silent.example.test"], seed: `bun -e "${calls}" && ${settings.seed}` };
+      await Bun.write(file, JSON.stringify({ ...config, customizations: { "qa-interns": qa } }));
+      const git = ["git", "-C", relayed, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Relayed Ledger"]);
+
+      const runDir = await runQa({
+        dir: relayed,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("relayed", [{ id: "claude-1", provider: "claude" }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state.phase).toBe("done");
+      expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([
+        ["i1", "done"],
+        ["c1", "done"],
+      ]);
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.egress).toEqual([
+        { host: "api.example.test", outcome: "failed", error: "ENOTFOUND", connections: 2, interns: ["i1", "c1"] },
+        { host: "silent.example.test", outcome: null, error: null, connections: 0, interns: [] },
+        { host: null, outcome: "denied", error: null, connections: 2, interns: ["i1", "c1"] },
+      ]);
+      const markdown = await Bun.file(join(runDir, "report.md")).text();
+      expect(markdown).toContain("| api.example.test | failed | ENOTFOUND | 2 | i1, c1 |\n");
+      expect(markdown).toContain("| silent.example.test | no connection |  | 0 |  |\n");
+      for (const internId of ["i1", "c1"]) {
+        const logs = await readRelayLogs(join(runDir, "interns", internId));
+        expect(logs.map((records) => records.map((entry) => entry.n))).toEqual([[1, 2]]);
+      }
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
@@ -429,6 +486,45 @@ USER qa
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, and a run fails when every block overlaps one",
+    async () => {
+      const third = 4 * Math.floor(Math.random() * 64);
+      const subnet = `10.214.${third}.0/22`;
+      const blockers: string[] = [];
+      const block = async (range: string) => {
+        const name = `qair-f-e2e-${id}-range-${blockers.length}`;
+        await execute(["docker", "network", "create", "--internal", "--subnet", range, name]);
+        blockers.push(name);
+      };
+      const previous = process.env.QA_INTERNS_SUBNET;
+      process.env.QA_INTERNS_SUBNET = subnet;
+      try {
+        await block(`10.214.${third}.0/25`);
+        const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude" }]);
+        const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+        const runDir = await run();
+        const state = await readState(runDir);
+        expect(state.phase).toBe("done");
+        expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([
+          ["i1", "done"],
+          ["c1", "done"],
+        ]);
+        expect(internalSubnet(runDir, "i1")).toBe(`10.214.${third + 2}.0/25`);
+        expect(internalSubnet(runDir, "c1")).toBe(`10.214.${third + 2}.0/25`);
+        expect(await leftovers(state.runId)).toEqual([]);
+
+        await block(`10.214.${third + 3}.128/25`);
+        await expect(run()).rejects.toThrow(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${subnet} overlaps a Docker network or a host route`);
+      } finally {
+        if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+        else process.env.QA_INTERNS_SUBNET = previous;
+        if (blockers.length > 0) await execute(["docker", "network", "rm", ...blockers]);
+      }
     },
     timeout,
   );

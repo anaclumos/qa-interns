@@ -183,7 +183,7 @@ async function main(args: string[]): Promise<number> {
         }
         print(`Process ${state.pid} exited.`);
       }
-      await stopRun(state.runId);
+      await stopRun(dir, state.runId);
       await removeCopies(dir, state.runId, await runnerImage());
       const after = await readState(dir);
       if (after.phase === "up") {

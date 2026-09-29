@@ -6,6 +6,14 @@ if (allow.includes("")) {
   process.exit(1);
 }
 
+const maxName = 253;
+let count = 0;
+
+function record(host, outcome, error) {
+  count += 1;
+  console.log(JSON.stringify({ n: count, host: host === null ? null : host.slice(0, maxName), outcome, error }));
+}
+
 function serverName(data) {
   const record = data.subarray(0, 5 + data.readUInt16BE(3));
   if (record[0] !== 22 || record[5] !== 1) return null;
@@ -33,32 +41,53 @@ function parse(data) {
 }
 
 const server = createServer((socket) => {
+  if (socket.localAddress === "127.0.0.1") {
+    socket.destroy();
+    return;
+  }
   let data = Buffer.alloc(0);
+  let host = null;
   let upstream = null;
-  socket.setTimeout(10_000, () => socket.destroy());
+  let recorded = false;
+  const settle = (outcome, error) => {
+    if (recorded) return;
+    recorded = true;
+    record(host, outcome, error);
+  };
+  const end = (error) => settle(upstream === null ? "incomplete" : "failed", error);
+  socket.setTimeout(10_000, () => {
+    end("timeout");
+    socket.destroy();
+  });
   socket.on("error", () => socket.destroy());
-  socket.on("close", () => upstream?.destroy());
+  socket.on("close", () => {
+    upstream?.destroy();
+    end(null);
+  });
   const read = (chunk) => {
     data = Buffer.concat([data, chunk]);
     if (data[0] === 22 && (data.length < 5 || data.length < 5 + data.readUInt16BE(3))) return;
     socket.off("data", read);
     socket.pause();
-    const name = parse(data);
-    if (name === null || !allow.includes(name)) {
-      console.log(`deny ${JSON.stringify(name)}`);
+    host = parse(data);
+    if (host === null || !allow.includes(host)) {
+      settle("denied", null);
       socket.destroy();
       return;
     }
-    console.log(`allow ${name}`);
-    upstream = connect(443, name, () => {
+    upstream = connect(443, host, () => {
+      settle("connected", null);
       socket.setTimeout(0);
       upstream.write(data);
       upstream.pipe(socket);
       socket.pipe(upstream);
     });
-    upstream.on("error", () => socket.destroy());
+    upstream.on("error", (error) => {
+      settle("failed", error.code ?? error.message);
+      socket.destroy();
+    });
   };
   socket.on("data", read);
 });
 
-server.listen(443);
+server.listen(443, "0.0.0.0");
