@@ -24,7 +24,7 @@ import { loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
 import { renderReport } from "./report.ts";
-import { redactFiles, redactJson, redactor } from "./secrets.ts";
+import { hasSecrets, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
 import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
@@ -64,7 +64,6 @@ type Context = {
   scheduler: Scheduler;
   images: Record<string, string>;
   reserved: Set<number>;
-  secrets: Set<string>;
   sessions: Set<Session>;
   startups: Limit;
   teardowns: string[];
@@ -143,7 +142,6 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     scheduler,
     images: {},
     reserved: new Set(),
-    secrets: new Set(),
     sessions: new Set(),
     startups: limit(4),
     teardowns: [],
@@ -250,7 +248,6 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
         started = true;
         return startEnvironment(environmentSpec(ctx, id, slot, target, current, count));
       });
-      for (const value of env.secrets) ctx.secrets.add(value);
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
       if (!(outcome instanceof AgentError)) return outcome;
       ctx.scheduler.exhaust(lease);
@@ -457,7 +454,7 @@ function internState(id: string, role: InternState["role"], charter: string, gro
 function progress(intern: InternState): string {
   if (intern.status === "starting" || intern.status === "testing") return `${intern.id} ${intern.status} on ${intern.login} (${intern.provider})`;
   if (intern.detail === null) return `${intern.id} ${intern.status}`;
-  return `${intern.id} ${intern.status}: ${oneLine(intern.detail).slice(0, 300)}`;
+  return `${intern.id} ${intern.status}: ${oneLine(redact(intern.detail)).slice(0, 300)}`;
 }
 
 function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
@@ -560,22 +557,22 @@ export async function runQa(opts: RunOptions): Promise<string> {
     endedAt: null,
     interns: [],
   };
-  const ctx = context(runId, runDir, "", scheduler, async (id, patch) => {
-    const intern = state.interns.find((entry) => entry.id === id);
-    if (intern === undefined) throw new Error(`Run ${runId} has no intern ${id}`);
-    const changed = (patch.status !== undefined && patch.status !== intern.status) || (patch.login !== undefined && patch.login !== intern.login);
-    Object.assign(intern, patch);
-    if (changed) opts.print(redactor(ctx.secrets)(progress(intern)));
-    await save();
-  });
   const save = async () => {
     state.updatedAt = now();
-    await writeState(runDir, redactJson(state, ctx.secrets));
+    await writeState(runDir, redactJson(state));
   };
   await save();
   opts.print(runDir);
   opts.print(`phase ${state.phase}`);
 
+  const ctx = context(runId, runDir, "", scheduler, async (id, patch) => {
+    const intern = state.interns.find((entry) => entry.id === id);
+    if (intern === undefined) throw new Error(`Run ${runId} has no intern ${id}`);
+    const changed = (patch.status !== undefined && patch.status !== intern.status) || (patch.login !== undefined && patch.login !== intern.login);
+    Object.assign(intern, patch);
+    if (changed) opts.print(progress(intern));
+    await save();
+  });
   const phase = async (next: RunPhase) => {
     checkStopping(ctx);
     state.phase = next;
@@ -598,10 +595,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
     }
     const dirs = [join(runDir, "envs"), join(runDir, "interns")];
     if (teardowns.length > ctx.teardowns.length) {
-      if (ctx.secrets.size > 0) teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}`);
+      if (hasSecrets()) teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}`);
     } else {
       try {
-        await redactFiles(dirs, ctx.secrets);
+        await redactFiles(dirs);
       } catch (reason) {
         teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}: ${message(reason)}`);
       }
@@ -611,7 +608,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
-    const report = renderReport(redactJson(state, ctx.secrets), redactJson(groups ?? singles, ctx.secrets), redactJson(rejected, ctx.secrets));
+    const report = renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected));
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await save();
@@ -622,7 +619,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     ctx.runnerImage = await opts.runnerImage();
     const source = join(runDir, "source");
     await exportTree(ref, source);
-    const target = await loadTarget(ref, source, ctx.secrets);
+    const target = await loadTarget(ref, source);
     const memory = environmentMemory(target);
     const free = freemem();
     const slots = await freeSlots(ctx.reserved);
@@ -688,10 +685,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
         await phases();
       } catch (error) {
         if (!ctx.stopping) await finish(message(error));
-        throw new Error(redactor(ctx.secrets)(message(error)));
+        throw new Error(redact(message(error)));
       }
       const teardown = await finish(null);
-      if (teardown !== null) throw new Error(redactor(ctx.secrets)(`Teardown of run ${runId} failed: ${teardown}`));
+      if (teardown !== null) throw new Error(redact(`Teardown of run ${runId} failed: ${teardown}`));
       return runDir;
     },
     async () => {

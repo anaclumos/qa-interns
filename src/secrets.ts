@@ -4,63 +4,74 @@ import { join } from "node:path";
 
 const marker = "[redacted]";
 const minLength = 8;
+const secrets = new Set<string>();
+let cached: string[] | null = null;
 
-function checked(value: string, where: string): string {
-  if (value.length < minLength) throw new Error(`${where} has fewer than ${minLength} characters, so removing it from the run directory would remove unrelated text too`);
-  return value;
+function keep(found: { value: string; where: string }[]): void {
+  for (const { value } of found) if (value.length >= minLength) secrets.add(value);
+  cached = null;
+  const short = found.find(({ value }) => value.length < minLength);
+  if (short !== undefined) throw new Error(`${short.where} has fewer than ${minLength} characters, so removing it from the run directory would remove unrelated text too`);
 }
 
-export function hostSecrets(names: string[]): string[] {
-  return names.flatMap((name) => {
+export function keepHostSecrets(names: string[]): void {
+  const found = names.map((name) => {
     const value = process.env[name];
     if (value === undefined) throw new Error(`customizations["qa-interns"].secrets.hostEnv names ${name}, which the environment of qa-interns does not set`);
-    return value === "" ? [] : [checked(value, `The value of ${name}`)];
+    return { value, where: `The value of ${name}` };
   });
+  keep(found.filter(({ value }) => value !== ""));
 }
 
-export function seedSecrets(seed: unknown, fields: string[]): string[] {
-  const found = new Set<string>();
-  const values: string[] = [];
+export function keepSeedSecrets(seed: unknown, fields: string[]): void {
+  const named = new Set<string>();
+  const found: { value: string; where: string }[] = [];
   const walk = (value: unknown, field: string | null): void => {
     if (typeof value === "string") {
-      if (field !== null && value !== "") values.push(checked(value, `A value under the seed field ${field}`));
+      if (field !== null && value !== "") found.push({ value, where: `A value under the seed field ${field}` });
       return;
     }
     if (typeof value !== "object" || value === null) return;
     for (const [key, item] of Object.entries(value)) {
       const marked = !Array.isArray(value) && fields.includes(key);
-      if (marked) found.add(key);
+      if (marked) named.add(key);
       walk(item, marked ? key : field);
     }
   };
   walk(seed, null);
-  const missing = fields.filter((field) => !found.has(field));
+  keep(found);
+  const missing = fields.filter((field) => !named.has(field));
   if (missing.length > 0) throw new Error(`customizations["qa-interns"].secrets.seed names ${missing.join(", ")}, which the seed output has no field for`);
-  return values;
 }
 
-function forms(secrets: Iterable<string>): string[] {
+function forms(): string[] {
   const escape = (text: string) => JSON.stringify(text).slice(1, -1);
-  const all = [...secrets].flatMap((value) => [value, escape(value), escape(escape(value))]);
-  return [...new Set(all)].sort((a, b) => b.length - a.length);
+  cached ??= [...new Set([...secrets].flatMap((value) => [value, escape(value), escape(escape(value))]))].sort((a, b) => b.length - a.length);
+  return cached;
 }
 
 function replace(text: string, list: string[]): string {
   return list.reduce((result, form) => result.replaceAll(form, marker), text);
 }
 
-export function redactor(secrets: Iterable<string>): (text: string) => string {
-  const list = forms(secrets);
-  return (text) => replace(text, list);
+export function hasSecrets(): boolean {
+  return secrets.size > 0;
 }
 
-export function redactJson<T>(value: T, secrets: Iterable<string>): T {
-  const redact = redactor(secrets);
+export function longestSecret(): number {
+  return forms()[0]?.length ?? 0;
+}
+
+export function redact(text: string): string {
+  return replace(text, forms());
+}
+
+export function redactJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value), (_key, item: unknown) => (typeof item === "string" ? redact(item) : item));
 }
 
-export async function redactFiles(dirs: string[], secrets: Iterable<string>): Promise<void> {
-  const list = forms(secrets).map((form) => Buffer.from(form).toString("latin1"));
+export async function redactFiles(dirs: string[]): Promise<void> {
+  const list = forms().map((form) => Buffer.from(form).toString("latin1"));
   if (list.length === 0) return;
   const walk = async (dir: string): Promise<void> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {

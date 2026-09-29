@@ -162,7 +162,7 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 
 A finding is confirmed when two or more interns reproduced it.
 
-`state.json`, `report.md`, `findings.json`, and the lines `run` prints have every value that `secrets` names replaced with `[redacted]` as they are written. When the run ends and its teardown succeeds, QA Interns replaces the values the same way in every file under `envs/` and `interns/`: the environment logs, the transcripts, the error logs, and each intern's findings and evidence. It replaces each value as written and in its JSON string escaping, applied once or twice, which covers the seed output inside a prompt in a transcript. A value in any other form stays, such as URL encoding, HTML escaping, base64, compressed data, or the pixels of a screenshot or a recording, and so does a value in a file name.
+`state.json`, `report.md`, `findings.json`, and the lines `run` prints have every value that `secrets` names replaced with `[redacted]` as they are written. An error or message that quotes part of a command's output, or of an agent's message, has the values replaced before the cut, so no part of a value is left at the cut. When the run ends and its teardown succeeds, QA Interns replaces the values the same way in every file under `envs/` and `interns/`: the environment logs, the transcripts, the error logs, and each intern's findings and evidence. It replaces each value as written and in its JSON string escaping, applied once or twice, which covers the seed output inside a prompt in a transcript. A value in any other form stays, such as URL encoding, HTML escaping, base64, compressed data, or the pixels of a screenshot or a recording, and so does a value in a file name.
 
 ## Isolation
 

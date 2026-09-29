@@ -5,6 +5,7 @@ import { Writable } from "node:stream";
 import { ReadableStream } from "node:stream/web";
 import { version } from "../package.json";
 import type { ProviderSpec } from "./providers.ts";
+import { longestSecret, redact } from "./secrets.ts";
 
 const startupMs = 5 * 60_000;
 const logLimit = 64 * 1024 ** 2;
@@ -161,7 +162,7 @@ export async function openSession(opts: { container: string; provider: ProviderS
     if (error instanceof RequestError) return new AgentError(error.code, error.message, error.data);
     await close();
     if (error === overlong || error === oversent) return error;
-    const stderr = (await Bun.file(opts.adapterLog).text()).slice(-2000);
+    const stderr = redact(await Bun.file(opts.adapterLog).text()).slice(-2000);
     return new Error(`${argv.join(" ")} exited with ${child.exitCode ?? child.signalCode}: ${stderr}`, { cause: error });
   };
 
@@ -199,13 +200,13 @@ export async function openSession(opts: { container: string; provider: ProviderS
             if (message.kind === "stop") return;
             if (message.update.sessionUpdate === "tool_call") toolCalls += 1;
             if (message.update.sessionUpdate === "agent_message_chunk" && message.update.content.type === "text") {
-              lastMessage = (lastMessage + message.update.content.text).slice(0, lastMessageLength);
+              lastMessage = (lastMessage + message.update.content.text).slice(0, lastMessageLength + longestSecret());
             }
           }
         };
         try {
           const [response] = await Promise.all([session.prompt(text), drain()]);
-          return { stopReason: response.stopReason, toolCalls, lastMessage };
+          return { stopReason: response.stopReason, toolCalls, lastMessage: redact(lastMessage).slice(0, lastMessageLength) };
         } catch (error) {
           throw await failure(error);
         }

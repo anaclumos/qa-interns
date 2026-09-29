@@ -6,7 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 import { errorCode } from "./findings.ts";
-import { hostSecrets } from "./secrets.ts";
+import { keepHostSecrets, redact } from "./secrets.ts";
 
 export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; knownGaps: string[]; hostEnv: string[]; secrets: { hostEnv: string[]; seed: string[] }; egress: string[] };
 export type TargetRef = { repo: string; path: string; commit: string };
@@ -52,13 +52,13 @@ export async function capture(cmd: string[], options: CommandOptions = {}): Prom
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (options.log !== undefined) await appendFile(options.log, stderr);
   if (options.timeout !== undefined && (code === 124 || code === 137) && performance.now() - started >= options.timeout) {
-    throw new Error(`${cmd.join(" ")} timed out after ${options.timeout / 1000} seconds: ${stderr.trim().slice(-2000)}`);
+    throw new Error(`${cmd.join(" ")} timed out after ${options.timeout / 1000} seconds: ${redact(stderr.trim()).slice(-2000)}`);
   }
   return { code, stdout, stderr };
 }
 
 export function failure(cmd: string[], code: number, stderr: string): Error {
-  return new Error(`${cmd.join(" ")} exited with ${code}: ${stderr.trim().slice(-2000)}`);
+  return new Error(`${cmd.join(" ")} exited with ${code}: ${redact(stderr.trim()).slice(-2000)}`);
 }
 
 export async function execute(cmd: string[], options: CommandOptions = {}): Promise<string> {
@@ -496,7 +496,7 @@ async function checkComposeReferences(root: string, composePaths: string[]): Pro
   }
 }
 
-export async function loadTarget(ref: TargetRef, sourceDir: string, secrets: Set<string>): Promise<Target> {
+export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Target> {
   const file = join(sourceDir, ".devcontainer", "devcontainer.json");
   const object = z.record(z.string(), z.unknown()).safeParse(Bun.JSONC.parse(await Bun.file(file).text()));
   if (!object.success) throw new Error(`${file} is not a JSON object`);
@@ -508,7 +508,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string, secrets: Set
   const parsed = configSchema.safeParse(config);
   if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
   const { dockerComposeFile, service, runServices, customizations } = parsed.data;
-  for (const value of hostSecrets(customizations["qa-interns"].secrets.hostEnv)) secrets.add(value);
+  keepHostSecrets(customizations["qa-interns"].secrets.hostEnv);
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
   const root = await realpath(sourceDir);
   const paths = composeFiles.map((entry) => resolve(sourceDir, ".devcontainer", entry));

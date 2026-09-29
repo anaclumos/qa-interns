@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { redact } from "../src/secrets.ts";
 import { exportTree, loadTarget, resolveTarget } from "../src/target.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
@@ -61,11 +62,11 @@ function fixture(compose: string, config = devcontainer()): Promise<string> {
   return repo({ ".devcontainer/devcontainer.json": config, ".devcontainer/compose.yml": compose });
 }
 
-async function load(root: string, secrets = new Set<string>()) {
+async function load(root: string) {
   const ref = await resolveTarget(root, "HEAD");
   const source = await scratch("qa-interns-source-");
   await exportTree(ref, source);
-  return loadTarget(ref, source, secrets);
+  return loadTarget(ref, source);
 }
 
 describe("resolveTarget and exportTree", () => {
@@ -288,15 +289,14 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
     }
   });
 
-  test("add the value of each secrets.hostEnv variable to the run's secrets before a check can quote it", async () => {
+  test("keep the value of each secrets.hostEnv variable for redaction before a check can quote it", async () => {
     const mount = await scratch("qa-interns-secret-mount-");
     process.env.QA_INTERNS_TEST_MOUNT = mount;
     try {
       const compose = 'services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: ["${QA_INTERNS_TEST_MOUNT}:/data"]\n';
       const listed = devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_MOUNT"], secrets: { hostEnv: ["QA_INTERNS_TEST_MOUNT"] } });
-      const secrets = new Set<string>();
-      await expect(load(await fixture(compose, listed), secrets)).rejects.toThrow(`service web mounts ${mount}`);
-      expect([...secrets]).toEqual([mount]);
+      await expect(load(await fixture(compose, listed))).rejects.toThrow(`service web mounts ${mount}`);
+      expect(redact(`service web mounts ${mount}`)).toBe("service web mounts [redacted]");
     } finally {
       delete process.env.QA_INTERNS_TEST_MOUNT;
     }

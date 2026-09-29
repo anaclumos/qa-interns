@@ -4,7 +4,7 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { seedSecrets } from "./secrets.ts";
+import { keepSeedSecrets, redact } from "./secrets.ts";
 import { capture, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
 import type { GeneratedFile, Mount } from "./types.ts";
 
@@ -19,7 +19,7 @@ export type EnvironmentSpec = {
   runner: RunnerSpec;
   egress: string[];
 };
-export type Environment = { project: string; runner: string; out: string; devContainer: string | null; seed: unknown; secrets: string[] };
+export type Environment = { project: string; runner: string; out: string; devContainer: string | null; seed: unknown };
 
 const devcontainer = join(dirname(fileURLToPath(import.meta.resolve("@devcontainers/cli/package.json"))), "devcontainer.js");
 const gib = 1024 ** 3;
@@ -355,7 +355,7 @@ async function waitReady(ready: string, runner: string, exec: string[], env: Rec
     const status = Number(result.stdout.trim());
     if (result.code === 0 && (!url || (status >= 200 && status < 300))) return;
     if (Date.now() >= deadline) {
-      throw new Error(`The ready check ${ready} did not pass within 5 minutes: exit ${result.code}, ${url ? `status ${result.stdout.trim()}, ` : ""}${result.stderr.trim().slice(-500)}`);
+      throw new Error(`The ready check ${ready} did not pass within 5 minutes: exit ${result.code}, ${url ? `status ${result.stdout.trim()}, ` : ""}${redact(result.stderr.trim()).slice(-500)}`);
     }
     await Bun.sleep(2000);
   }
@@ -370,7 +370,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const tmp = join(dir, "tmp");
   if (spec.target === null) {
     await execute(["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds], { env: { ...process.env, DOCKER_CONFIG: await dockerConfig(tmp) }, log });
-    return { project, runner: await runnerId(project), out: spec.runner.out, devContainer: null, seed: null, secrets: [] };
+    return { project, runner: await runnerId(project), out: spec.runner.out, devContainer: null, seed: null };
   }
   const target = spec.target;
   const env = await targetEnv(target.settings.hostEnv, tmp);
@@ -387,7 +387,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const last = up.stdout.trim().split("\n").at(-1) ?? "";
   const result = upSchema.safeParse(last.startsWith("{") ? JSON.parse(last) : null);
   if (up.code !== 0 || !result.success || result.data.outcome !== "success" || result.data.containerId === undefined) {
-    const detail = result.success ? [result.data.message, result.data.description].filter((part) => part !== undefined).join(" ") : up.stderr.trim().slice(-2000);
+    const detail = result.success ? [result.data.message, result.data.description].filter((part) => part !== undefined).join(" ") : redact(up.stderr.trim()).slice(-2000);
     throw new Error(`devcontainer up for ${project} exited with ${up.code}: ${detail} (log: ${log})`);
   }
   const devContainer = result.data.containerId;
@@ -411,11 +411,11 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   try {
     seed = JSON.parse(output);
   } catch (error) {
-    throw new Error(`The seed command ${target.settings.seed} did not print one JSON document (${String(error)}); it printed: ${output.slice(0, 500)}`);
+    throw new Error(`The seed command ${target.settings.seed} did not print one JSON document (${String(error)}); it printed: ${redact(output).slice(0, 500)}`);
   }
-  const secrets = seedSecrets(seed, target.settings.secrets.seed);
+  keepSeedSecrets(seed, target.settings.secrets.seed);
   await disableRestarts(project);
-  return { project, runner, out: spec.runner.out, devContainer, seed, secrets };
+  return { project, runner, out: spec.runner.out, devContainer, seed };
 }
 
 async function disableRestarts(project: string): Promise<void> {
