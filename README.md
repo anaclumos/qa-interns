@@ -39,6 +39,7 @@ qa-interns doctor
 | --- | --- |
 | `qa-interns doctor [--logins <file>]` | Checks Docker, Compose, the isolated network mode, the Dev Container CLI, the runner image and its agents, and the logins. Builds the runner image when it is missing. |
 | `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. |
+| `qa-interns replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]` | Hands each confirmed group of the earlier run to a confirming intern against that run's target at the commit (default `HEAD`, 10 minutes per confirmation). See [Replay](#replay). Prints the run directory first. |
 | `qa-interns up <target-dir> [--commit <rev>]` | Starts one environment of the target at the commit (default `HEAD`) with no interns, runs its `ready` check and `seed`, and leaves it running. Prints the run directory first, then the Compose project, the IDs of the runner and the dev container, and the seed output. When a step fails, it tears the environment down. `qa-interns down` removes the environment. |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
 | `qa-interns report [<run>]` | Prints `report.md`. |
@@ -167,6 +168,12 @@ A finding is confirmed when two or more interns reproduced it.
 
 `state.json`, `report.md`, `findings.json`, and the lines `run` prints have every value that `secrets` names replaced with `[redacted]` as they are written. An error or message that quotes part of a command's output, or of an agent's message, has the values replaced before the cut, so no part of a value is left at the cut. When the run ends and its teardown succeeds, QA Interns replaces the values the same way in every file under `envs/` and `interns/`: the environment logs, the transcripts, the error logs, and each intern's findings and evidence. It replaces each value as written and in its JSON string escaping, applied once or twice, which covers the seed output inside a prompt in a transcript. A value in any other form stays, such as URL encoding, HTML escaping, base64, compressed data, or the pixels of a screenshot or a recording, and so does a value in a file name.
 
+## Replay
+
+`qa-interns replay <run>` reruns the confirmed findings of an earlier run against a fresh copy of the target, for example at the commit of a change. It resolves `--commit` in the repository that the earlier run tested, then exports, checks, and builds the target at the earlier run's path, as steps 1 and 2 of a run do. It hands the first finding of each confirmed group to a confirming intern in a fresh environment, as step 6 does, and runs no testing intern and no judge. `--group <id>` limits the replay to one confirmed group; repeat it to name more. The replay fails when no intern records a result for any group.
+
+A replay is a run of its own, with its own run directory, and `status`, `report`, and `down` work on it. Its `report.md` lists the groups that the interns reproduced, then the groups that they did not reproduce, then the groups that no intern checked. Each group keeps the id it has in the earlier run and shows the finding the intern followed and the intern's confirmation. `findings.json` carries the same data. Each finding in it is as the earlier run recorded it, so its evidence paths are relative to the earlier run's directory. A replay cannot be replayed; replay the earlier run again.
+
 ## Isolation
 
 - Every environment is its own Compose project with its networks in its own `/23` block of `10.213.0.0/16`. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. An environment that `up` starts has no proxy and no second network. When the target lists `egress` hosts, the target services and the relay share a third internal network. Only the proxy and the relay join the network that reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
@@ -196,6 +203,9 @@ A finding is confirmed when two or more interns reproduced it.
 - A run whose teardown fails keeps the values that `secrets` names in the files under `envs/` and `interns/`, and its error says so. A run that ends without its teardown, such as one stopped with SIGKILL, keeps them too. `down` does not remove them.
 - `up` prints the seed output unchanged, so the person who uses the environment has the seeded accounts, as interns do. The files of an environment that `up` started keep the values that `secrets` names, because `down` runs in another process, which never read the seed output.
 - An environment whose seed output is not one JSON document fails with an error that quotes the output. That output has no fields for `secrets.seed` to name, so the quote keeps any value the target meant to mark.
+- A replay intern follows the steps as the earlier run wrote them, with the seed output of the replayed commit. When a change alters the seed output, the steps can name accounts or data that the seed no longer creates, and the intern reports what it saw.
+- A replay reads the earlier run's `findings.json`, so a value that `secrets` named there reads `[redacted]` in the steps a replay intern follows. The intern still gets the seed output of the replayed commit unchanged.
+- A replay hands each group to one intern, so a failure that shows only some of the time can land under Not reproduced.
 - The login store of a Cursor or Grok intern is a host directory outside the output disk. The runner can write any number of files there, each up to 1 GiB. The Claude and Codex credential files and the generated Codex configuration file are single host files, each capped at 1 GiB.
 
 ## Evaluation target
