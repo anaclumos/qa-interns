@@ -415,9 +415,22 @@ networks:
     expect(config.services["qa-runner"]?.environment).toMatchObject({ NO_PROXY: "localhost,127.0.0.1", AGENT_BROWSER_ALLOWED_DOMAINS: "" });
   });
 
-  test("reject an environment without egress hosts", async () => {
+  test("render no proxy and no agent network for a runner without egress hosts, and keep the relay", async () => {
+    const target = await loadTarget(ref, ledgerSource);
     const runDir = await scratch();
-    expect(() => renderOverride(spec(runDir, null, { egress: [] }), 1000, 1000)).toThrow("has no egress hosts");
+    const files = [join(ledgerSource, ".devcontainer", "compose.yml")];
+    const bare = await normalize(runDir, files, renderOverride(spec(runDir, target, { egress: [] }), 1000, 1000));
+    expect(Object.keys(bare.services).sort()).toEqual(["db", "qa-runner", "web"]);
+    expect(Object.keys(bare.services["qa-runner"]?.networks ?? {})).toEqual(["qa_internal"]);
+    expect([bare.networks.qa_agent, bare.networks.qa_egress]).toEqual([undefined, undefined]);
+
+    const relayed: Target = { ...target, settings: { ...target.settings, egress: ["api.pwnedpasswords.com"] } };
+    const config = await normalize(runDir, files, renderOverride(spec(runDir, relayed, { egress: [] }), 1000, 1000));
+    expect(Object.keys(config.services).sort()).toEqual(["db", "qa-relay", "qa-runner", "web"]);
+    expect(Object.keys(config.services["qa-runner"]?.networks ?? {})).toEqual(["qa_internal"]);
+    expect(Object.keys(config.services["qa-relay"]?.networks ?? {}).sort()).toEqual(["qa_egress", "qa_relay"]);
+    expect(config.networks.qa_agent).toBeUndefined();
+    expect(config.networks.qa_egress).toMatchObject({ ipam: { config: [{ subnet: "10.213.7.128/25" }] } });
   });
 });
 
