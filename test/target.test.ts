@@ -101,11 +101,12 @@ describe("resolveTarget and exportTree", () => {
     expect(await Bun.file(join(headDest, "untracked.txt")).exists()).toBe(false);
   });
 
-  test("export the working tree of a dirty target: tracked files as they are, untracked files, and no ignored or deleted file", async () => {
+  test("export the working tree of a dirty target: tracked files as they are, untracked files, and no ignored, deleted, or sparse-checkout-omitted file", async () => {
     const root = await repo({
       "app/.devcontainer/devcontainer.json": devcontainer(),
       "app/.gitignore": "node_modules/\n.env\n",
       "app/VERSION": "one\n",
+      "app/assets/large.bin": "large\n",
       "app/src/removed.ts": "export {};\n",
       "app/src/-C": "tracked\n",
       "other/README.md": "outside the target\n",
@@ -116,6 +117,8 @@ describe("resolveTarget and exportTree", () => {
     const head = git(root, "rev-parse", "HEAD");
     await Bun.write(join(root, "app", "VERSION"), "uncommitted\n");
     await rm(join(root, "app", "src", "removed.ts"));
+    git(root, "update-index", "--skip-worktree", "app/assets/large.bin");
+    await rm(join(root, "app", "assets"), { recursive: true });
     await Bun.write(join(root, "app", "src", "new file.ts"), "export const added = true;\n");
     await Bun.write(join(root, "app", ".env"), "SECRET=local\n");
     await Bun.write(join(root, "app", "node_modules", "dep", "index.js"), "module.exports = {};\n");

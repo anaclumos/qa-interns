@@ -1,5 +1,5 @@
 import type { Subprocess } from "bun";
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -266,10 +266,19 @@ export async function resolveTarget(dir: string, rev: string, dirty: boolean): P
   return { repo, path: prefix.endsWith("/") ? prefix.slice(0, -1) : prefix, commit, dirty };
 }
 
+function present(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR") return false;
+    throw error;
+  }
+}
+
 async function workingTreeFiles(dir: string): Promise<Buffer> {
-  const list = async (...flags: string[]) => (await execute(["git", "-C", dir, "ls-files", "-z", ...flags])).split("\0").filter((file) => file !== "");
-  const deleted = new Set(await list("--deleted"));
-  const files = (await list("--cached", "--others", "--exclude-standard", "--deduplicate")).filter((file) => !deleted.has(file));
+  const listed = await execute(["git", "-C", dir, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--deduplicate"]);
+  const files = listed.split("\0").filter((file) => file !== "" && present(join(dir, file)));
   return Buffer.from(files.map((file) => `${file}\0`).join(""));
 }
 
