@@ -72,6 +72,7 @@ The target describes its environment with a Compose-based `.devcontainer/devcont
 - `seed`: a shell command, run once in the dev container, that creates test accounts and data and prints them as one JSON document.
 - `focus` (optional): areas the project wants covered, dealt to interns before the built-in charters. A run with no more interns than focus entries deals no built-in charter; list fewer focus entries or raise `--interns` to get both.
 - `offLimits` (optional): actions interns must not take.
+- `knownGaps` (optional): known gaps of the test environment, such as a feature that has no local stand-in. The testing intern prompt lists them as areas not to report. The confirming intern prompt leaves them out, so a confirmation states only whether a finding reproduces. A finding that an intern writes about a known gap appears in the report like any other finding.
 - `hostEnv` (optional): names of variables the target takes from the environment that runs `qa-interns`. `run` fails when one of them is not set.
 - `egress` (optional): outside hosts that the target services reach over TLS on port 443, such as HTTPS, for a service that has no local stand-in, such as a hosted model API. Each entry is an exact lowercase host name; a wildcard or an IP address is rejected. When such a host needs a credential, a target service takes it from a variable that `hostEnv` names.
 
