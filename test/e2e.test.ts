@@ -19,6 +19,7 @@ const target = join(root, "repo", "eval", "ledger");
 const previousStateHome = process.env.XDG_STATE_HOME;
 const timeout = 20 * 60_000;
 const title = "Home page shows the fake defect";
+const knownGap = "The environment has no video model.";
 let built = false;
 
 type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true };
@@ -83,6 +84,13 @@ async function askOptions(runId: string, name: string): Promise<AskOptions> {
   };
 }
 
+async function firstPrompt(runDir: string, internId: string): Promise<string> {
+  const lines = (await Bun.file(join(runDir, "interns", internId, "transcript.jsonl")).text()).split("\n").filter((line) => line !== "");
+  const prompt = lines.map((line) => JSON.parse(line)).find((line) => line.from === "client" && line.message.method === "session/prompt");
+  if (prompt === undefined) throw new Error(`transcript of ${internId} has no session/prompt`);
+  return prompt.message.params.prompt.map((block: { text: string }) => block.text).join("\n");
+}
+
 function internalSubnet(runDir: string, internId: string): string {
   const network = readFileSync(join(runDir, "envs", internId, "compose.qa.yml"), "utf8")
     .split("\n")
@@ -100,7 +108,9 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     await Bun.write(join(feature, "devcontainer-feature.json"), JSON.stringify({ id: "probe-feature", version: "1.0.0", name: "Probe feature" }));
     await Bun.write(join(feature, "install.sh"), "#!/bin/sh\nset -e\n");
     const devcontainerFile = join(target, ".devcontainer", "devcontainer.json");
-    await Bun.write(devcontainerFile, JSON.stringify({ ...(await Bun.file(devcontainerFile).json()), features: { "./probe-feature": {} } }));
+    const ledger = await Bun.file(devcontainerFile).json();
+    const customizations = { "qa-interns": { ...ledger.customizations["qa-interns"], knownGaps: [knownGap] } };
+    await Bun.write(devcontainerFile, JSON.stringify({ ...ledger, customizations, features: { "./probe-feature": {} } }));
     const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
     await execute([...git, "init", "-q"]);
     await execute([...git, "add", "-A"]);
@@ -175,6 +185,10 @@ USER qa
       ]);
       expect(["i1", "i2"].map((internId) => intern(state, internId).provider).sort()).toEqual(["cursor", "grok"]);
       expect(intern(state, "judge").provider).toBe("grok");
+      const [charterPrompt, confirmationPrompt] = await Promise.all(["i1", "c1"].map((internId) => firstPrompt(runDir, internId)));
+      expect(charterPrompt).toContain(`  - ${knownGap}`);
+      expect(confirmationPrompt).toContain("/qa/out/confirmation.json");
+      expect(confirmationPrompt).not.toContain(knownGap);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups).toHaveLength(1);

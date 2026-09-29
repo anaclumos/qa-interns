@@ -8,7 +8,7 @@ import { z } from "zod";
 import { errorCode } from "./findings.ts";
 import { hostSecrets } from "./secrets.ts";
 
-export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; hostEnv: string[]; secrets: { hostEnv: string[]; seed: string[] }; egress: string[] };
+export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; knownGaps: string[]; hostEnv: string[]; secrets: { hostEnv: string[]; seed: string[] }; egress: string[] };
 export type TargetRef = { repo: string; path: string; commit: string };
 export type ComposeService = {
   build: boolean;
@@ -137,6 +137,7 @@ const settingsSchema = z
     seed: z.string().min(1),
     focus: z.array(z.string().min(1)).default([]),
     offLimits: z.array(z.string().min(1)).default([]),
+    knownGaps: z.array(z.string().min(1)).default([]),
     hostEnv: z.array(z.string().min(1)).default([]),
     secrets: z
       .strictObject({ hostEnv: z.array(z.string().min(1)).default([]), seed: z.array(z.string().min(1)).default([]) })
