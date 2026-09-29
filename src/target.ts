@@ -6,8 +6,9 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { z } from "zod";
 import { errorCode } from "./findings.ts";
+import { hostSecrets } from "./secrets.ts";
 
-export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; hostEnv: string[]; egress: string[] };
+export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; hostEnv: string[]; secrets: { hostEnv: string[]; seed: string[] }; egress: string[] };
 export type TargetRef = { repo: string; path: string; commit: string };
 export type ComposeService = {
   build: boolean;
@@ -127,17 +128,25 @@ function isHostName(value: string): boolean {
   );
 }
 
-const settingsSchema = z.strictObject({
-  urls: z
-    .record(z.string(), z.string().refine(isHttpUrl, "must be an http: or https: URL"))
-    .refine((urls) => Object.keys(urls).length > 0, "must name at least one URL"),
-  ready: z.string().min(1),
-  seed: z.string().min(1),
-  focus: z.array(z.string().min(1)).default([]),
-  offLimits: z.array(z.string().min(1)).default([]),
-  hostEnv: z.array(z.string().min(1)).default([]),
-  egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
-});
+const settingsSchema = z
+  .strictObject({
+    urls: z
+      .record(z.string(), z.string().refine(isHttpUrl, "must be an http: or https: URL"))
+      .refine((urls) => Object.keys(urls).length > 0, "must name at least one URL"),
+    ready: z.string().min(1),
+    seed: z.string().min(1),
+    focus: z.array(z.string().min(1)).default([]),
+    offLimits: z.array(z.string().min(1)).default([]),
+    hostEnv: z.array(z.string().min(1)).default([]),
+    secrets: z
+      .strictObject({ hostEnv: z.array(z.string().min(1)).default([]), seed: z.array(z.string().min(1)).default([]) })
+      .default({ hostEnv: [], seed: [] }),
+    egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
+  })
+  .refine((settings) => settings.secrets.hostEnv.every((name) => settings.hostEnv.includes(name)), {
+    error: "must name only variables that hostEnv names",
+    path: ["secrets", "hostEnv"],
+  });
 
 const configSchema = z.object({
   dockerComposeFile: z.union([z.string().min(1), z.array(z.string().min(1)).min(1)]),
@@ -486,7 +495,7 @@ async function checkComposeReferences(root: string, composePaths: string[]): Pro
   }
 }
 
-export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Target> {
+export async function loadTarget(ref: TargetRef, sourceDir: string, secrets: Set<string>): Promise<Target> {
   const file = join(sourceDir, ".devcontainer", "devcontainer.json");
   const object = z.record(z.string(), z.unknown()).safeParse(Bun.JSONC.parse(await Bun.file(file).text()));
   if (!object.success) throw new Error(`${file} is not a JSON object`);
@@ -498,6 +507,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string): Promise<Tar
   const parsed = configSchema.safeParse(config);
   if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
   const { dockerComposeFile, service, runServices, customizations } = parsed.data;
+  for (const value of hostSecrets(customizations["qa-interns"].secrets.hostEnv)) secrets.add(value);
   const composeFiles = typeof dockerComposeFile === "string" ? [dockerComposeFile] : dockerComposeFile;
   const root = await realpath(sourceDir);
   const paths = composeFiles.map((entry) => resolve(sourceDir, ".devcontainer", entry));

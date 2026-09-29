@@ -123,7 +123,7 @@ describe.skipIf(!dockerAvailable)("slots", () => {
 
 describe.skipIf(!dockerAvailable)("renderOverride", () => {
   test("isolate the Ledger target and add the runner and proxy", async () => {
-    const target = await loadTarget(ref, ledgerSource);
+    const target = await loadTarget(ref, ledgerSource, new Set());
     const runDir = await scratch();
     const environment = spec(runDir, target, { images: { web: "qa-3f9a1c2e-web:latest" } });
     const config = await normalize(runDir, [join(ledgerSource, ".devcontainer", "compose.yml")], renderOverride(environment, 1234, 2345));
@@ -240,7 +240,7 @@ networks:
     driver: macvlan
 `,
     );
-    const target = await loadTarget(ref, source);
+    const target = await loadTarget(ref, source, new Set());
     const runDir = await scratch();
     const config = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target), 1000, 1000));
 
@@ -311,7 +311,7 @@ networks:
     network_mode: "service:db"
 `,
     );
-    const target = await loadTarget(ref, source);
+    const target = await loadTarget(ref, source, new Set());
     const runDir = await scratch();
     const config = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target), 1000, 1000));
 
@@ -355,7 +355,7 @@ networks:
     image: redis:8-alpine
 `,
     );
-    const target = await loadTarget(ref, source);
+    const target = await loadTarget(ref, source, new Set());
     const runDir = await scratch();
     const config = await normalize(runDir, [join(source, ".devcontainer", "compose.yml")], renderOverride(spec(runDir, target), 1000, 1000));
     const capped = { driver: "local", options: { "max-size": "10m", "max-file": "2" } };
@@ -396,7 +396,7 @@ networks:
   back: {}
 `,
     );
-    const target = await loadTarget(ref, source);
+    const target = await loadTarget(ref, source, new Set());
     expect(target.services.api?.aliases).toEqual(["api-internal", "shop"]);
     expect(target.services.db?.aliases).toEqual([]);
     const runDir = await scratch();
@@ -422,7 +422,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
   test("add target service limits, the default for unset limits, the runner, the proxy, and the relay", async () => {
     const gib = 1024 ** 3;
     const mib = 1024 ** 2;
-    const target = await loadTarget(ref, ledgerSource);
+    const target = await loadTarget(ref, ledgerSource, new Set());
     expect(environmentMemory(target)).toBe(4 * gib + 128 * mib);
     const limited: Target = { ...target, services: { ...target.services, db: { build: false, image: "postgres:17.11-alpine", tags: [], memLimit: 512 * mib, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: true, replicas: 1 } } };
     expect(environmentMemory(limited)).toBe(3 * gib + 640 * mib);
@@ -436,7 +436,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
   test("leave inactive services out of the memory reservation and the image build", async () => {
     const gib = 1024 ** 3;
     const mib = 1024 ** 2;
-    const target = await loadTarget(ref, ledgerSource);
+    const target = await loadTarget(ref, ledgerSource, new Set());
     const profiled: Target = {
       ...target,
       services: { web: { build: true, image: null, tags: [], memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false, replicas: 1 } },
@@ -468,7 +468,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       tags: ["${scope}extra:latest"]
 `,
     );
-    const images = await buildImages(runId, await loadTarget(ref, source), source);
+    const images = await buildImages(runId, await loadTarget(ref, source, new Set()), source);
     const listed = (await execute(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])).split("\n");
     const created = listed.filter((image) => [`qa-${runId}-`, scope].some((prefix) => image.startsWith(prefix)));
     if (created.length > 0) await execute(["docker", "image", "rm", ...created]);
@@ -512,7 +512,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     image: postgres:17-alpine
 `,
     );
-    const target = await loadTarget(ref, source);
+    const target = await loadTarget(ref, source, new Set());
     const images = await buildImages(runId, target, source);
     const listed = (await execute(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])).split("\n");
     const created = listed.filter((image) => [`qa-${runId}-`, scope].some((prefix) => image.startsWith(prefix)));
@@ -553,7 +553,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     image: ${scope}app
 `,
     );
-    const failure = await buildImages(runId, await loadTarget(ref, source), source).then(
+    const failure = await buildImages(runId, await loadTarget(ref, source, new Set()), source).then(
       () => null,
       (error: unknown) => error,
     );
@@ -659,7 +659,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       process.env.QA_INTERNS_TEST_LISTED = "listed";
       process.env.QA_INTERNS_TEST_UNLISTED = "unlisted";
       try {
-        const target = await loadTarget(ref, source);
+        const target = await loadTarget(ref, source, new Set());
         const images = await buildImages(runId, target, source);
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
@@ -709,7 +709,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       const hostConfig = process.env.DOCKER_CONFIG;
       process.env.DOCKER_CONFIG = dockerConfig;
       try {
-        const target = await loadTarget(ref, source);
+        const target = await loadTarget(ref, source, new Set());
         const images = await buildImages(runId, target, source);
         await writeChromePolicy(runDir, target.settings.urls);
         const reserved = new Set<number>();
@@ -761,7 +761,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       );
       const image = await ensureRunnerImage();
       try {
-        const target = await loadTarget(ref, source);
+        const target = await loadTarget(ref, source, new Set());
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
         const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), runner }));
@@ -824,7 +824,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       const image = await ensureRunnerImage();
       const flood = 'yes "$(head -c 8000 /dev/zero | tr "\\0" x)" | head -c 67108864 > /proc/1/fd/1';
       try {
-        const target = await loadTarget(ref, source);
+        const target = await loadTarget(ref, source, new Set());
         const images = await buildImages(runId, target, source);
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
@@ -885,7 +885,7 @@ ${sleeper}    profiles: ["mail"]
       );
       const image = await ensureRunnerImage();
       try {
-        const target = await loadTarget(ref, source);
+        const target = await loadTarget(ref, source, new Set());
         expect(Object.keys(target.services).filter((name) => target.services[name]?.active).sort()).toEqual(expected);
         const images = await buildImages(runId, target, source);
         await writeChromePolicy(runDir, target.settings.urls);
@@ -924,7 +924,7 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         }),
       );
       await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, volumes: ["../certs:/certs:ro"] } } }));
-      const target = await loadTarget(ref, source);
+      const target = await loadTarget(ref, source, new Set());
       const runDir = await scratch();
       const slot = await freeSlot(new Set());
       const base = spec(runDir, target, { slot });

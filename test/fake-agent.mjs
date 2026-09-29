@@ -72,6 +72,14 @@ const listedFindings = (text) => {
   return findings;
 };
 
+const seededAccount = (text) => {
+  const fence = "```json\n";
+  const start = text.indexOf(fence);
+  if (start === -1) return undefined;
+  const block = text.slice(start + fence.length);
+  return JSON.parse(block.slice(0, block.indexOf("\n```"))).accounts?.[0];
+};
+
 const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 
 const login = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8"));
@@ -117,6 +125,8 @@ const charterTurn = async (text) => {
   if (!response.ok) throw new Error(`GET ${url} answered ${response.status}`);
   mkdirSync("/qa/out/evidence", { recursive: true });
   writeFileSync("/qa/out/evidence/page.html", await response.text());
+  writeFileSync("/qa/out/evidence/prompt.txt", text);
+  const account = seededAccount(text);
   if (text.includes("agent-browser")) {
     const browser = (...args) => execFileSync("agent-browser", args, { encoding: "utf8", env: { ...process.env, AGENT_BROWSER_SESSION: "fake" } });
     browser("open", url);
@@ -134,7 +144,7 @@ const charterTurn = async (text) => {
       browser: "fresh profile",
       network: "normal",
     },
-    steps: [`Open ${url}`],
+    steps: [`Open ${url}`, ...(account === undefined ? [] : [`Sign in as ${account.email} with the password ${account.password}.`])],
     observed: "The home page body contains the fake defect marker.",
     evidence: ["evidence/page.html"],
   });

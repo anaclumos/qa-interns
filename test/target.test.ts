@@ -61,11 +61,11 @@ function fixture(compose: string, config = devcontainer()): Promise<string> {
   return repo({ ".devcontainer/devcontainer.json": config, ".devcontainer/compose.yml": compose });
 }
 
-async function load(root: string) {
+async function load(root: string, secrets = new Set<string>()) {
   const ref = await resolveTarget(root, "HEAD");
   const source = await scratch("qa-interns-source-");
   await exportTree(ref, source);
-  return loadTarget(ref, source);
+  return loadTarget(ref, source, secrets);
 }
 
 describe("resolveTarget and exportTree", () => {
@@ -130,6 +130,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       ],
       offLimits: ["Do not change the password of a seeded account."],
       hostEnv: [],
+      secrets: { hostEnv: [], seed: [] },
       egress: [],
     });
     expect(target.composeFiles).toEqual(["compose.yml"]);
@@ -281,6 +282,20 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       expect(Object.keys((await load(await fixture(compose))).services)).toEqual(["web"]);
       const listed = devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_MOUNT"] });
       await expect(load(await fixture(compose, listed))).rejects.toThrow("service web mounts /etc, which resolves to /etc, outside the target directory");
+    } finally {
+      delete process.env.QA_INTERNS_TEST_MOUNT;
+    }
+  });
+
+  test("add the value of each secrets.hostEnv variable to the run's secrets before a check can quote it", async () => {
+    const mount = await scratch("qa-interns-secret-mount-");
+    process.env.QA_INTERNS_TEST_MOUNT = mount;
+    try {
+      const compose = 'services:\n  web:\n    image: nginx:1.29-alpine\n    volumes: ["${QA_INTERNS_TEST_MOUNT}:/data"]\n';
+      const listed = devcontainer({}, { ...settings, hostEnv: ["QA_INTERNS_TEST_MOUNT"], secrets: { hostEnv: ["QA_INTERNS_TEST_MOUNT"] } });
+      const secrets = new Set<string>();
+      await expect(load(await fixture(compose, listed), secrets)).rejects.toThrow(`service web mounts ${mount}`);
+      expect([...secrets]).toEqual([mount]);
     } finally {
       delete process.env.QA_INTERNS_TEST_MOUNT;
     }
@@ -741,6 +756,7 @@ services:
       focus: [],
       offLimits: [],
       hostEnv: [],
+      secrets: { hostEnv: [], seed: [] },
       egress: [],
     });
   });
@@ -768,6 +784,8 @@ services:
     ["a missing seed", { urls: settings.urls, ready: settings.ready }, "seed"],
     ["a misspelled key", { ...settings, offlimits: ["Do not delete teams."] }, "offlimits"],
     ["a hostEnv name the host does not set", { ...settings, hostEnv: ["QA_INTERNS_TEST_UNSET"] }, "hostEnv names QA_INTERNS_TEST_UNSET, which the environment of qa-interns does not set"],
+    ["a secret variable that hostEnv does not name", { ...settings, hostEnv: ["PATH"], secrets: { hostEnv: ["HOME"] } }, "must name only variables that hostEnv names"],
+    ["a misspelled secrets key", { ...settings, secrets: { seeds: ["password"] } }, "seeds"],
     ["a wildcard egress host", { ...settings, egress: ["*.vercel.sh"] }, "must be a lowercase host name"],
     ["an egress IP address", { ...settings, egress: ["203.0.113.7"] }, "must be a lowercase host name"],
     ["an egress IP address in short form", { ...settings, egress: ["169.16689662"] }, "must be a lowercase host name"],

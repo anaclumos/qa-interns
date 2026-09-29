@@ -4,6 +4,7 @@ import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
+import { seedSecrets } from "./secrets.ts";
 import { capture, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
 import type { GeneratedFile, Mount } from "./types.ts";
 
@@ -18,7 +19,7 @@ export type EnvironmentSpec = {
   runner: RunnerSpec;
   egress: string[];
 };
-export type Environment = { project: string; runner: string; out: string; devContainer: string | null; seed: unknown };
+export type Environment = { project: string; runner: string; out: string; devContainer: string | null; seed: unknown; secrets: string[] };
 
 const devcontainer = join(dirname(fileURLToPath(import.meta.resolve("@devcontainers/cli/package.json"))), "devcontainer.js");
 const gib = 1024 ** 3;
@@ -369,7 +370,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const tmp = join(dir, "tmp");
   if (spec.target === null) {
     await execute(["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds], { env: { ...process.env, DOCKER_CONFIG: await dockerConfig(tmp) }, log });
-    return { project, runner: await runnerId(project), out: spec.runner.out, devContainer: null, seed: null };
+    return { project, runner: await runnerId(project), out: spec.runner.out, devContainer: null, seed: null, secrets: [] };
   }
   const target = spec.target;
   const env = await targetEnv(target.settings.hostEnv, tmp);
@@ -412,8 +413,9 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   } catch (error) {
     throw new Error(`The seed command ${target.settings.seed} did not print one JSON document (${String(error)}); it printed: ${output.slice(0, 500)}`);
   }
+  const secrets = seedSecrets(seed, target.settings.secrets.seed);
   await disableRestarts(project);
-  return { project, runner, out: spec.runner.out, devContainer, seed };
+  return { project, runner, out: spec.runner.out, devContainer, seed, secrets };
 }
 
 async function disableRestarts(project: string): Promise<void> {

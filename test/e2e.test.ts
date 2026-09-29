@@ -396,6 +396,60 @@ USER qa
   );
 
   test(
+    "a run replaces every value that secrets names with [redacted] in the files it leaves and the lines it prints",
+    async () => {
+      const secret = join(root, "secret");
+      await cp(target, secret, { recursive: true });
+      const file = join(secret, ".devcontainer", "devcontainer.json");
+      const config = await Bun.file(file).json();
+      const settings = { ...config.customizations["qa-interns"], hostEnv: ["QA_SECRET_TOKEN"], secrets: { hostEnv: ["QA_SECRET_TOKEN"], seed: ["password"] } };
+      await Bun.write(file, JSON.stringify({ ...config, initializeCommand: 'echo "initialize with $QA_SECRET_TOKEN" >&2', customizations: { "qa-interns": settings } }));
+      const git = ["git", "-C", secret, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Ledger with secrets"]);
+      const token = `tok_${crypto.randomUUID()}`;
+      const passwords = ["acme-owner-pass", "acme-editor-pass", "acme-viewer-pass", "globex-owner-pass"];
+      const loginsFile = await logins("secret", [{ id: "claude-1", provider: "claude" }]);
+
+      const lines: string[] = [];
+      const previous = process.env.QA_SECRET_TOKEN;
+      process.env.QA_SECRET_TOKEN = token;
+      let runDir: string;
+      try {
+        runDir = await runQa({ dir: secret, rev: "HEAD", interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+      } finally {
+        if (previous === undefined) delete process.env.QA_SECRET_TOKEN;
+        else process.env.QA_SECRET_TOKEN = previous;
+      }
+
+      const state = await readState(runDir);
+      expect(state.phase).toBe("done");
+      const entries = await readdir(runDir, { recursive: true, withFileTypes: true });
+      const files = entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name)).filter((path) => !path.startsWith(join(runDir, "source", "")));
+      expect(files).toContain(join(runDir, "interns", "c1", "transcript.jsonl"));
+      for (const path of files) {
+        const text = readFileSync(path, "latin1");
+        expect([path, [token, ...passwords].filter((value) => text.includes(value))]).toEqual([path, []]);
+      }
+      expect([token, ...passwords].filter((value) => lines.join("\n").includes(value))).toEqual([]);
+      const text = (path: string[]) => readFileSync(join(runDir, ...path), "utf8");
+      expect(text(["envs", "i1", "env.log"])).toContain("initialize with [redacted]");
+      expect(text(["interns", "i1", "out", "evidence", "prompt.txt"])).toContain('"password": "[redacted]"');
+      expect(text(["interns", "i1", "transcript.jsonl"])).toContain('\\"password\\": \\"[redacted]\\"');
+      expect(JSON.parse(text(["interns", "i1", "out", "findings", "fake-home.json"])).steps).toContain("Sign in as owner@acme.test with the password [redacted].");
+      const report = JSON.parse(text(["findings.json"]));
+      expect(report.groups[0].findings[0].steps).toContain("Sign in as owner@acme.test with the password [redacted].");
+      expect(text(["report.md"])).toContain("Sign in as owner@acme.test with the password \\[redacted\\].");
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "an intern that fills its 1 GiB disk, partly with a deleted file it keeps open, is stopped and keeps its findings",
     async () => {
       const lines: string[] = [];
