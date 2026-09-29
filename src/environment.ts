@@ -241,7 +241,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
       `    image: ${y(spec.runner.image)}`,
       `    pull_policy: ${y("never")}`,
       `    command: ${y(["node", "/opt/qa-interns/relay.mjs"])}`,
-      `    environment: ${y({ QA_RELAY_ALLOW: relayHosts.join(",") })}`,
+      `    environment: ${y({ QA_RELAY_ALLOW: relayHosts.join(","), QA_RELAY_LIMITS: JSON.stringify(spec.target?.settings.connectionLimits ?? {}) })}`,
       `    networks: ${y({ qa_relay: { ipv4_address: relayAddress }, qa_egress: null })}`,
       `    healthcheck: ${y({ test: ["CMD", "node", "-e", relayProbe], start_period: "30s", start_interval: "500ms" })}`,
       ...hardening,

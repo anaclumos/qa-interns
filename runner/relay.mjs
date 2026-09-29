@@ -5,6 +5,20 @@ if (allow.includes("")) {
   console.error(`QA_RELAY_ALLOW must be a comma list of hosts, got ${JSON.stringify(process.env.QA_RELAY_ALLOW ?? null)}`);
   process.exit(1);
 }
+const limits = JSON.parse(process.env.QA_RELAY_LIMITS ?? "null");
+if (limits === null || typeof limits !== "object" || Array.isArray(limits) || Object.keys(limits).some((host) => !allow.includes(host))) {
+  console.error(`QA_RELAY_LIMITS must be a JSON object keyed by hosts of QA_RELAY_ALLOW, got ${JSON.stringify(process.env.QA_RELAY_LIMITS ?? null)}`);
+  process.exit(1);
+}
+const budgets = new Map(Object.entries(limits).map(([host, limit]) => [host, { limit, open: 0, opened: [], total: 0 }]));
+
+function exceeded(budget, now) {
+  while (budget.opened.length > 0 && budget.opened[0] <= now - 60_000) budget.opened.shift();
+  if (budget.limit.total !== undefined && budget.total >= budget.limit.total) return "total";
+  if (budget.limit.concurrent !== undefined && budget.open >= budget.limit.concurrent) return "concurrent";
+  if (budget.limit.perMinute !== undefined && budget.opened.length >= budget.limit.perMinute) return "perMinute";
+  return null;
+}
 
 const maxName = 253;
 let count = 0;
@@ -74,6 +88,22 @@ const server = createServer((socket) => {
       settle("denied", null);
       socket.destroy();
       return;
+    }
+    const budget = budgets.get(host);
+    if (budget !== undefined) {
+      const now = Date.now();
+      const limit = exceeded(budget, now);
+      if (limit !== null) {
+        settle("refused", limit);
+        socket.destroy();
+        return;
+      }
+      budget.open += 1;
+      budget.total += 1;
+      budget.opened.push(now);
+      socket.on("close", () => {
+        budget.open -= 1;
+      });
     }
     upstream = connect(443, host, () => {
       settle("connected", null);
