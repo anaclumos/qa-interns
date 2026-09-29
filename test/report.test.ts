@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
+import { link, mkdir, mkdtemp, rm, stat, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { renderReport, reproductions, writeTickets } from "../src/report.ts";
@@ -243,6 +243,15 @@ describe("ticket drafts", () => {
     expect(only?.body).toEndWith("## Confirmation\n\nc3 failed:\n\n```\nno login with spare capacity\n```\n");
     expect(only?.evidence).toEqual(["interns/i1/out/evidence/pagination-overlap.png"]);
   });
+
+  test("control characters between backticks cannot close a code block", () => {
+    const error = "has unknown fields x\n`\u0000`\u0000`\n![p](http://attacker.test/p.png)\n## Forged";
+    const [only] = renderReport(state, [{ ...overlap, confirmation: { intern: "c1", provider: "codex", result: null, error } }], []).tickets;
+    const html = Bun.markdown.html(only!.body);
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<h2>Forged</h2>");
+    expect(codeBlocks(html).at(-1)).toBe("has unknown fields x\n```\n![p](http://attacker.test/p.png)\n## Forged\n");
+  });
 });
 
 describe("writeTickets", () => {
@@ -252,12 +261,12 @@ describe("writeTickets", () => {
     if (root !== "") await rm(root, { recursive: true, force: true });
   });
 
-  test("copies each evidence file into the draft folder and lists the files it did not copy", async () => {
+  test("links each evidence file into the draft folder and lists the files it did not link", async () => {
     root = await mkdtemp(path.join(os.tmpdir(), "qa-interns-tickets-"));
     const runDir = path.join(root, "run");
     const evidence = (intern: string, name: string) => path.join(runDir, "interns", intern, "out", "evidence", name);
-    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
-    await Bun.write(evidence("i1", "page.png"), png);
+    await Bun.write(evidence("i1", "page.png"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]));
+    await link(evidence("i1", "page.png"), evidence("i1", "page-again.png"));
     await Bun.write(evidence("c1", "repeat.png"), "reproduction");
     await Bun.write(path.join(root, "host", "id_ed25519"), "host secret");
     await Bun.write(path.join(runDir, "secret.txt"), "run secret");
@@ -268,6 +277,8 @@ describe("writeTickets", () => {
       ...overlap.findings[0]!,
       evidence: [
         "interns/i1/out/evidence/page.png",
+        "interns/i1/out/evidence/page-again.png",
+        "interns/i1/out/evidence//page.png",
         "interns/i1/out/evidence/link.png",
         "interns/i1/out/evidence/folder/id_ed25519",
         "interns/i1/out/evidence/folder.png",
@@ -280,8 +291,9 @@ describe("writeTickets", () => {
 
     const dir = path.join(runDir, "tickets", "g1");
     expect(await Bun.file(path.join(dir, "title.txt")).text()).toBe(`${lead.title}\n`);
-    expect(await Bun.file(path.join(dir, "interns", "i1", "out", "evidence", "page.png")).bytes()).toEqual(png);
-    expect(await Bun.file(path.join(dir, "interns", "c1", "out", "evidence", "repeat.png")).text()).toBe("reproduction");
+    const inode = async (file: string) => (await stat(file)).ino;
+    for (const name of ["page.png", "page-again.png"]) expect(await inode(path.join(dir, "interns", "i1", "out", "evidence", name))).toBe(await inode(evidence("i1", "page.png")));
+    expect(await inode(path.join(dir, "interns", "c1", "out", "evidence", "repeat.png"))).toBe(await inode(evidence("c1", "repeat.png")));
     for (const name of ["link.png", "folder", "folder.png", "gone.png"]) expect(existsSync(path.join(dir, "interns", "i1", "out", "evidence", name))).toBe(false);
     expect(existsSync(path.join(dir, "secret.txt"))).toBe(false);
     const body = await Bun.file(path.join(dir, "body.md")).text();
@@ -289,9 +301,10 @@ describe("writeTickets", () => {
     expect(body.slice(tickets[0]!.body.length)).toBe(
       [
         "",
-        "## Evidence not copied",
+        "## Evidence not in this folder",
         "",
         "```",
+        "interns/i1/out/evidence//page.png: another listed path names the same file",
         "interns/i1/out/evidence/link.png: the file is a symbolic link",
         "interns/i1/out/evidence/folder/id_ed25519: its real path is not the listed path",
         "interns/i1/out/evidence/folder.png: the file is not a regular file",

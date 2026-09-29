@@ -1,5 +1,5 @@
 import path from "node:path";
-import { copyEvidence, stripControl } from "./findings.ts";
+import { linkEvidence, stripControl } from "./findings.ts";
 import type { Group, InternState, Rejected, RunState } from "./types.ts";
 
 type Ticket = { id: string; title: string; body: string; evidence: string[] };
@@ -31,14 +31,15 @@ function item(marker: string, text: string) {
 }
 
 function block(text: string) {
+  const clean = stripControl(text);
   let run = 0;
   let longest = 0;
-  for (const char of text) {
+  for (const char of clean) {
     run = char === "`" ? run + 1 : 0;
     longest = Math.max(longest, run);
   }
   const fence = "`".repeat(Math.max(3, longest + 1));
-  return [fence, ...text.split("\n"), fence];
+  return [fence, ...clean.split("\n"), fence];
 }
 
 function files(list: string[]) {
@@ -147,7 +148,7 @@ function ticket(state: RunState, group: Group, interns: string[]): Ticket {
     lines.push("Confirmation evidence:", "", ...files(outcome.result.evidence), "");
   }
   const evidence = [...new Set([...first.evidence, ...(outcome?.result?.evidence ?? [])])];
-  return { id: group.id, title: first.title, body: stripControl(lines.join("\n")), evidence };
+  return { id: group.id, title: first.title, body: lines.join("\n"), evidence };
 }
 
 export async function writeTickets(runDir: string, tickets: Ticket[]): Promise<void> {
@@ -155,10 +156,10 @@ export async function writeTickets(runDir: string, tickets: Ticket[]): Promise<v
     const dir = path.join(runDir, "tickets", draft.id);
     const missing: string[] = [];
     for (const entry of draft.evidence) {
-      const reason = await copyEvidence(runDir, entry, path.join(dir, entry));
+      const reason = await linkEvidence(runDir, entry, path.join(dir, entry));
       if (reason !== null) missing.push(`${entry}: ${reason}`);
     }
-    const body = missing.length === 0 ? draft.body : [draft.body, "## Evidence not copied", "", ...block(missing.join("\n")), ""].join("\n");
+    const body = missing.length === 0 ? draft.body : [draft.body, "## Evidence not in this folder", "", ...block(missing.join("\n")), ""].join("\n");
     await Bun.write(path.join(dir, "title.txt"), `${draft.title}\n`);
     await Bun.write(path.join(dir, "body.md"), body);
   }
