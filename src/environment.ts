@@ -130,7 +130,7 @@ function bind(source: string, target: string, readOnly: boolean) {
 }
 
 export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number): string {
-  if (spec.egress.length === 0) throw new Error(`Environment ${spec.name} has no egress hosts for qa-proxy`);
+  const proxied = spec.egress.length > 0;
   const { internal, relay, agent, egress } = slotSubnets(spec.slot);
   const relayHosts = spec.target?.settings.egress ?? [];
   const relayAddress = `10.213.${spec.slot * 2}.254`;
@@ -177,17 +177,21 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...spec.runner.mounts.map((mount) => bind(mount.source, mount.target, mount.readOnly)),
     ...spec.runner.files.map((file) => bind(generatedPath(spec, file), file.target, false)),
   ];
+  if (proxied) {
+    lines.push(
+      `  "qa-proxy":`,
+      `    image: ${y(spec.runner.image)}`,
+      `    pull_policy: ${y("never")}`,
+      `    command: ${y(["node", "/opt/qa-interns/proxy.mjs"])}`,
+      `    environment: ${y({ QA_PROXY_ALLOW: spec.egress.join(",") })}`,
+      `    networks: ${y(["qa_agent", "qa_egress"])}`,
+      ...hardening,
+      `    mem_limit: ${y("128m")}`,
+      "    cpus: 0.5",
+      "    pids_limit: 128",
+    );
+  }
   lines.push(
-    `  "qa-proxy":`,
-    `    image: ${y(spec.runner.image)}`,
-    `    pull_policy: ${y("never")}`,
-    `    command: ${y(["node", "/opt/qa-interns/proxy.mjs"])}`,
-    `    environment: ${y({ QA_PROXY_ALLOW: spec.egress.join(",") })}`,
-    `    networks: ${y(["qa_agent", "qa_egress"])}`,
-    ...hardening,
-    `    mem_limit: ${y("128m")}`,
-    "    cpus: 0.5",
-    "    pids_limit: 128",
     `  "qa-runner":`,
     `    image: ${y(spec.runner.image)}`,
     `    pull_policy: ${y("never")}`,
@@ -203,7 +207,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     `    ulimits: ${y({ fsize: outLimit })}`,
     `    mem_limit: ${y("2g")}`,
     "    cpus: 2",
-    `    networks: ${y(["qa_internal", "qa_agent"])}`,
+    `    networks: ${y(["qa_internal", ...(proxied ? ["qa_agent"] : [])])}`,
   );
   if (relayHosts.length > 0) {
     lines.push(
@@ -224,8 +228,8 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     "networks:",
     `  qa_internal: !override ${y(isolated(internal))}`,
     ...(relayHosts.length > 0 ? [`  qa_relay: !override ${y(isolated(relay))}`] : []),
-    `  qa_agent: !override ${y(isolated(agent))}`,
-    `  qa_egress: !override ${y({ ipam: { config: [{ subnet: egress }] } })}`,
+    ...(proxied ? [`  qa_agent: !override ${y(isolated(agent))}`] : []),
+    ...(proxied || relayHosts.length > 0 ? [`  qa_egress: !override ${y({ ipam: { config: [{ subnet: egress }] } })}`] : []),
   );
   return `${lines.join("\n")}\n`;
 }
@@ -329,16 +333,16 @@ async function runnerId(project: string): Promise<string> {
   return id;
 }
 
-function qaServices(target: Target): string[] {
-  return ["qa-proxy", "qa-runner", ...(target.settings.egress.length > 0 ? ["qa-relay"] : [])];
+function qaServices(spec: EnvironmentSpec, target: Target): string[] {
+  return [...(spec.egress.length > 0 ? ["qa-proxy"] : []), "qa-runner", ...(target.settings.egress.length > 0 ? ["qa-relay"] : [])];
 }
 
-function overrideConfig(target: Target, composeFile: string): Record<string, unknown> {
+function overrideConfig(spec: EnvironmentSpec, target: Target, composeFile: string): Record<string, unknown> {
   const runServices = target.config.runServices;
   return {
     ...target.config,
     dockerComposeFile: [...target.composeFiles, composeFile],
-    ...(Array.isArray(runServices) ? { runServices: [...runServices, ...qaServices(target)] } : {}),
+    ...(Array.isArray(runServices) ? { runServices: [...runServices, ...qaServices(spec, target)] } : {}),
   };
 }
 
@@ -377,7 +381,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   const workspace = join(dir, project);
   const config = join(dir, "devcontainer.json");
   await execute(["cp", "-a", "--reflink=auto", join(spec.runDir, "source"), workspace]);
-  await Bun.write(config, `${JSON.stringify(overrideConfig(target, join(dir, "compose.qa.yml")), null, 2)}\n`);
+  await Bun.write(config, `${JSON.stringify(overrideConfig(spec, target, join(dir, "compose.qa.yml")), null, 2)}\n`);
 
   const upEnv = { ...env, COMPOSE_PROJECT_NAME: project, TMPDIR: tmp };
   const up = await capture(
@@ -398,7 +402,7 @@ export async function startEnvironment(spec: EnvironmentSpec): Promise<Environme
   }
 
   const runServices = target.config.runServices;
-  const services = Array.isArray(runServices) ? [target.service, ...runServices, ...qaServices(target)] : [];
+  const services = Array.isArray(runServices) ? [target.service, ...runServices, ...qaServices(spec, target)] : [];
   await execute(
     ["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds, "--no-recreate", ...services],
     { env: upEnv, log },
