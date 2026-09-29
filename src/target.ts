@@ -8,7 +8,19 @@ import { z } from "zod";
 import { errorCode } from "./findings.ts";
 import { keepHostSecrets, redact } from "./secrets.ts";
 
-export type QaSettings = { urls: Record<string, string>; ready: string; seed: string; focus: string[]; offLimits: string[]; knownGaps: string[]; hostEnv: string[]; secrets: { hostEnv: string[]; seed: string[] }; egress: string[] };
+export type ConnectionLimits = { concurrent?: number; perMinute?: number; total?: number };
+export type QaSettings = {
+  urls: Record<string, string>;
+  ready: string;
+  seed: string;
+  focus: string[];
+  offLimits: string[];
+  knownGaps: string[];
+  hostEnv: string[];
+  secrets: { hostEnv: string[]; seed: string[] };
+  egress: string[];
+  connectionLimits: Record<string, ConnectionLimits>;
+};
 export type TargetRef = { repo: string; path: string; commit: string; dirty: boolean };
 export type ComposeService = {
   build: boolean;
@@ -152,6 +164,10 @@ function isHostName(value: string): boolean {
   );
 }
 
+const connectionLimitsSchema = z
+  .strictObject({ concurrent: z.int().positive().optional(), perMinute: z.int().positive().optional(), total: z.int().positive().optional() })
+  .refine((limits) => Object.keys(limits).length > 0, "must set concurrent, perMinute, or total");
+
 const settingsSchema = z
   .strictObject({
     urls: z
@@ -167,10 +183,15 @@ const settingsSchema = z
       .strictObject({ hostEnv: z.array(z.string().min(1)).default([]), seed: z.array(z.string().min(1)).default([]) })
       .default({ hostEnv: [], seed: [] }),
     egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
+    connectionLimits: z.record(z.string(), connectionLimitsSchema).default({}),
   })
-  .refine((settings) => settings.secrets.hostEnv.every((name) => settings.hostEnv.includes(name)), {
-    error: "must name only variables that hostEnv names",
-    path: ["secrets", "hostEnv"],
+  .superRefine((settings, ctx) => {
+    for (const name of settings.secrets.hostEnv) {
+      if (!settings.hostEnv.includes(name)) ctx.addIssue({ code: "custom", path: ["secrets", "hostEnv"], message: `names ${name}, which hostEnv does not list` });
+    }
+    for (const host of Object.keys(settings.connectionLimits)) {
+      if (!settings.egress.includes(host)) ctx.addIssue({ code: "custom", path: ["connectionLimits", host], message: `names ${host}, which egress does not list` });
+    }
   });
 
 const configSchema = z.object({

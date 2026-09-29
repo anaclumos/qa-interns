@@ -262,15 +262,20 @@ USER qa
   );
 
   test(
-    "the report counts the connections that target services open through the relay, per egress host and outcome",
+    "the report counts the connections that target services open through the relay, per egress host and outcome, with the ones a connection limit refused",
     async () => {
       const relayed = join(root, "relayed");
       await cp(target, relayed, { recursive: true });
       const file = join(relayed, ".devcontainer", "devcontainer.json");
       const config = await Bun.file(file).json();
       const settings = config.customizations["qa-interns"];
-      const calls = "await fetch('https://api.example.test/').catch(() => {}); await fetch('http://api.example.test:443/').catch(() => {});";
-      const qa = { ...settings, egress: ["api.example.test", "silent.example.test"], seed: `bun -e "${calls}" && ${settings.seed}` };
+      const calls = "for (const url of ['https://api.example.test/', 'http://api.example.test:443/', 'https://api.example.test/']) await fetch(url).catch(() => {});";
+      const qa = {
+        ...settings,
+        egress: ["api.example.test", "silent.example.test"],
+        connectionLimits: { "api.example.test": { total: 1 } },
+        seed: `bun -e "${calls}" && ${settings.seed}`,
+      };
       await Bun.write(file, JSON.stringify({ ...config, customizations: { "qa-interns": qa } }));
       const git = ["git", "-C", relayed, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
       await execute([...git, "init", "-q"]);
@@ -299,15 +304,17 @@ USER qa
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.egress).toEqual([
         { host: "api.example.test", outcome: "failed", error: "ENOTFOUND", connections: 2, interns: ["i1", "c1"] },
+        { host: "api.example.test", outcome: "refused", error: "total", connections: 2, interns: ["i1", "c1"] },
         { host: "silent.example.test", outcome: null, error: null, connections: 0, interns: [] },
         { host: null, outcome: "denied", error: null, connections: 2, interns: ["i1", "c1"] },
       ]);
       const markdown = await Bun.file(join(runDir, "report.md")).text();
       expect(markdown).toContain("| api.example.test | failed | ENOTFOUND | 2 | i1, c1 |\n");
+      expect(markdown).toContain("| api.example.test | refused | total | 2 | i1, c1 |\n");
       expect(markdown).toContain("| silent.example.test | no connection |  | 0 |  |\n");
       for (const internId of ["i1", "c1"]) {
         const logs = await readRelayLogs(join(runDir, "interns", internId));
-        expect(logs.map((records) => records.map((entry) => entry.n))).toEqual([[1, 2]]);
+        expect(logs.map((records) => records.map((entry) => entry.n))).toEqual([[1, 2, 3]]);
       }
 
       expect(await leftovers(state.runId)).toEqual([]);

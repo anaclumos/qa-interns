@@ -168,6 +168,7 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       hostEnv: [],
       secrets: { hostEnv: [], seed: [] },
       egress: [],
+      connectionLimits: {},
     });
     expect(target.composeFiles).toEqual(["compose.yml"]);
     expect(target.service).toBe("web");
@@ -795,6 +796,7 @@ services:
       hostEnv: [],
       secrets: { hostEnv: [], seed: [] },
       egress: [],
+      connectionLimits: {},
     });
   });
 
@@ -815,13 +817,20 @@ services:
     expect(target.settings.egress).toEqual(["api.pwnedpasswords.com", "ai-gateway.vercel.sh", "xn--bcher-kva.example"]);
   });
 
+  test("accept connection limits on egress hosts", async () => {
+    const connectionLimits = { "api.openai.com": { concurrent: 2, perMinute: 30, total: 300 }, "api.pwnedpasswords.com": { total: 50 } };
+    const qa = { ...settings, egress: ["api.openai.com", "api.pwnedpasswords.com", "ai-gateway.vercel.sh"], connectionLimits };
+    const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n", devcontainer({}, qa)));
+    expect(target.settings.connectionLimits).toEqual(connectionLimits);
+  });
+
   const invalid: [string, Record<string, unknown>, string][] = [
     ["a URL that is not http or https", { ...settings, urls: { app: "ftp://web:21" } }, "must be an http: or https: URL"],
     ["no URLs", { ...settings, urls: {} }, "must name at least one URL"],
     ["a missing seed", { urls: settings.urls, ready: settings.ready }, "seed"],
     ["a misspelled key", { ...settings, offlimits: ["Do not delete teams."] }, "offlimits"],
     ["a hostEnv name the host does not set", { ...settings, hostEnv: ["QA_INTERNS_TEST_UNSET"] }, "hostEnv names QA_INTERNS_TEST_UNSET, which the environment of qa-interns does not set"],
-    ["a secret variable that hostEnv does not name", { ...settings, hostEnv: ["PATH"], secrets: { hostEnv: ["HOME"] } }, "must name only variables that hostEnv names"],
+    ["a secret variable that hostEnv does not name", { ...settings, hostEnv: ["PATH"], secrets: { hostEnv: ["HOME"] } }, "names HOME, which hostEnv does not list"],
     ["a misspelled secrets key", { ...settings, secrets: { seeds: ["password"] } }, "seeds"],
     ["a wildcard egress host", { ...settings, egress: ["*.vercel.sh"] }, "must be a lowercase host name"],
     ["an egress IP address", { ...settings, egress: ["203.0.113.7"] }, "must be a lowercase host name"],
@@ -835,6 +844,11 @@ services:
     ["an egress label that ends with a hyphen", { ...settings, egress: ["api-.pwnedpasswords.com"] }, "must be a lowercase host name"],
     ["an egress label longer than 63 characters", { ...settings, egress: [`${"a".repeat(64)}.example.com`] }, "must be a lowercase host name"],
     ["an egress host longer than 253 characters", { ...settings, egress: [`${"a".repeat(63)}.`.repeat(4) + "com"] }, "must be a lowercase host name"],
+    ["a connection limit on a host egress does not list", { ...settings, egress: ["api.openai.com"], connectionLimits: { "api.anthropic.com": { total: 5 } } }, "names api.anthropic.com, which egress does not list"],
+    ["a connection limit without a limit", { ...settings, egress: ["api.openai.com"], connectionLimits: { "api.openai.com": {} } }, "must set concurrent, perMinute, or total"],
+    ["a connection limit of zero", { ...settings, egress: ["api.openai.com"], connectionLimits: { "api.openai.com": { concurrent: 0 } } }, "concurrent"],
+    ["a fractional connection limit", { ...settings, egress: ["api.openai.com"], connectionLimits: { "api.openai.com": { perMinute: 1.5 } } }, "perMinute"],
+    ["a misspelled connection limit", { ...settings, egress: ["api.openai.com"], connectionLimits: { "api.openai.com": { requests: 100 } } }, "requests"],
   ];
 
   test.each(invalid)("reject settings with %s", async (_, qa, message) => {

@@ -257,6 +257,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
             ready: "http://api:8080/ready",
             seed: "node seed.mjs",
             egress: ["api.pwnedpasswords.com", "ai-gateway.vercel.sh"],
+            connectionLimits: { "ai-gateway.vercel.sh": { concurrent: 2, total: 300 } },
           },
         },
       }),
@@ -300,7 +301,7 @@ networks:
     expect(config.services["qa-relay"]).toMatchObject({
       image: "qa-interns-runner:0.1.0",
       command: ["node", "/opt/qa-interns/relay.mjs"],
-      environment: { QA_RELAY_ALLOW: "api.pwnedpasswords.com,ai-gateway.vercel.sh" },
+      environment: { QA_RELAY_ALLOW: "api.pwnedpasswords.com,ai-gateway.vercel.sh", QA_RELAY_LIMITS: '{"ai-gateway.vercel.sh":{"concurrent":2,"total":300}}' },
       networks: { qa_relay: { ipv4_address: "10.213.6.254" }, qa_egress: null },
       healthcheck: { start_period: "30s", start_interval: "500ms" },
       logging: { driver: "local", options: { "max-size": "10m", "max-file": "2" } },
@@ -1142,6 +1143,87 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       const [file = ""] = (await readdir(saved)).filter((name) => name.startsWith("relay-"));
       const lines = (await Bun.file(join(saved, file)).text()).split("\n");
       expect(Math.max(...lines.map((line) => Buffer.byteLength(line) + 1))).toBeLessThanOrEqual(4096);
+    },
+    20 * 60_000,
+  );
+
+  test(
+    "refuse a connection past a connection limit of its egress host and record the limit",
+    async () => {
+      const image = await ensureRunnerImage();
+      const source = await scratch();
+      const certs = join(source, "certs");
+      await mkdir(certs);
+      await execute([
+        "docker", "run", "--rm", "--network", "none", "-v", `${certs}:/certs`, image,
+        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=limited.example.test",
+        "-addext", "subjectAltName=DNS:limited.example.test,DNS:rate.example.test", "-keyout", "/certs/key.pem", "-out", "/certs/cert.pem",
+      ]);
+      const connectionLimits = { "limited.example.test": { concurrent: 1, total: 3 }, "rate.example.test": { perMinute: 2 } };
+      await Bun.write(
+        join(source, ".devcontainer", "devcontainer.json"),
+        JSON.stringify({
+          dockerComposeFile: "compose.yml",
+          service: "app",
+          customizations: { "qa-interns": { urls: { app: "http://app:3000" }, ready: "true", seed: "true", egress: ["limited.example.test", "rate.example.test"], connectionLimits } },
+        }),
+      );
+      await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, volumes: ["../certs:/certs:ro"] } } }));
+      const target = await loadTarget(ref, source);
+      const runDir = await scratch();
+      const base = spec(runDir, target, { slot: await freeSlot(new Set()) });
+      const override = join(runDir, "compose.qa.yml");
+      await Bun.write(override, renderOverride({ ...base, runner: { ...base.runner, image } }, 1000, 1000));
+      const server = 'require("node:https").createServer({ key: require("node:fs").readFileSync("/certs/key.pem"), cert: require("node:fs").readFileSync("/certs/cert.pem") }, (req, res) => res.end("upstream")).listen(443)';
+      const upstream = join(runDir, "upstream.yml");
+      await Bun.write(
+        upstream,
+        JSON.stringify({ services: { upstream: { image, command: ["node", "-e", server], volumes: [`${certs}:/certs:ro`], networks: { qa_egress: { aliases: ["limited.example.test", "rate.example.test"] } } } } }),
+      );
+      const project = `qair-relay-${crypto.randomUUID().slice(0, 8)}`;
+      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const saved = join(runDir, "interns", "i1");
+      const probe = `
+const tls = require("node:tls");
+const ca = require("node:fs").readFileSync("/certs/cert.pem");
+const open = (host) => new Promise((resolve) => {
+  const socket = tls.connect({ host, port: 443, servername: host, ca });
+  socket.once("secureConnect", () => resolve(socket));
+  socket.once("error", () => resolve(null));
+  socket.once("close", () => resolve(null));
+});
+const close = (socket) => { socket.destroy(); return new Promise((resolve) => setTimeout(resolve, 1000)); };
+(async () => {
+  const opened = [];
+  const first = await open("limited.example.test");
+  opened.push(first !== null, (await open("limited.example.test")) !== null);
+  await close(first);
+  for (const host of ["limited.example.test", "limited.example.test", "limited.example.test", "rate.example.test", "rate.example.test", "rate.example.test"]) {
+    const socket = await open(host);
+    opened.push(socket !== null);
+    if (socket !== null) await close(socket);
+  }
+  console.log(JSON.stringify(opened));
+})();
+`;
+      try {
+        await execute([...compose, "up", "-d", "--wait", "app", "upstream", "qa-relay"]);
+        expect(JSON.parse(await execute([...compose, "exec", "-T", "app", "node", "-e", probe]))).toEqual([true, false, true, true, false, true, true, false]);
+      } finally {
+        await stopProject(project, saved);
+      }
+      const [records = [], ...others] = await readRelayLogs(saved);
+      expect(others).toEqual([]);
+      expect(records.map((entry) => [entry.n, entry.host, entry.outcome, entry.error])).toEqual([
+        [1, "limited.example.test", "connected", null],
+        [2, "limited.example.test", "refused", "concurrent"],
+        [3, "limited.example.test", "connected", null],
+        [4, "limited.example.test", "connected", null],
+        [5, "limited.example.test", "refused", "total"],
+        [6, "rate.example.test", "connected", null],
+        [7, "rate.example.test", "connected", null],
+        [8, "rate.example.test", "refused", "perMinute"],
+      ]);
     },
     20 * 60_000,
   );
