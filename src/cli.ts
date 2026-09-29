@@ -15,9 +15,11 @@ Commands:
   doctor [--logins <file>]
       Check Docker, Compose, the isolated network mode, the Dev Container CLI,
       the runner image and its agents, the logins, and free memory.
-  run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]
+  run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]
       Run interns against the target at the commit. Defaults: HEAD, 4 interns,
       30 minutes each, 10 minutes per confirmation. Prints the run directory first.
+      With --on-end, run the shell command when the run ends, done, failed, or
+      interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
   status [<run>]
       Print the phase and every intern's status.
   report [<run>]
@@ -81,6 +83,7 @@ async function main(args: string[]): Promise<number> {
           minutes: { type: "string", default: "30" },
           "confirm-minutes": { type: "string", default: "10" },
           logins: { type: "string", default: defaultLoginsPath },
+          "on-end": { type: "string" },
         },
       });
       const [dir, ...extra] = positionals;
@@ -92,6 +95,7 @@ async function main(args: string[]): Promise<number> {
         minutes: minutes(values.minutes, "minutes"),
         confirmMinutes: minutes(values["confirm-minutes"], "confirm-minutes"),
         loginsFile: values.logins,
+        onEnd: values["on-end"],
       };
       await runQa({ ...options, runnerImage: ensureRunnerImage, print });
       return 0;

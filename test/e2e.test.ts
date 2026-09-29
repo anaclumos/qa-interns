@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -142,6 +142,7 @@ USER qa
     "two interns on Grok and Cursor logins report one defect, the judge groups it, and a confirmation reproduces it",
     async () => {
       const lines: string[] = [];
+      const ended = join(root, "pair-ended.txt");
       const runDir = await runQa({
         dir: target,
         rev: "HEAD",
@@ -152,11 +153,13 @@ USER qa
           { id: "grok-1", provider: "grok" },
           { id: "cursor-1", provider: "cursor" },
         ]),
+        onEnd: `test -f "$QA_INTERNS_RUN_DIR/report.md" && printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'`,
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
 
       expect(lines[0]).toBe(runDir);
+      expect(await Bun.file(ended).text()).toBe(`${runDir}\ndone\n`);
       expect(lines).toContain("phase grouping");
       expect(lines).toContain("phase confirming");
       const state = await readState(runDir);
@@ -399,6 +402,7 @@ USER qa
     "an intern that fills its 1 GiB disk, partly with a deleted file it keeps open, is stopped and keeps its findings",
     async () => {
       const lines: string[] = [];
+      const ended = join(root, "flood-ended.txt");
       const run = runQa({
         dir: target,
         rev: "HEAD",
@@ -406,13 +410,16 @@ USER qa
         minutes: 5,
         confirmMinutes: 0.5,
         loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
+        onEnd: `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; echo 'no notification' >&2; exit 3`,
         runnerImage: async () => fakeImage,
         print: (line) => lines.push(line),
       });
 
       await expect(run).rejects.toThrow("No testing intern completed");
+      await expect(run).rejects.toThrow("; The --on-end command exited with 3: no notification");
       const runDir = lines[0];
       if (runDir === undefined) throw new Error("runQa printed no run directory");
+      expect(await Bun.file(ended).text()).toBe(`${runDir}\nfailed\n`);
       const state = await readState(runDir);
       expect(state.phase).toBe("failed");
       expect(intern(state, "i1")).toMatchObject({
@@ -431,6 +438,48 @@ USER qa
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "a run that SIGTERM interrupts tears down, runs its --on-end command, and exits 130 when that command fails",
+    async () => {
+      const ended = join(root, "interrupt-ended.txt");
+      const cli = Bun.spawn(
+        [
+          process.execPath,
+          join(import.meta.dir, "..", "src", "cli.ts"),
+          "run",
+          target,
+          "--interns",
+          "1",
+          "--logins",
+          await logins("interrupt", [{ id: "claude-1", provider: "claude" }]),
+          "--on-end",
+          `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; echo 'no notification' >&2; exit 3`,
+        ],
+        { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+      );
+      const reader = cli.stdout.getReader();
+      const decoder = new TextDecoder();
+      let out = "";
+      while (!out.includes("\n")) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error(`run exited before it printed its run directory: ${await new Response(cli.stderr).text()}`);
+        out += decoder.decode(chunk.value, { stream: true });
+      }
+      const runDir = out.slice(0, out.indexOf("\n"));
+      while (!existsSync(join(runDir, "source")) && cli.exitCode === null) await Bun.sleep(50);
+      cli.kill("SIGTERM");
+      const [code, stderr] = await Promise.all([cli.exited, new Response(cli.stderr).text()]);
+
+      expect(code).toBe(130);
+      expect(stderr).toContain("The --on-end command exited with 3: no notification");
+      expect(await Bun.file(ended).text()).toBe(`${runDir}\nfailed\n`);
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "failed", error: "interrupted" });
+      expect(await leftovers(state.runId)).toEqual([]);
     },
     timeout,
   );

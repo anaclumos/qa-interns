@@ -25,7 +25,7 @@ import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, ju
 import { providers } from "./providers.ts";
 import { renderReport } from "./report.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
-import { execute, exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
+import { capture, execute, exportTree, killCommands, loadTarget, resolveTarget, type Target } from "./target.ts";
 import type { Confirmation, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
@@ -35,6 +35,7 @@ export type RunOptions = {
   minutes: number;
   confirmMinutes: number;
   loginsFile: string;
+  onEnd?: string;
   runnerImage(): Promise<string>;
   print(line: string): void;
 };
@@ -667,21 +668,38 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await phase("reporting");
   };
 
-  return guard(
-    ctx,
-    async () => {
-      try {
-        await phases();
-      } catch (error) {
-        if (!ctx.stopping) await finish(message(error));
-        throw error;
-      }
-      const teardown = await finish(null);
-      if (teardown !== null) throw new Error(`Teardown of run ${runId} failed: ${teardown}`);
-      return runDir;
-    },
-    async () => {
-      await finish("interrupted");
-    },
-  );
+  const ended = async (): Promise<string | null> => {
+    if (opts.onEnd === undefined) return null;
+    const result = await capture(["sh", "-c", opts.onEnd], { env: { ...process.env, QA_INTERNS_RUN_DIR: runDir, QA_INTERNS_PHASE: state.phase } });
+    return result.code === 0 ? null : `The --on-end command exited with ${result.code}: ${result.stderr.trim().slice(-2000)}`;
+  };
+
+  const [result] = await Promise.allSettled([
+    guard(
+      ctx,
+      async () => {
+        try {
+          await phases();
+        } catch (error) {
+          if (!ctx.stopping) await finish(message(error));
+          throw error;
+        }
+        const teardown = await finish(null);
+        if (teardown !== null) throw new Error(`Teardown of run ${runId} failed: ${teardown}`);
+        return runDir;
+      },
+      async () => {
+        try {
+          await finish("interrupted");
+        } finally {
+          const hook = await ended();
+          if (hook !== null) process.stderr.write(`${hook}\n`);
+        }
+      },
+    ),
+  ]);
+  const hook = await ended();
+  if (result.status === "rejected") throw hook === null ? result.reason : new Error(`${message(result.reason)}; ${hook}`);
+  if (hook !== null) throw new Error(hook);
+  return result.value;
 }

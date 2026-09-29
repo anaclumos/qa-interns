@@ -38,7 +38,7 @@ qa-interns doctor
 | Command | What it does |
 | --- | --- |
 | `qa-interns doctor [--logins <file>]` | Checks Docker, Compose, the isolated network mode, the Dev Container CLI, the runner image and its agents, and the logins. Builds the runner image when it is missing. |
-| `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. |
+| `qa-interns run <target-dir> [--commit <rev>] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]` | Runs interns against the target at the commit (default `HEAD`, 4 interns, 30 minutes each, 10 minutes per confirmation). Prints the run directory first. With `--on-end`, runs the command when the run ends (see [Command when a run ends](#command-when-a-run-ends)). |
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
 | `qa-interns report [<run>]` | Prints `report.md`. |
 | `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when that process, matched by its pid and start time, is still running. Then tears down every environment the run still has, saves each output disk the run left into its folder, and deletes the run's leftover workspace copies, with containers of the current runner image. When disks or copies are left and that image does not exist, it fails; build the image with `qa-interns doctor` and run `down` again. |
@@ -159,6 +159,21 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 - `state.json`: the run's phase and every intern's status.
 
 A finding is confirmed when two or more interns reproduced it.
+
+## Command when a run ends
+
+`run --on-end <command>` runs `<command>` with `sh -c` on the host when the run ends, whether it is done, failed, or interrupted by SIGINT, SIGTERM, or SIGHUP. The command runs after the teardown and after `report.md`, `findings.json`, and `state.json` are written. It gets the environment of `qa-interns` and these variables:
+
+- `QA_INTERNS_RUN_DIR`: the run directory.
+- `QA_INTERNS_PHASE`: `done` or `failed`. An interrupted run is `failed`, and the `error` in its `state.json` starts with `interrupted`.
+
+Quote the command so that the shell that starts `run` does not expand these variables:
+
+```
+qa-interns run eval/ledger --on-end 'echo "$QA_INTERNS_PHASE $QA_INTERNS_RUN_DIR" >> "$HOME/qa-runs.log"'
+```
+
+`run` waits for the command to exit, then exits 0 when the run is done, 1 when it failed, and 130 after an interrupt. `run` does not show the command's output. When the command exits with a code other than 0, `run` prints that code and the end of the command's error output, and a run that is done exits 1. A run that fails before it prints its run directory, such as on a missing logins file, does not run the command. When `qa-interns down` stops a running orchestrator, its wait of up to 120 seconds for that orchestrator to exit includes the time the command takes.
 
 ## Isolation
 
