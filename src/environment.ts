@@ -144,11 +144,17 @@ function slotLocks(): string {
 export type HeldSlot = { slot: number; release: () => void };
 
 export async function freeSlot(): Promise<HeldSlot> {
-  const used = await usedBlocks();
   const dir = slotLocks();
-  for (const slot of openSlots(used)) {
+  for (const slot of openSlots(await usedBlocks())) {
     const fd = flock(join(dir, `${slotAddress(slot, 0)}.lock`), "--exclusive", "--nonblock");
-    if (fd !== null) return { slot, release: () => closeSync(fd) };
+    if (fd === null) continue;
+    let free = false;
+    try {
+      free = openSlots(await usedBlocks()).includes(slot);
+    } finally {
+      if (!free) closeSync(fd);
+    }
+    if (free) return { slot, release: () => closeSync(fd) };
   }
   throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route, or is locked for another QA Interns environment of this user`);
 }
