@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { message } from "../src/findings.ts";
 import { defaultLoginsPath, loadLogins } from "../src/logins.ts";
 import { ask } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
@@ -44,7 +45,7 @@ async function readJson<T>(file: string, schema: z.ZodType<T>): Promise<T> {
   try {
     raw = JSON.parse(await handle.text());
   } catch (error) {
-    throw new Error(`${file} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`${file} is not valid JSON: ${message(error)}`);
   }
   const parsed = schema.safeParse(raw);
   if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
@@ -56,7 +57,7 @@ function parseScore(raw: string, defectIds: string[], groupIds: string[]): Score
   try {
     data = JSON.parse(raw);
   } catch (error) {
-    throw new Error(`not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`not valid JSON: ${message(error)}`);
   }
   const parsed = scoreSchema.safeParse(data);
   if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => `${z.core.toDotPath(issue.path) || "the file"}: ${issue.message}`).join("; "));
@@ -140,6 +141,6 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  console.error(`score: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`score: ${message(error)}`);
   process.exitCode = 1;
 }
