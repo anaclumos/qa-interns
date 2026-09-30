@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { z } from "zod";
 import type { RunState } from "./types.ts";
 
-const stateSchema = z.object({
+export const stateSchema = z.object({
   runId: z.string().min(1),
   pid: z.int().positive(),
   pidStart: z.int().nonnegative(),

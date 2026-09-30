@@ -1,3 +1,9 @@
+import type { z } from "zod";
+import type { relaySchema } from "./environment.ts";
+import type { confirmationSchema } from "./findings.ts";
+import type { storedFindingSchema } from "./report.ts";
+import type { stateSchema } from "./state.ts";
+
 export type Provider = "claude" | "codex" | "cursor" | "grok";
 
 export type Login = { id: string; provider: Provider; store: string | null; seat: string[] | null; concurrency: number };
@@ -8,22 +14,7 @@ export type GeneratedFile = { target: string; content: string };
 
 export type InternStatus = "queued" | "starting" | "testing" | "done" | "failed" | "limited";
 
-export type InternState = {
-  id: string;
-  role: "intern" | "judge" | "confirm";
-  charter: string;
-  group: string | null;
-  provider: Provider | null;
-  login: string | null;
-  model: string | null;
-  project: string | null;
-  status: InternStatus;
-  detail: string | null;
-  findings: number;
-  rejected: number;
-  startedAt: string | null;
-  endedAt: string | null;
-};
+export type InternState = RunState["interns"][number];
 
 export type ContainerStats = { service: string; number: number; state: string; oomKilled: boolean; restarts: number; memoryPeak: number | null };
 
@@ -31,46 +22,23 @@ export type EnvironmentStats = { intern: string; attempt: number; startedAt: str
 
 export type RunPhase = "preparing" | "building" | "starting" | "up" | "testing" | "grouping" | "confirming" | "reporting" | "done" | "failed";
 
-export type RunState = {
-  runId: string;
-  pid: number;
-  pidStart: number;
-  target: { repo: string; path: string; commit: string; dirty: boolean };
-  options: { interns: number; minutes: number; confirmMinutes: number; concurrency: number };
-  phase: RunPhase;
-  error: string | null;
-  startedAt: string;
-  updatedAt: string;
-  endedAt: string | null;
-  interns: InternState[];
-};
+export type RunState = z.infer<typeof stateSchema>;
 
 export const kinds = ["crash", "error", "wrong-data", "data-loss", "inconsistency", "access", "visual", "slow"] as const;
 
 export type Kind = (typeof kinds)[number];
 
-export type FindingEnvironment = { commit: string; dirty: boolean; environment: string; provider: Provider; model: string | null };
+export type FindingEnvironment = Finding["environment"];
 
-export type Finding = {
-  id: string;
-  intern: string;
-  title: string;
-  kind: Kind;
-  conditions: { account: string; data: string; viewport: string; browser: string; network: string };
-  steps: string[];
-  observed: string;
-  contradicts: string | null;
-  evidence: string[];
-  environment: FindingEnvironment;
-};
+export type Finding = z.infer<typeof storedFindingSchema>;
 
 export type Rejected = { intern: string; file: string; reason: string };
 
-export type Confirmation = { reproduced: boolean; observed: string; evidence: string[] };
+export type Confirmation = z.infer<typeof confirmationSchema>;
 
 export const relayOutcomes = ["connected", "failed", "denied", "refused", "incomplete"] as const;
 
-export type RelayRecord = { n: number; host: string | null; outcome: (typeof relayOutcomes)[number]; error: string | null };
+export type RelayRecord = z.infer<typeof relaySchema>;
 
 export type Group = {
   id: string;

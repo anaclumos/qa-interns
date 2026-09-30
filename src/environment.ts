@@ -570,7 +570,7 @@ export async function containerStats(project: string): Promise<ContainerStats[]>
   return stats.toSorted((a, b) => a.service.localeCompare(b.service) || a.number - b.number);
 }
 
-const relaySchema = z.object({ n: z.number().int().positive(), host: z.string().nullable(), outcome: z.enum(relayOutcomes), error: z.string().nullable() });
+export const relaySchema = z.object({ n: z.number().int().positive(), host: z.string().nullable(), outcome: z.enum(relayOutcomes), error: z.string().nullable() });
 
 const relayPrefix = "relay-";
 const relaySuffix = ".jsonl";

@@ -393,35 +393,27 @@ export function renderReplay(state: RunState, replay: Replay, egress: Egress, en
 
 const storedRunSchema = z.object({ run: z.object({ replay: z.object({ runId: z.string() }).optional() }) });
 
+export const storedFindingSchema = z.object({
+  id: z.string(),
+  intern: z.string(),
+  title: z.string(),
+  kind: z.enum(kinds),
+  conditions: z.object({ account: z.string(), data: z.string(), viewport: z.string(), browser: z.string(), network: z.string() }),
+  steps: z.array(z.string()).min(1),
+  observed: z.string(),
+  contradicts: z.string().nullable(),
+  evidence: z.array(z.string()),
+  environment: z.object({
+    commit: z.string(),
+    dirty: z.boolean(),
+    environment: z.string(),
+    provider: z.enum(["claude", "codex", "cursor", "grok"]),
+    model: z.string().nullable(),
+  }),
+});
+
 const storedGroupsSchema = z.object({
-  groups: z.array(
-    z.object({
-      id: z.string().min(1),
-      confirmed: z.boolean(),
-      findings: z
-        .array(
-          z.object({
-            id: z.string(),
-            intern: z.string(),
-            title: z.string(),
-            kind: z.enum(kinds),
-            conditions: z.object({ account: z.string(), data: z.string(), viewport: z.string(), browser: z.string(), network: z.string() }),
-            steps: z.array(z.string()).min(1),
-            observed: z.string(),
-            contradicts: z.string().nullable(),
-            evidence: z.array(z.string()),
-            environment: z.object({
-              commit: z.string(),
-              dirty: z.boolean(),
-              environment: z.string(),
-              provider: z.enum(["claude", "codex", "cursor", "grok"]),
-              model: z.string().nullable(),
-            }),
-          }),
-        )
-        .min(1),
-    }),
-  ),
+  groups: z.array(z.object({ id: z.string().min(1), confirmed: z.boolean(), findings: z.array(storedFindingSchema).min(1) })),
 });
 
 function stored<T>(schema: z.ZodType<T>, raw: unknown, file: string): T {

@@ -95,7 +95,7 @@ const findingSchema = z.strictObject(
 
 const confirmationFields = ["reproduced", "observed", "evidence"];
 
-const confirmationSchema = z.strictObject(
+export const confirmationSchema = z.strictObject(
   { reproduced: z.boolean({ error: required("must be true or false") }), observed: text, evidence: paths },
   { error: fields("must be one JSON object", confirmationFields) },
 );
