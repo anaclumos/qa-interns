@@ -30,7 +30,7 @@ function isDirectory(path: string): boolean {
 }
 
 function rawId(value: unknown): string | null {
-  return typeof value === "object" && value !== null && "id" in value && typeof value.id === "string" ? value.id : null;
+  return z.object({ id: z.string() }).safeParse(value).data?.id ?? null;
 }
 
 type Store = { store: string; credential: string | null };
