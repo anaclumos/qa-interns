@@ -23,7 +23,7 @@ export type EnvironmentSpec = {
 };
 export type Environment = { project: string; runner: string; out: string; devContainer: string | null; seed: unknown };
 
-const devcontainer = join(dirname(fileURLToPath(import.meta.resolve("@devcontainers/cli/package.json"))), "devcontainer.js");
+export const devcontainer = fileURLToPath(import.meta.resolve("@devcontainers/cli/devcontainer.js"));
 const gib = 1024 ** 3;
 const mib = 1024 ** 2;
 const minute = 60_000;
