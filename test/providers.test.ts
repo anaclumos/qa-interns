@@ -1,50 +1,50 @@
+import { RequestError } from "@agentclientprotocol/sdk";
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
-import { AgentError } from "../src/acp.ts";
 import { providers } from "../src/providers.ts";
 import type { Provider } from "../src/types.ts";
 
-const authRequired = new AgentError(-32000, "Authentication required", undefined);
-const cursorAuthRequired = new AgentError(-32000, "Authentication required", {
+const authRequired = new RequestError(-32000, "Authentication required", undefined);
+const cursorAuthRequired = new RequestError(-32000, "Authentication required", {
   message: "Authentication required. Please run 'agent login' first, then call authenticate() with methodId 'cursor_login'.",
 });
-const claudeRateLimit = new AgentError(-32603, "Internal error: You've hit your limit · resets 8pm", { errorKind: "rate_limit" });
-const claudeBilling = new AgentError(-32603, "Internal error: Credit balance is too low", { errorKind: "billing_error" });
-const claudeAuthFailed = new AgentError(-32603, "Internal error: Invalid API key · Please run /login", { errorKind: "authentication_failed" });
-const claudeAccountOnHold = new AgentError(-32603, "Internal error: This account is on hold", { errorKind: "account_on_hold" });
-const claudeOverloaded = new AgentError(-32603, "Internal error: Overloaded", { errorKind: "overloaded" });
-const claudeLimitWithoutKind = new AgentError(-32603, "Internal error: You've hit your limit · resets 8pm", undefined);
-const codexUsageLimit = new AgentError(-32603, "Internal error", {
+const claudeRateLimit = new RequestError(-32603, "Internal error: You've hit your limit · resets 8pm", { errorKind: "rate_limit" });
+const claudeBilling = new RequestError(-32603, "Internal error: Credit balance is too low", { errorKind: "billing_error" });
+const claudeAuthFailed = new RequestError(-32603, "Internal error: Invalid API key · Please run /login", { errorKind: "authentication_failed" });
+const claudeAccountOnHold = new RequestError(-32603, "Internal error: This account is on hold", { errorKind: "account_on_hold" });
+const claudeOverloaded = new RequestError(-32603, "Internal error: Overloaded", { errorKind: "overloaded" });
+const claudeLimitWithoutKind = new RequestError(-32603, "Internal error: You've hit your limit · resets 8pm", undefined);
+const codexUsageLimit = new RequestError(-32603, "Internal error", {
   message: "You've hit your usage limit. Upgrade to Pro or try again later.",
   codexErrorInfo: "usageLimitExceeded",
 });
-const codexUnauthorized = new AgentError(-32603, "Internal error", {
+const codexUnauthorized = new RequestError(-32603, "Internal error", {
   message: "Your access token could not be refreshed. Please log out and sign in again.",
   codexErrorInfo: "unauthorized",
 });
-const codexInternal = new AgentError(-32603, "Internal error", { details: "workspace routing discovery failed" });
-const codexUnauthorizedStructured = new AgentError(-32603, "Internal error", { message: "Provider returned 401", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 401 } } });
-const cursorInternal = new AgentError(-32603, "Internal error", [{ expected: "string", code: "invalid_type", path: ["sessionId"], message: "Invalid input" }]);
-const invalidParams = new AgentError(-32602, "Invalid params", { sessionId: { _errors: ["Invalid input: expected string, received undefined"] } });
-const grokAuthRequired = new AgentError(-32000, "Authentication required", "no auth method id provided");
-const grokRateLimit = new AgentError(-32003, "Rate limited", "API error (status 429 Too Many Requests): rate_limit_error: Rate limit exceeded");
-const grokUsageLimit = new AgentError(-32003, "Rate limited", "API error (status 429 Too Many Requests): usage_limit_reached: You have reached your usage limit");
-const grokNoCredits = new AgentError(-32603, "Internal error", {
+const codexInternal = new RequestError(-32603, "Internal error", { details: "workspace routing discovery failed" });
+const codexUnauthorizedStructured = new RequestError(-32603, "Internal error", { message: "Provider returned 401", codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 401 } } });
+const cursorInternal = new RequestError(-32603, "Internal error", [{ expected: "string", code: "invalid_type", path: ["sessionId"], message: "Invalid input" }]);
+const invalidParams = new RequestError(-32602, "Invalid params", { sessionId: { _errors: ["Invalid input: expected string, received undefined"] } });
+const grokAuthRequired = new RequestError(-32000, "Authentication required", "no auth method id provided");
+const grokRateLimit = new RequestError(-32003, "Rate limited", "API error (status 429 Too Many Requests): rate_limit_error: Rate limit exceeded");
+const grokUsageLimit = new RequestError(-32003, "Rate limited", "API error (status 429 Too Many Requests): usage_limit_reached: You have reached your usage limit");
+const grokNoCredits = new RequestError(-32603, "Internal error", {
   message: "API error (status 402 Payment Required): insufficient_quota: You have run out of credits",
   http_status: 402,
 });
-const grokRejectedAfterRefresh = new AgentError(-32603, "Internal error", {
+const grokRejectedAfterRefresh = new RequestError(-32603, "Internal error", {
   message: "Auth recovery succeeded but 4 authenticated inference requests were still rejected (401); giving up after 3 retries. Turn ran 7s wall-clock.",
   http_status: 401,
 });
-const grokForbidden = new AgentError(-32603, "Internal error", { message: "API error (status 403 Forbidden): permission_error: Forbidden", http_status: 403 });
-const grokRefreshFailed = new AgentError(
+const grokForbidden = new RequestError(-32603, "Internal error", { message: "API error (status 403 Forbidden): permission_error: Forbidden", http_status: 403 });
+const grokRefreshFailed = new RequestError(
   -32603,
   "Internal error",
   "Unauthorized (401) from https://cli-chat-proxy.grok.com/v1/responses: authentication_error: token expired\n\n  Model:     grok-4.6\n  Auth:      ApiKey\n  Version:   1.0.41\n  Available: grok-4.6, grok-4.5",
 );
 
-const cases: [Provider, string, AgentError, boolean][] = [
+const cases: [Provider, string, RequestError, boolean][] = [
   ["claude", "authentication required", authRequired, true],
   ["claude", "rate limit", claudeRateLimit, true],
   ["claude", "billing error", claudeBilling, true],

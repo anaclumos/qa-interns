@@ -121,7 +121,7 @@ describe("state file", () => {
     await Bun.write(file, JSON.stringify(broken));
     await expect(readState(dir)).rejects.toThrow(`${file} does not hold a valid run state: phase:`);
     await Bun.write(file, JSON.stringify({ ...broken, phase: "testing", interns: [{ ...intern({}), findings: "2" }] }));
-    await expect(readState(dir)).rejects.toThrow("interns.0.findings");
+    await expect(readState(dir)).rejects.toThrow("interns[0].findings");
     await Bun.write(file, "{\"runId\": \"3f9a1c2e\",");
     await expect(readState(dir)).rejects.toThrow(`${file} is not valid JSON`);
     await rm(file);

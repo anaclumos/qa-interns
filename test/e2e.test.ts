@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, mkdir, readdir, realpath, rm, symlink } from "node:fs/promises";
+import { cp, mkdir, readdir, realpath, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { readRelayLogs, removeCopies, writeChromePolicy } from "../src/environment.ts";
+import { readRelayLogs, removeCopies, removeDir, writeChromePolicy } from "../src/environment.ts";
 import { errorCode } from "../src/findings.ts";
 import { readReplay } from "../src/report.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
@@ -146,9 +146,9 @@ USER qa
     if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
     else process.env.XDG_STATE_HOME = previousStateHome;
     try {
-      if (built) await execute(["docker", "image", "rm", "-f", fakeImage]);
+      await removeDir(root, fakeImage, `qair-f-e2e-${id}`);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      if (built) await execute(["docker", "image", "rm", "-f", fakeImage]);
     }
   }, timeout);
 

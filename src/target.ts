@@ -40,6 +40,7 @@ export type Target = TargetRef & {
   config: Record<string, unknown>;
   composeFiles: string[];
   service: string;
+  runServices?: string[];
   services: Record<string, ComposeService>;
 };
 
@@ -671,5 +672,5 @@ export async function loadTarget(ref: TargetRef, sourceDir: string, placeholders
   if (violations.length > 0) {
     throw new Error(`The Compose files of ${file} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
   }
-  return { ...ref, settings: customizations["qa-interns"], config, composeFiles, service, services };
+  return { ...ref, settings: customizations["qa-interns"], config, composeFiles, service, runServices, services };
 }

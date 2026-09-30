@@ -1,17 +1,19 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { cp, mkdir, mkdtemp, readdir, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 import {
   buildImages,
   containerStats,
+  createDisk,
   environmentMemory,
   freeSlot,
   freeSlots,
   readRelayLogs,
   removeCopies,
+  removeDir,
   renderOverride,
   runnerEnv,
   slotSubnets,
@@ -23,7 +25,7 @@ import {
   type EnvironmentSpec,
   type HeldSlot,
 } from "../src/environment.ts";
-import { ensureRunnerImage } from "../src/runner.ts";
+import { ensureRunnerImage, runnerImage } from "../src/runner.ts";
 import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 import type { RelayRecord } from "../src/types.ts";
@@ -35,7 +37,8 @@ const ref = { repo: "/home/dev/ledger", path: "", commit: "4f1c2a9e0b7d3c5a8e6f1
 const roots: string[] = [];
 
 afterAll(async () => {
-  for (const root of roots) await rm(root, { recursive: true, force: true });
+  const image = await runnerImage();
+  for (const root of roots) await removeDir(root, image, "qair-t-cleanup");
 });
 
 async function scratch(): Promise<string> {
@@ -126,7 +129,7 @@ describe.skipIf(!dockerAvailable)("slots", () => {
     });
   });
 
-  test.each(["", "10.213.0.0", "10.213.0.0/15", "10.213.0.0/24", "10.213.1.0/16", "10.213.0/16", "010.213.0.0/16", "10.213.0.0/16 ", "10.213.0.0/16/16", "256.0.0.0/16", "fd00::/48"])(
+  test.each(["", "10.213.0.0", "10.213.0.0/15", "10.213.0.0/24", "10.213.1.0/16", "10.213.0/16", "010.213.0.0/16", "1e1.213.0.0/16", " 10.213.0.0/16", "10.213.0.0/016", "10.213.0.0/16 ", "10.213.0.0/16/16", "256.0.0.0/16", "fd00::/48"])(
     "reject QA_INTERNS_SUBNET %p",
     async (subnet) => {
       await withSubnet(subnet, async () => {
@@ -506,7 +509,7 @@ networks:
     const runDir = await scratch();
     const config = await normalize(runDir, [], renderOverride(spec(runDir, null), 1000, 1000));
     expect(Object.keys(config.services).sort()).toEqual(["qa-proxy", "qa-runner"]);
-    expect(config.services["qa-runner"]?.environment).toMatchObject({ NO_PROXY: "localhost,127.0.0.1", AGENT_BROWSER_ALLOWED_DOMAINS: "" });
+    expect(config.services["qa-runner"]?.environment).toMatchObject({ NO_PROXY: "localhost,127.0.0.1" });
   });
 
   test("render no proxy and no agent network for a runner without egress hosts, and keep the relay", async () => {
@@ -674,7 +677,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     expect(created).toEqual([]);
   });
 
-  test("route every environment host around the proxy and allow only those hosts in the browser", () => {
+  test("route every environment host around the proxy", () => {
     const env = runnerEnv({ app: "http://web:3000", admin: "https://admin.shop.test:8443/login", api: "http://web:3000/api" });
     expect(env).toEqual({
       HOME: "/home/qa",
@@ -685,7 +688,6 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       NO_PROXY: "web,admin.shop.test,localhost,127.0.0.1",
       no_proxy: "web,admin.shop.test,localhost,127.0.0.1",
       NODE_USE_ENV_PROXY: "1",
-      AGENT_BROWSER_ALLOWED_DOMAINS: "web,admin.shop.test",
     });
   });
 
@@ -703,6 +705,25 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       OverrideSecurityRestrictionsOnInsecureOrigin: ["http://app:3000", "http://dev:5173", "http://docs.shop.test"],
     });
   });
+
+  test(
+    "remove a directory that holds a mounted output disk under a space and a symbolic link, and leave no mount behind",
+    async () => {
+      const root = await scratch();
+      await mkdir(join(root, "real dir"));
+      await symlink(join(root, "real dir"), join(root, "linked dir"));
+      const dir = join(root, "linked dir", "run");
+      const image = await ensureRunnerImage();
+      const out = join(dir, "interns", "i1", "out");
+      await mkdir(out, { recursive: true });
+      await createDisk(out, image, "qair-t-remove");
+      await Bun.write(join(out, "left.txt"), "left\n");
+      await removeDir(dir, image, "qair-t-remove");
+      expect(existsSync(join(root, "real dir", "run"))).toBe(false);
+      expect(readFileSync("/proc/self/mountinfo", "utf8")).not.toContain(root);
+    },
+    20 * 60_000,
+  );
 });
 
 describe.skipIf(!dockerAvailable)("startEnvironment", () => {

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { linkEvidence, stripControl } from "./findings.ts";
 import { readState } from "./state.ts";
-import { kinds, type EnvironmentStats, type Finding, type Group, type InternState, type RelayRecord, type Rejected, type Replay, type RunState } from "./types.ts";
+import { kinds, providerNames, type EnvironmentStats, type Finding, type Group, type InternState, type RelayRecord, type Rejected, type Replay, type RunState } from "./types.ts";
 
 export type Egress = { hosts: string[]; relays: { intern: string; records: RelayRecord[] }[] };
 
@@ -129,9 +129,9 @@ function reported(first: Finding, fact: string) {
   return lines;
 }
 
-function lead(group: Group) {
+export function lead(group: Group) {
   const [first] = group.findings;
-  if (first === undefined) throw new Error(`group ${group.id} has no findings`);
+  if (first === undefined) throw new Error(`Group ${group.id} has no findings`);
   return first;
 }
 
@@ -414,7 +414,7 @@ const storedGroupsSchema = z.object({
               commit: z.string(),
               dirty: z.boolean(),
               environment: z.string(),
-              provider: z.enum(["claude", "codex", "cursor", "grok"]),
+              provider: z.enum(providerNames),
               model: z.string().nullable(),
             }),
           }),
@@ -427,7 +427,7 @@ const storedGroupsSchema = z.object({
 function stored<T>(schema: z.ZodType<T>, raw: unknown, file: string): T {
   const parsed = schema.safeParse(raw);
   if (parsed.success) return parsed.data;
-  const problems = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
+  const problems = parsed.error.issues.map((issue) => `${z.core.toDotPath(issue.path) || "(root)"}: ${issue.message}`);
   throw new Error(`${file} does not hold the groups of a run: ${problems.join("; ")}`);
 }
 

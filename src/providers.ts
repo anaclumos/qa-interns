@@ -1,5 +1,6 @@
+import type { RequestError } from "@agentclientprotocol/sdk";
 import path from "node:path";
-import type { AgentError } from "./acp.ts";
+import { z } from "zod";
 import type { GeneratedFile, Mount, Provider } from "./types.ts";
 
 export type ProviderSpec = {
@@ -11,7 +12,7 @@ export type ProviderSpec = {
   egress: string[];
   sessionMeta: Record<string, unknown> | null;
   modeId: string | null;
-  isLoginFailure(error: AgentError): boolean;
+  isLoginFailure(error: RequestError): boolean;
 };
 
 const authRequired = -32000;
@@ -26,7 +27,9 @@ const claudeLoginKinds = [
   "verification_required",
 ];
 const codexLoginErrors = ["usageLimitExceeded", "unauthorized"];
-const grokLoginStatuses = [401, 402];
+const claudeLoginData = z.object({ errorKind: z.enum(claudeLoginKinds) });
+const codexLoginData = z.object({ codexErrorInfo: z.enum(codexLoginErrors) });
+const grokLoginData = z.object({ http_status: z.literal([401, 402]) });
 
 const codexConfig = `[features]
 apps = false
@@ -56,18 +59,7 @@ export const providers: Record<Provider, ProviderSpec> = {
     egress: ["api.anthropic.com", "platform.claude.com"],
     sessionMeta: { claudeCode: { options: { strictMcpConfig: true } } },
     modeId: "bypassPermissions",
-    isLoginFailure: (error) => {
-      if (error.code === authRequired) return true;
-      const data = error.data;
-      return (
-        error.code === internalError &&
-        typeof data === "object" &&
-        data !== null &&
-        "errorKind" in data &&
-        typeof data.errorKind === "string" &&
-        claudeLoginKinds.includes(data.errorKind)
-      );
-    },
+    isLoginFailure: (error) => error.code === authRequired || (error.code === internalError && claudeLoginData.safeParse(error.data).success),
   },
   codex: {
     adapter: ["codex-acp"],
@@ -78,18 +70,7 @@ export const providers: Record<Provider, ProviderSpec> = {
     egress: ["chatgpt.com", "auth.openai.com", "api.openai.com"],
     sessionMeta: null,
     modeId: null,
-    isLoginFailure: (error) => {
-      if (error.code === authRequired) return true;
-      const data = error.data;
-      return (
-        error.code === internalError &&
-        typeof data === "object" &&
-        data !== null &&
-        "codexErrorInfo" in data &&
-        typeof data.codexErrorInfo === "string" &&
-        codexLoginErrors.includes(data.codexErrorInfo)
-      );
-    },
+    isLoginFailure: (error) => error.code === authRequired || (error.code === internalError && codexLoginData.safeParse(error.data).success),
   },
   cursor: {
     adapter: ["cursor-agent", "--force", "acp"],
@@ -111,17 +92,7 @@ export const providers: Record<Provider, ProviderSpec> = {
     egress: ["cli-chat-proxy.grok.com", "auth.x.ai"],
     sessionMeta: null,
     modeId: null,
-    isLoginFailure: (error) => {
-      if (error.code === authRequired || error.code === rateLimited) return true;
-      const data = error.data;
-      return (
-        error.code === internalError &&
-        typeof data === "object" &&
-        data !== null &&
-        "http_status" in data &&
-        typeof data.http_status === "number" &&
-        grokLoginStatuses.includes(data.http_status)
-      );
-    },
+    isLoginFailure: (error) =>
+      error.code === authRequired || error.code === rateLimited || (error.code === internalError && grokLoginData.safeParse(error.data).success),
   },
 };

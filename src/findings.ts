@@ -22,7 +22,15 @@ const folderFailures = new Map([
 ]);
 
 export function errorCode(error: unknown): string | null {
-  return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : null;
+  return z.object({ code: z.string() }).safeParse(error).data?.code ?? null;
+}
+
+export function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function oneLine(text: string): string {
+  return text.replaceAll("\r", " ").replaceAll("\n", " ");
 }
 
 function control(char: string): boolean {
@@ -110,8 +118,7 @@ const groupsSchema = z.strictObject(
 );
 
 function where(keys: PropertyKey[]) {
-  if (keys.length === 0) return "the file";
-  return keys.map((key, index) => (typeof key === "number" ? `[${key}]` : index === 0 ? String(key) : `.${String(key)}`)).join("");
+  return keys.length === 0 ? "the file" : z.core.toDotPath(keys);
 }
 
 function parse<T>(schema: z.ZodType<T>, raw: string): T {
