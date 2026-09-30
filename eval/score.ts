@@ -5,7 +5,7 @@ import { message } from "../src/findings.ts";
 import { defaultLoginsPath, loadLogins } from "../src/logins.ts";
 import { ask } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
-import { readState, resolveRunDir } from "../src/state.ts";
+import { readJson, readState, resolveRunDir } from "../src/state.ts";
 
 const defectsFile = join(import.meta.dir, "defects.json");
 
@@ -38,20 +38,6 @@ const scoreSchema = z.strictObject({ matches: z.record(z.string(), z.array(z.str
 
 type Score = z.infer<typeof scoreSchema>;
 
-async function readJson<T>(file: string, schema: z.ZodType<T>): Promise<T> {
-  const handle = Bun.file(file);
-  if (!(await handle.exists())) throw new Error(`No file at ${file}`);
-  let raw: unknown;
-  try {
-    raw = JSON.parse(await handle.text());
-  } catch (error) {
-    throw new Error(`${file} is not valid JSON: ${message(error)}`);
-  }
-  const parsed = schema.safeParse(raw);
-  if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
-  return parsed.data;
-}
-
 function parseScore(raw: string, defectIds: string[], groupIds: string[]): Score {
   let data: unknown;
   try {
@@ -60,7 +46,7 @@ function parseScore(raw: string, defectIds: string[], groupIds: string[]): Score
     throw new Error(`not valid JSON: ${message(error)}`);
   }
   const parsed = scoreSchema.safeParse(data);
-  if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => `${z.core.toDotPath(issue.path) || "the file"}: ${issue.message}`).join("; "));
+  if (!parsed.success) throw new Error(z.prettifyError(parsed.error));
   const problems: string[] = [];
   for (const id of defectIds) if (!Object.hasOwn(parsed.data.matches, id)) problems.push(`defect ${id} is missing`);
   for (const [id, groups] of Object.entries(parsed.data.matches)) {

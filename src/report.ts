@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { z } from "zod";
 import { linkEvidence, stripControl } from "./findings.ts";
-import { readState } from "./state.ts";
+import { readJson, readState } from "./state.ts";
 import { kinds, providerNames, type EnvironmentStats, type Finding, type Group, type InternState, type RelayRecord, type Rejected, type Replay, type RunState } from "./types.ts";
 
 export type Egress = { hosts: string[]; relays: { intern: string; records: RelayRecord[] }[] };
@@ -424,27 +424,13 @@ const storedGroupsSchema = z.object({
   ),
 });
 
-function stored<T>(schema: z.ZodType<T>, raw: unknown, file: string): T {
-  const parsed = schema.safeParse(raw);
-  if (parsed.success) return parsed.data;
-  const problems = parsed.error.issues.map((issue) => `${z.core.toDotPath(issue.path) || "(root)"}: ${issue.message}`);
-  throw new Error(`${file} does not hold the groups of a run: ${problems.join("; ")}`);
-}
-
 export async function readReplay(runDir: string, only: string[]): Promise<Replay> {
   const state = await readState(runDir);
   const file = join(runDir, "findings.json");
-  const handle = Bun.file(file);
-  if (!(await handle.exists())) throw new Error(`Run ${state.runId} has no findings.json yet. Its phase is ${state.phase}.`);
-  let raw: unknown;
-  try {
-    raw = JSON.parse(await handle.text());
-  } catch (error) {
-    throw new Error(`${file} is not valid JSON: ${String(error)}`);
-  }
-  const { run } = stored(storedRunSchema, raw, file);
+  const absent = `Run ${state.runId} has no findings.json yet. Its phase is ${state.phase}.`;
+  const { run } = await readJson(file, storedRunSchema, absent);
   if (run.replay !== undefined) throw new Error(`Run ${state.runId} is a replay of run ${run.replay.runId}. Replay run ${run.replay.runId} instead.`);
-  const { groups } = stored(storedGroupsSchema, raw, file);
+  const { groups } = await readJson(file, storedGroupsSchema, absent);
   const confirmed = groups.filter((group) => group.confirmed);
   const ids = confirmed.map((group) => group.id);
   const missing = only.filter((id) => !ids.includes(id));

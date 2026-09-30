@@ -175,7 +175,7 @@ describe("loadLogins", () => {
 
   test("rejects malformed JSON, a missing logins array, and an empty list", async () => {
     expect(await failure("broken.json", "{\"logins\": [")).toContain("is not valid JSON");
-    expect(await failure("wrong-top.json", { accounts: [] })).toContain("must hold an object with a \"logins\" array");
+    expect(await failure("wrong-top.json", { accounts: [] })).toContain("is invalid:\n✖ Invalid input: expected array, received undefined\n  → at logins");
     expect(await failure("empty.json", { logins: [] })).toContain("lists no logins");
   });
 

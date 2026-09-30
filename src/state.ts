@@ -86,22 +86,24 @@ async function latestRunDir(): Promise<string> {
   return latest.dir;
 }
 
-export async function readState(runDir: string): Promise<RunState> {
-  const file = join(runDir, "state.json");
+export async function readJson<T>(file: string, schema: z.ZodType<T>, missing = `No file at ${file}`): Promise<T> {
   const handle = Bun.file(file);
-  if (!(await handle.exists())) throw new Error(`No run state at ${file}`);
+  if (!(await handle.exists())) throw new Error(missing);
   let raw: unknown;
   try {
     raw = JSON.parse(await handle.text());
   } catch (error) {
-    throw new Error(`${file} is not valid JSON: ${String(error)}`);
+    if (error instanceof SyntaxError) throw new Error(`${file} is not valid JSON: ${error.message}`);
+    throw error;
   }
-  const parsed = stateSchema.safeParse(raw);
-  if (!parsed.success) {
-    const problems = parsed.error.issues.map((issue) => `${z.core.toDotPath(issue.path) || "(root)"}: ${issue.message}`);
-    throw new Error(`${file} does not hold a valid run state: ${problems.join("; ")}`);
-  }
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) throw new Error(`${file} is invalid:\n${z.prettifyError(parsed.error)}`);
   return parsed.data;
+}
+
+export async function readState(runDir: string): Promise<RunState> {
+  const file = join(runDir, "state.json");
+  return readJson(file, stateSchema, `No run state at ${file}`);
 }
 
 export async function writeState(runDir: string, state: RunState): Promise<void> {
