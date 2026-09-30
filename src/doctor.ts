@@ -1,16 +1,14 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { arch, freemem, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { createDisk, environmentMemory, freeSlot, memoryPeak, removeDir, saveDisk, slotSubnets } from "./environment.ts";
+import { createDisk, devcontainer, environmentMemory, freeSlot, memoryPeak, removeDir, saveDisk, slotSubnets } from "./environment.ts";
 import { message, oneLine } from "./findings.ts";
 import { loadLogins, Scheduler } from "./logins.ts";
 import { ensureRunnerImage } from "./runner.ts";
 import { runsDir } from "./state.ts";
 import { composeVersion, execute } from "./target.ts";
 
-const devcontainer = join(dirname(fileURLToPath(import.meta.resolve("@devcontainers/cli/package.json"))), "devcontainer.js");
 const gib = 1024 ** 3;
 const agents = [
   ["claude-agent-acp", "--version"],
