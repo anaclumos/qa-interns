@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { providers } from "./providers.ts";
-import { stateDir } from "./state.ts";
+import { readJson, stateDir } from "./state.ts";
 import { track } from "./target.ts";
 import type { Login, Provider } from "./types.ts";
 
@@ -68,23 +68,14 @@ function storeProblems(provider: Provider, path: string, found: Store, known: He
 }
 
 export async function loadLogins(file: string): Promise<Login[]> {
-  const handle = Bun.file(file);
-  if (!(await handle.exists())) throw new Error(`No logins file at ${file}. Create it with this shape: ${example}`);
-  let raw: unknown;
-  try {
-    raw = JSON.parse(await handle.text());
-  } catch (error) {
-    throw new Error(`${file} is not valid JSON: ${String(error)}`);
-  }
-  const top = z.object({ logins: z.array(z.unknown()) }).safeParse(raw);
-  if (!top.success) throw new Error(`${file} must hold an object with a "logins" array, for example ${example}`);
-  if (top.data.logins.length === 0) throw new Error(`${file} lists no logins. Add at least one, for example ${example}`);
+  const top = await readJson(file, z.object({ logins: z.array(z.unknown()) }), `No logins file at ${file}. Create it with this shape: ${example}`);
+  if (top.logins.length === 0) throw new Error(`${file} lists no logins. Add at least one, for example ${example}`);
 
   const problems: string[] = [];
   const logins: Login[] = [];
   const firstIndex = new Map<string, number>();
   const known: Held[] = [];
-  for (const [index, value] of top.data.logins.entries()) {
+  for (const [index, value] of top.logins.entries()) {
     const id = rawId(value);
     const where = id === null ? `logins[${index}]` : `logins[${index}] "${id}"`;
     if (id !== null) {

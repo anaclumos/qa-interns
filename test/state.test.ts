@@ -119,9 +119,9 @@ describe("state file", () => {
     const file = join(dir, "state.json");
     const broken = { ...runState("3f9a1c2e", "2026-09-26T09:10:00.000Z"), phase: "running" };
     await Bun.write(file, JSON.stringify(broken));
-    await expect(readState(dir)).rejects.toThrow(`${file} does not hold a valid run state: phase:`);
+    await expect(readState(dir)).rejects.toThrow(`${file} is invalid:\n✖ Invalid option: expected one of`);
     await Bun.write(file, JSON.stringify({ ...broken, phase: "testing", interns: [{ ...intern({}), findings: "2" }] }));
-    await expect(readState(dir)).rejects.toThrow("interns.0.findings");
+    await expect(readState(dir)).rejects.toThrow(`${file} is invalid:\n✖ Invalid input: expected number, received string\n  → at interns[0].findings`);
     await Bun.write(file, "{\"runId\": \"3f9a1c2e\",");
     await expect(readState(dir)).rejects.toThrow(`${file} is not valid JSON`);
     await rm(file);
