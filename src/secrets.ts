@@ -118,12 +118,13 @@ export function redactJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value), (_key, item: unknown) => (typeof item === "string" ? redact(item) : item));
 }
 
-export async function redactFiles(dirs: string[]): Promise<void> {
+export async function redactFiles(dirs: string[], skip: ReadonlySet<string> = new Set()): Promise<void> {
   const list = forms().map((form) => Buffer.from(form).toString("latin1"));
   if (list.length === 0) return;
   const walk = async (dir: string): Promise<void> => {
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       const path = join(dir, entry.name);
+      if (skip.has(path)) continue;
       if (entry.isDirectory()) await walk(path);
       else if (entry.isFile()) {
         const text = (await readFile(path, { flag: constants.O_RDONLY | constants.O_NOFOLLOW })).toString("latin1");

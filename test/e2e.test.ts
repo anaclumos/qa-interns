@@ -782,19 +782,20 @@ USER qa
   );
 
   test(
-    "up and a failed up replace every hostEnv value that secrets names with [redacted] in the files they leave",
+    "up and a failed up replace every hostEnv value that secrets names with [redacted] in the files they leave, and a running up leaves its live workspace untouched",
     async () => {
       const secret = join(root, "up-secret");
       await cp(target, secret, { recursive: true });
       const file = join(secret, ".devcontainer", "devcontainer.json");
       const config = await Bun.file(file).json();
       const settings = { ...config.customizations["qa-interns"], hostEnv: ["QA_SECRET_TOKEN"], secrets: { hostEnv: ["QA_SECRET_TOKEN"] } };
-      await Bun.write(file, JSON.stringify({ ...config, initializeCommand: 'echo "initialize with $QA_SECRET_TOKEN" >&2', customizations: { "qa-interns": settings } }));
+      const initializeCommand = 'echo "initialize with $QA_SECRET_TOKEN" >&2 && printf %s "$QA_SECRET_TOKEN" > live-secret.txt';
+      await Bun.write(file, JSON.stringify({ ...config, initializeCommand, customizations: { "qa-interns": settings } }));
       const git = ["git", "-C", secret, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
       await execute([...git, "init", "-q"]);
       await execute([...git, "add", "-A"]);
       await execute([...git, "commit", "-q", "-m", "Ledger with a secret"]);
-      await Bun.write(file, JSON.stringify({ ...config, initializeCommand: 'echo "initialize with $QA_SECRET_TOKEN" >&2', customizations: { "qa-interns": { ...settings, seed: "echo not-json" } } }));
+      await Bun.write(file, JSON.stringify({ ...config, initializeCommand, customizations: { "qa-interns": { ...settings, seed: "echo not-json" } } }));
       await execute([...git, "commit", "-q", "-a", "-m", "Broken seed"]);
       const token = `tok_${crypto.randomUUID()}`;
       const cli = (...args: string[]) =>
@@ -809,7 +810,9 @@ USER qa
       const runDir = up.stdout.split("\n")[0] ?? "";
       try {
         expect(up).toMatchObject({ code: 0 });
-        expect(await leaks(runDir)).toEqual([]);
+        const live = join(runDir, "envs", "up", `qa-${(await readState(runDir)).runId}-up`, "live-secret.txt");
+        expect(await leaks(runDir)).toEqual([live]);
+        expect(readFileSync(live, "utf8")).toBe(token);
         expect(readFileSync(join(runDir, "envs", "up", "env.log"), "utf8")).toContain("initialize with [redacted]");
       } finally {
         if (runDir !== "") expect(await cli("down", runDir)).toMatchObject({ code: 0 });

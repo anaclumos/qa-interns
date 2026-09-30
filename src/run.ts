@@ -653,7 +653,8 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
           runner: { image: ctx.runnerImage, out: join(runDir, outDir(copyName, 1)), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] },
           egress: [],
         });
-        await redactFiles(dirs);
+        const envDir = join(runDir, "envs", copyName);
+        await redactFiles([join(runDir, "envs")], new Set([env.project, "tmp", "files"].map((entry) => join(envDir, entry))));
         await phase("up");
         opts.print(`project ${env.project}`);
         opts.print(`runner ${env.runner}`);
