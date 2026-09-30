@@ -287,7 +287,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     } catch (reason) {
       error = reason;
     }
-    expect(error).toBeInstanceOf(AgentError);
+    expect(error).toBeInstanceOf(RequestError);
     expect(error).toMatchObject({ code: -32602, data: { message: "Invalid model value: no-such-model" } });
   });
 
