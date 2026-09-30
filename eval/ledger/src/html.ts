@@ -7,14 +7,7 @@ export type Ctx = {
   teams: { id: number; name: string }[];
 };
 
-export function esc(value: unknown) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
+export const esc = Bun.escapeHTML;
 
 export function money(minor: number, currency: Currency) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(minor / 10 ** minorDigits[currency]);
