@@ -7,7 +7,7 @@ import { z } from "zod";
 import { providers } from "./providers.ts";
 import { stateDir } from "./state.ts";
 import { track } from "./target.ts";
-import type { Login, Provider } from "./types.ts";
+import { providerNames, type Login, type Provider } from "./types.ts";
 
 export const defaultLoginsPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "qa-interns", "logins.json");
 
@@ -15,7 +15,7 @@ const example = `{"logins": [{"id": "claude-1", "provider": "claude", "store": "
 
 const entrySchema = z.strictObject({
   id: z.string().min(1),
-  provider: z.enum(["claude", "codex", "cursor", "grok"]),
+  provider: z.enum(providerNames),
   store: z
     .string()
     .refine(isAbsolute, { error: (issue) => `${JSON.stringify(issue.input)} is not an absolute path`, abort: true })
