@@ -21,6 +21,7 @@ import {
   writeChromePolicy,
   type Environment,
   type EnvironmentSpec,
+  type HeldSlot,
 } from "./environment.ts";
 import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
 import { loadLogins, Scheduler, type Lease } from "./logins.ts";
@@ -76,7 +77,6 @@ type Context = {
   runnerImage: string;
   scheduler: Scheduler;
   images: Record<string, string>;
-  reserved: Set<number>;
   sessions: Set<Session>;
   startups: Limit;
   teardowns: string[];
@@ -148,7 +148,6 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     runnerImage,
     scheduler,
     images: {},
-    reserved: new Set(),
     sessions: new Set(),
     startups: limit(4),
     teardowns: [],
@@ -243,7 +242,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
   let lease = await acquire(ctx, id, avoid);
   if (lease === null) return null;
   const project = `qa-${ctx.runId}-${id}`;
-  let slot: number | undefined;
+  let slot: HeldSlot | undefined;
   let started = false;
   let unread = null as EnvironmentStats | null;
   const teardown = async () => {
@@ -261,12 +260,12 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
       const current = lease;
       const env = await ctx.startups(async () => {
         checkStopping(ctx);
-        slot = await freeSlot(ctx.reserved);
+        slot = await freeSlot();
         const environment: EnvironmentStats = { intern: id, attempt: count, startedAt: now(), readyAt: null, containers: null };
         ctx.environments.push(environment);
         started = true;
         unread = environment;
-        return startEnvironment(environmentSpec(ctx, id, slot, target, current, count), () => {
+        return startEnvironment(environmentSpec(ctx, id, slot.slot, target, current, count), () => {
           environment.readyAt = now();
         });
       });
@@ -275,7 +274,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
       ctx.scheduler.exhaust(lease);
       await teardown();
       started = false;
-      if (slot !== undefined) ctx.reserved.delete(slot);
+      slot?.release();
       slot = undefined;
       lease.release();
       const next = await acquire(ctx, id, avoid);
@@ -294,7 +293,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
       ctx.teardowns.push(`${id}: ${message(error)}`);
       await note(`teardown failed: ${message(error)}`);
     } finally {
-      if (slot !== undefined) ctx.reserved.delete(slot);
+      slot?.release();
       lease.release();
     }
   }
@@ -609,6 +608,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
   return guard(
     ctx,
     async () => {
+      let slot: HeldSlot | undefined;
       try {
         ctx.runnerImage = await opts.runnerImage();
         const source = join(runDir, "source");
@@ -618,11 +618,12 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         await phase("building");
         const images = await buildImages(runId, target, source);
         await phase("starting");
+        slot = await freeSlot();
         const env = await startEnvironment({
           runId,
           runDir,
           name: copyName,
-          slot: await freeSlot(ctx.reserved),
+          slot: slot.slot,
           target,
           images,
           runner: { image: ctx.runnerImage, out: join(runDir, outDir(copyName, 1)), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] },
@@ -637,6 +638,8 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
       } catch (error) {
         if (!ctx.stopping) await finish(message(error));
         throw new Error(redact(message(error)));
+      } finally {
+        slot?.release();
       }
       return runDir;
     },
@@ -716,7 +719,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     egress = target.settings.egress;
     const memory = environmentMemory(target);
     const free = freemem();
-    const slots = await freeSlots(ctx.reserved);
+    const slots = await freeSlots();
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
     const concurrency = Math.min(opts.replay?.groups.length ?? opts.interns, Math.floor(free / memory), scheduler.capacity(), slots);
     if (concurrency < 1) {

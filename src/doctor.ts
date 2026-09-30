@@ -97,11 +97,15 @@ async function checkMemoryPeak(image: string): Promise<string> {
 
 async function checkNetwork(): Promise<string> {
   const name = `qa-interns-doctor-${process.pid}`;
-  const reserved = new Set<number>();
-  const subnet = slotSubnets(await freeSlot(reserved)).internal;
-  await execute(["docker", "network", "create", "--internal", "--subnet", subnet, "-o", "com.docker.network.bridge.gateway_mode_ipv4=isolated", name]);
-  await execute(["docker", "network", "rm", name]);
-  return `created and removed ${name} on ${subnet}`;
+  const slot = await freeSlot();
+  try {
+    const subnet = slotSubnets(slot.slot).internal;
+    await execute(["docker", "network", "create", "--internal", "--subnet", subnet, "-o", "com.docker.network.bridge.gateway_mode_ipv4=isolated", name]);
+    await execute(["docker", "network", "rm", name]);
+    return `created and removed ${name} on ${subnet}`;
+  } finally {
+    slot.release();
+  }
 }
 
 export async function doctor(loginsFile: string, print: (line: string) => void): Promise<boolean> {
