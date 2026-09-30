@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import { oneLine } from "./findings.ts";
-import type { RunState } from "./types.ts";
+import { internStatuses, providerNames, roles, runPhases, type RunState } from "./types.ts";
 
 const stateSchema = z.object({
   runId: z.string().min(1),
@@ -13,7 +13,7 @@ const stateSchema = z.object({
   pidStart: z.int().nonnegative(),
   target: z.object({ repo: z.string(), path: z.string(), commit: z.string(), dirty: z.boolean() }),
   options: z.object({ interns: z.number(), minutes: z.number(), confirmMinutes: z.number(), concurrency: z.number() }),
-  phase: z.enum(["preparing", "building", "starting", "up", "testing", "grouping", "confirming", "reporting", "done", "failed"]),
+  phase: z.enum(runPhases),
   error: z.string().nullable(),
   startedAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
@@ -21,14 +21,14 @@ const stateSchema = z.object({
   interns: z.array(
     z.object({
       id: z.string().min(1),
-      role: z.enum(["intern", "judge", "confirm"]),
+      role: z.enum(roles),
       charter: z.string(),
       group: z.string().nullable(),
-      provider: z.enum(["claude", "codex", "cursor", "grok"]).nullable(),
+      provider: z.enum(providerNames).nullable(),
       login: z.string().nullable(),
       model: z.string().nullable(),
       project: z.string().nullable(),
-      status: z.enum(["queued", "starting", "testing", "done", "failed", "limited"]),
+      status: z.enum(internStatuses),
       detail: z.string().nullable(),
       findings: z.int().nonnegative(),
       rejected: z.int().nonnegative(),
