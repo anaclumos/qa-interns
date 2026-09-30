@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,6 +21,7 @@ import {
   stopRun,
   writeChromePolicy,
   type EnvironmentSpec,
+  type HeldSlot,
 } from "../src/environment.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { forgetSecrets, redact } from "../src/secrets.ts";
@@ -41,6 +42,18 @@ async function scratch(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "qa-interns-env-"));
   roots.push(root);
   return root;
+}
+
+const heldSlots: HeldSlot[] = [];
+
+afterEach(() => {
+  for (const held of heldSlots.splice(0)) held.release();
+});
+
+async function takeSlot(): Promise<number> {
+  const held = await freeSlot();
+  heldSlots.push(held);
+  return held.slot;
 }
 
 function spec(runDir: string, target: Target | null, overrides: Partial<EnvironmentSpec> = {}): EnvironmentSpec {
@@ -119,17 +132,39 @@ describe.skipIf(!dockerAvailable)("slots", () => {
       await withSubnet(subnet, async () => {
         const message = `QA_INTERNS_SUBNET is ${JSON.stringify(subnet)}, and it must be an IPv4 network address with a prefix length from 16 to 23`;
         expect(() => slotSubnets(0)).toThrow(message);
-        await expect(freeSlots(new Set())).rejects.toThrow(message);
+        await expect(freeSlots()).rejects.toThrow(message);
       });
     },
   );
 
-  test("reserve the slot it returns, so concurrent callers get different slots", async () => {
-    const reserved = new Set<number>([0]);
-    const slots = await Promise.all([freeSlot(reserved), freeSlot(reserved), freeSlot(reserved)]);
-    expect(new Set(slots).size).toBe(3);
-    expect(slots).not.toContain(0);
-    for (const slot of slots) expect(reserved.has(slot)).toBe(true);
+  test("give concurrent callers different slots", async () => {
+    const held = await Promise.all([freeSlot(), freeSlot(), freeSlot()]);
+    heldSlots.push(...held);
+    expect(new Set(held.map((entry) => entry.slot)).size).toBe(3);
+  });
+
+  function testRange(): number {
+    return 4 * Math.floor(Math.random() * 64);
+  }
+
+  test("skip a slot that another process holds until that process ends", async () => {
+    await withSubnet(`10.215.${testRange()}.0/22`, async () => {
+      const module = join(import.meta.dir, "..", "src", "environment.ts");
+      const holder = Bun.spawn([process.execPath, "-e", `const { freeSlot } = await import(${JSON.stringify(module)}); console.log((await freeSlot()).slot); await Bun.sleep(600000);`], {
+        env: { ...process.env },
+        stdout: "pipe",
+      });
+      try {
+        const { value } = await holder.stdout.getReader().read();
+        expect(new TextDecoder().decode(value).trim()).toBe("0");
+        expect(await takeSlot()).toBe(1);
+        await expect(freeSlot()).rejects.toThrow("No free network slot");
+      } finally {
+        holder.kill("SIGKILL");
+        await holder.exited;
+      }
+      expect(await takeSlot()).toBe(0);
+    });
   });
 
   async function withNetwork(subnet: string, check: () => Promise<void>): Promise<void> {
@@ -144,20 +179,29 @@ describe.skipIf(!dockerAvailable)("slots", () => {
   }
 
   test("skip slots that overlap a larger Docker network", async () => {
-    await withNetwork("10.213.252.0/22", async () => {
-      const reserved = new Set(Array.from({ length: 126 }, (_, slot) => slot));
-      await expect(freeSlot(reserved)).rejects.toThrow("No free network slot");
-    });
+    const range = `10.215.${testRange()}.0/22`;
+    await withSubnet(range, () =>
+      withNetwork(range, async () => {
+        expect(await freeSlots()).toBe(0);
+        await expect(freeSlot()).rejects.toThrow("No free network slot");
+      }),
+    );
   });
 
-  test.each(["10.213.254.64/26", "10.213.254.192/26", "10.213.255.64/26", "10.213.255.192/26"])("skip and leave out of the count a slot that overlaps the smaller Docker network %s", async (subnet) => {
-    await withNetwork(subnet, async () => {
-      const reserved = new Set(Array.from({ length: 126 }, (_, slot) => slot));
-      expect(await freeSlots(reserved)).toBe(1);
-      expect(await freeSlot(reserved)).toBe(126);
-      expect(await freeSlots(reserved)).toBe(0);
-      await expect(freeSlot(reserved)).rejects.toThrow("No free network slot");
-    });
+  test.each([
+    [2, 64],
+    [2, 192],
+    [3, 64],
+    [3, 192],
+  ])("skip and leave out of the count a slot that overlaps a smaller Docker network at offset %i.%i/26", async (block, address) => {
+    const third = testRange();
+    await withSubnet(`10.215.${third}.0/22`, () =>
+      withNetwork(`10.215.${third + block}.${address}/26`, async () => {
+        expect(await freeSlots()).toBe(1);
+        expect(await takeSlot()).toBe(0);
+        await expect(freeSlot()).rejects.toThrow("No free network slot");
+      }),
+    );
   });
 });
 
@@ -672,7 +716,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       const out = join(runDir, "interns", "i1", "out");
       const runner = { image, out, env: runnerEnv({}), mounts: [], files: [], tmpfs: [] };
       try {
-        const environment = await startEnvironment(spec(runDir, null, { runId, slot: await freeSlot(new Set()), runner }));
+        const environment = await startEnvironment(spec(runDir, null, { runId, slot: await takeSlot(), runner }));
         await execute(["docker", "exec", environment.runner, "sh", "-c", "mkdir /qa/out/findings && echo '{}' > /qa/out/findings/left.json"]);
       } finally {
         await stopRun(runDir, runId);
@@ -729,7 +773,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         const images = await buildImages(runId, target, source);
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
-        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), images, runner }));
+        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner }));
         expect(environment.seed).toEqual({
           environment: ["listed", ""],
           interpolation: ["listed/api", "/api"],
@@ -763,7 +807,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
-        const failed = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), runner })).then(
+        const failed = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), runner })).then(
           () => null,
           (error: unknown) => error,
         );
@@ -811,10 +855,9 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         const target = await loadTarget(ref, source);
         const images = await buildImages(runId, target, source);
         await writeChromePolicy(runDir, target.settings.urls);
-        const reserved = new Set<number>();
         const runner = (name: string, urls: Record<string, string>) => ({ image, out: join(runDir, "interns", name, "out"), env: runnerEnv(urls), mounts: [], files: [], tmpfs: [] });
-        const intern = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(reserved), images, runner: runner("i1", target.settings.urls) }));
-        const judge = await startEnvironment(spec(runDir, null, { runId, name: "judge", slot: await freeSlot(reserved), runner: runner("judge", {}) }));
+        const intern = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner: runner("i1", target.settings.urls) }));
+        const judge = await startEnvironment(spec(runDir, null, { runId, name: "judge", slot: await takeSlot(), runner: runner("judge", {}) }));
         const containers = [intern.project, judge.project].flatMap((project) => {
           const ids = Bun.spawnSync(["docker", "ps", "-aq", "--filter", `label=com.docker.compose.project=${project}`]).stdout.toString().split("\n").filter((id) => id !== "");
           const inspected = JSON.parse(Bun.spawnSync(["docker", "inspect", ...ids]).stdout.toString());
@@ -863,7 +906,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
-        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), runner }));
+        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), runner }));
         const web = (await execute(["docker", "compose", "-p", environment.project, "ps", "-q", "web"])).trim();
         await execute(["docker", "exec", web, "sh", "-c", `rmdir /app/uploads && ln -s ${host} /app/uploads && touch /app/stop`]);
         await execute(["docker", "wait", web]);
@@ -902,7 +945,7 @@ ${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", 
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
         let ready = false;
-        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), runner }), () => {
+        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), runner }), () => {
           ready = true;
         });
         expect(ready).toBe(true);
@@ -953,7 +996,7 @@ ${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", 
         "})();",
       ].join("\n");
       try {
-        const environment = await startEnvironment(spec(runDir, null, { runId, slot: await freeSlot(new Set()), runner }));
+        const environment = await startEnvironment(spec(runDir, null, { runId, slot: await takeSlot(), runner }));
         const proxy = (await execute(["docker", "compose", "-p", environment.project, "ps", "-q", "qa-proxy"])).trim();
         await execute(["docker", "exec", environment.runner, "node", "-e", flood]);
         for (const container of [environment.runner, proxy]) {
@@ -984,7 +1027,7 @@ ${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", 
         const images = await buildImages(runId, target, source);
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
-        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), images, runner }));
+        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner }));
         expect(Object.keys(target.services).sort()).toEqual(["db", "web"]);
         for (const service of Object.keys(target.services)) {
           const container = (await execute(["docker", "compose", "-p", environment.project, "ps", "-q", service])).trim();
@@ -1046,7 +1089,7 @@ ${sleeper}    profiles: ["mail"]
         const images = await buildImages(runId, target, source);
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
-        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await freeSlot(new Set()), images, runner }));
+        const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner }));
         const running = (await execute(["docker", "compose", "-p", environment.project, "ps", "--services"])).split("\n").filter((name) => name !== "");
         expect(running.sort()).toEqual([...expected, "qa-proxy", "qa-runner"].sort());
       } finally {
@@ -1097,7 +1140,7 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, command: ["node", "-e", onStop], volumes: ["../certs:/certs:ro"] } } }));
       const target = await loadTarget(ref, source);
       const runDir = await scratch();
-      const slot = await freeSlot(new Set());
+      const slot = await takeSlot();
       const base = spec(runDir, target, { slot });
       const override = join(runDir, "compose.qa.yml");
       await Bun.write(override, renderOverride({ ...base, runner: { ...base.runner, image } }, 1000, 1000));
@@ -1171,7 +1214,7 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       await Bun.write(join(source, ".devcontainer", "compose.yml"), JSON.stringify({ services: { app: { image, volumes: ["../certs:/certs:ro"] } } }));
       const target = await loadTarget(ref, source);
       const runDir = await scratch();
-      const base = spec(runDir, target, { slot: await freeSlot(new Set()) });
+      const base = spec(runDir, target, { slot: await takeSlot() });
       const override = join(runDir, "compose.qa.yml");
       await Bun.write(override, renderOverride({ ...base, runner: { ...base.runner, image } }, 1000, 1000));
       const server = 'require("node:https").createServer({ key: require("node:fs").readFileSync("/certs/key.pem"), cert: require("node:fs").readFileSync("/certs/cert.pem") }, (req, res) => res.end("upstream")).listen(443)';
