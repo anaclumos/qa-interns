@@ -1,10 +1,11 @@
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { errorCode } from "./findings.ts";
+import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type GeneratedFile, type Mount, type RelayRecord } from "./types.ts";
@@ -121,23 +122,41 @@ export function slotSubnets(slot: number): { internal: string; relay: string; ag
   };
 }
 
-function openSlots(used: Cidr[], reserved: Set<number>): number[] {
+function openSlots(used: Cidr[]): number[] {
   return Array.from({ length: networkRange().slots }, (_, slot) => slot).filter((slot) => {
-    if (reserved.has(slot)) return false;
     const blocks = Object.values(slotSubnets(slot)).map(parseCidr);
     return !used.some((block) => blocks.some((own) => overlaps(block, own)));
   });
 }
 
-export async function freeSlots(reserved: Set<number>): Promise<number> {
-  return openSlots(await usedBlocks(), reserved).length;
+export async function freeSlots(): Promise<number> {
+  return openSlots(await usedBlocks()).length;
 }
 
-export async function freeSlot(reserved: Set<number>): Promise<number> {
-  const [slot] = openSlots(await usedBlocks(), reserved);
-  if (slot === undefined) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network, a host route, or a slot this run holds`);
-  reserved.add(slot);
-  return slot;
+function slotLocks(): string {
+  const runtime = process.env.XDG_RUNTIME_DIR;
+  if (runtime === undefined || runtime === "") throw new Error("XDG_RUNTIME_DIR is not set, and QA Interns keeps the locks of its network slots there");
+  const dir = join(runtime, "qa-interns", "slots");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+export type HeldSlot = { slot: number; release: () => void };
+
+export async function freeSlot(): Promise<HeldSlot> {
+  const dir = slotLocks();
+  for (const slot of openSlots(await usedBlocks())) {
+    const fd = flock(join(dir, `${slotAddress(slot, 0)}.lock`), "--exclusive", "--nonblock");
+    if (fd === null) continue;
+    let free = false;
+    try {
+      free = openSlots(await usedBlocks()).includes(slot);
+    } finally {
+      if (!free) closeSync(fd);
+    }
+    if (free) return { slot, release: () => closeSync(fd) };
+  }
+  throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route, or is locked for another QA Interns environment of this user`);
 }
 
 function projectName(runId: string, name: string): string {
