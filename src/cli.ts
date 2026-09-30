@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { z } from "zod";
 import { doctor } from "./doctor.ts";
 import { imageBuilders, removeCopies, stopRun } from "./environment.ts";
 import { errorCode, message, stripControl } from "./findings.ts";
@@ -58,16 +59,13 @@ function print(line: string): void {
   process.stdout.write(`${line}\n`);
 }
 
-function count(value: string, option: string): number {
-  const number = Number(value);
-  if (value.trim() === "" || !Number.isSafeInteger(number) || number < 1) throw new Error(`--${option} must be a whole number of at least 1, got ${value}`);
-  return number;
-}
+const countSchema = z.coerce.number({ error: "must be a whole number of at least 1" }).int().min(1);
+const minutesSchema = z.coerce.number({ error: "must be a number of minutes above 0" }).positive();
 
-function minutes(value: string, option: string): number {
-  const number = Number(value);
-  if (value.trim() === "" || !Number.isFinite(number) || number <= 0) throw new Error(`--${option} must be a number of minutes above 0, got ${value}`);
-  return number;
+function numberOption(schema: z.ZodType<number>, value: string, option: string): number {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new Error(`--${option} ${parsed.error.issues[0]?.message}, got ${value}`);
+  return parsed.data;
 }
 
 function running(pid: number, start: number): boolean {
@@ -132,9 +130,9 @@ async function main(args: string[]): Promise<number> {
         dir,
         rev: values.commit ?? "HEAD",
         dirty: values.dirty,
-        interns: count(values.interns, "interns"),
-        minutes: minutes(values.minutes, "minutes"),
-        confirmMinutes: minutes(values["confirm-minutes"], "confirm-minutes"),
+        interns: numberOption(countSchema, values.interns, "interns"),
+        minutes: numberOption(minutesSchema, values.minutes, "minutes"),
+        confirmMinutes: numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes"),
         loginsFile: values.logins,
         onEnd: values["on-end"],
       };
@@ -154,7 +152,7 @@ async function main(args: string[]): Promise<number> {
       });
       const [run, ...extra] = positionals;
       if (run === undefined || extra.length > 0) throw new Error("replay takes exactly one run id or run directory. Run qa-interns help for usage.");
-      const confirmMinutes = minutes(values["confirm-minutes"], "confirm-minutes");
+      const confirmMinutes = numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes");
       const replay = await readReplay(await resolveRunDir(run), values.group);
       await runQa({
         dir: join(replay.target.repo, replay.target.path),

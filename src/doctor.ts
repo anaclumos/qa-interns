@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { arch, freemem, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { createDisk, devcontainer, environmentMemory, freeSlot, memoryPeak, saveDisk, slotSubnets } from "./environment.ts";
+import { createDisk, devcontainer, environmentMemory, freeSlot, memoryPeak, removeDir, saveDisk, slotSubnets } from "./environment.ts";
 import { message, oneLine } from "./findings.ts";
 import { loadLogins, Scheduler } from "./logins.ts";
 import { ensureRunnerImage } from "./runner.ts";
@@ -77,7 +77,7 @@ async function checkDisk(image: string): Promise<string> {
     if (saved !== "saved\n") throw new Error(`the saved disk holds ${JSON.stringify(saved)} instead of the file written to it`);
     return `created, mounted, and saved an output disk in ${state}`;
   } finally {
-    await rm(dir, { recursive: true, force: true });
+    await removeDir(dir, image, owner);
   }
 }
 
@@ -130,6 +130,7 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
   await check("dev container cli", async () => `version ${(await execute([process.execPath, devcontainer, "--version"])).trim()}`);
   await check("git", async () => (await execute(["git", "--version"])).trim());
   await check("flock", async () => (await execute(["flock", "--version"])).trim());
+  await check("findmnt", async () => (await execute(["findmnt", "--version"])).trim());
   let image: string | null = null;
   await check("runner image", async () => {
     image = await ensureRunnerImage();

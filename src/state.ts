@@ -98,7 +98,7 @@ export async function readState(runDir: string): Promise<RunState> {
   }
   const parsed = stateSchema.safeParse(raw);
   if (!parsed.success) {
-    const problems = parsed.error.issues.map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`);
+    const problems = parsed.error.issues.map((issue) => `${z.core.toDotPath(issue.path) || "(root)"}: ${issue.message}`);
     throw new Error(`${file} does not hold a valid run state: ${problems.join("; ")}`);
   }
   return parsed.data;
