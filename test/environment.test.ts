@@ -506,7 +506,7 @@ networks:
     const runDir = await scratch();
     const config = await normalize(runDir, [], renderOverride(spec(runDir, null), 1000, 1000));
     expect(Object.keys(config.services).sort()).toEqual(["qa-proxy", "qa-runner"]);
-    expect(config.services["qa-runner"]?.environment).toMatchObject({ NO_PROXY: "localhost,127.0.0.1", AGENT_BROWSER_ALLOWED_DOMAINS: "" });
+    expect(config.services["qa-runner"]?.environment).toMatchObject({ NO_PROXY: "localhost,127.0.0.1" });
   });
 
   test("render no proxy and no agent network for a runner without egress hosts, and keep the relay", async () => {
@@ -674,7 +674,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     expect(created).toEqual([]);
   });
 
-  test("route every environment host around the proxy and allow only those hosts in the browser", () => {
+  test("route every environment host around the proxy", () => {
     const env = runnerEnv({ app: "http://web:3000", admin: "https://admin.shop.test:8443/login", api: "http://web:3000/api" });
     expect(env).toEqual({
       HOME: "/home/qa",
@@ -685,7 +685,6 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       NO_PROXY: "web,admin.shop.test,localhost,127.0.0.1",
       no_proxy: "web,admin.shop.test,localhost,127.0.0.1",
       NODE_USE_ENV_PROXY: "1",
-      AGENT_BROWSER_ALLOWED_DOMAINS: "web,admin.shop.test",
     });
   });
 

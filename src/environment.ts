@@ -310,7 +310,6 @@ export function runnerEnv(urls: Record<string, string>): Record<string, string> 
     NO_PROXY: noProxy,
     no_proxy: noProxy,
     NODE_USE_ENV_PROXY: "1",
-    AGENT_BROWSER_ALLOWED_DOMAINS: hosts.join(","),
   };
 }
 
