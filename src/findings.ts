@@ -25,6 +25,14 @@ export function errorCode(error: unknown): string | null {
   return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : null;
 }
 
+export function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+export function oneLine(text: string): string {
+  return text.replaceAll("\r", " ").replaceAll("\n", " ");
+}
+
 function control(char: string): boolean {
   const code = char.codePointAt(0) ?? 0;
   return code < 0x20 || (code >= 0x7f && code <= 0x9f) || (code >= 0x2028 && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
