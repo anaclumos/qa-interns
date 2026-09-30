@@ -43,11 +43,7 @@ export type Session = {
 function modelOf(response: NewSessionResponse): string | null {
   const option = response.configOptions?.find((entry) => entry.id === "model");
   if (option && typeof option.currentValue === "string") return option.currentValue;
-  if (!("models" in response)) return null;
-  const models = response.models;
-  return typeof models === "object" && models !== null && "currentModelId" in models && typeof models.currentModelId === "string"
-    ? models.currentModelId
-    : null;
+  return z.object({ models: z.object({ currentModelId: z.string() }) }).safeParse(response).data?.models.currentModelId ?? null;
 }
 
 function appender(path: string): (data: string | Uint8Array) => void {
