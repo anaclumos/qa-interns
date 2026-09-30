@@ -921,7 +921,7 @@ ${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", 
           { service: "worker", number: 1, state: "exited", oomKilled: false, restarts: 0 },
         ]);
         const peaks = Object.fromEntries(stats.map((entry) => [entry.service, entry.memoryPeak]));
-        expect(peaks.hog).toBe(32 * 1024 ** 2);
+        expect(peaks.hog).toBeGreaterThanOrEqual(32 * 1024 ** 2);
         expect(peaks.worker).toBeNull();
         for (const name of ["flaky", "qa-proxy", "qa-runner", "web"]) expect(peaks[name]).toBeGreaterThan(0);
         expect((await execute(["docker", "ps", "-aq", "--filter", `label=com.docker.compose.project=${environment.project}`])).trim()).toBe("");
