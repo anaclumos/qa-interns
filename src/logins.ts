@@ -162,7 +162,7 @@ async function seatStore(command: string[], leasePid: number, intern: string): P
   return exitCode === 0 && store !== undefined && isAbsolute(store) && isDirectory(store) ? store : null;
 }
 
-function flock(file: string, ...options: string[]): number | null {
+export function flock(file: string, ...options: string[]): number | null {
   const fd = openSync(file, "a", 0o600);
   let code: number;
   try {
