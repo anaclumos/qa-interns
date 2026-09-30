@@ -110,8 +110,7 @@ const groupsSchema = z.strictObject(
 );
 
 function where(keys: PropertyKey[]) {
-  if (keys.length === 0) return "the file";
-  return keys.map((key, index) => (typeof key === "number" ? `[${key}]` : index === 0 ? String(key) : `.${String(key)}`)).join("");
+  return keys.length === 0 ? "the file" : z.core.toDotPath(keys);
 }
 
 function parse<T>(schema: z.ZodType<T>, raw: string): T {

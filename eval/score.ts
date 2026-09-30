@@ -59,7 +59,7 @@ function parseScore(raw: string, defectIds: string[], groupIds: string[]): Score
     throw new Error(`not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
   const parsed = scoreSchema.safeParse(data);
-  if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => `${issue.path.join(".") || "the file"}: ${issue.message}`).join("; "));
+  if (!parsed.success) throw new Error(parsed.error.issues.map((issue) => `${z.core.toDotPath(issue.path) || "the file"}: ${issue.message}`).join("; "));
   const problems: string[] = [];
   for (const id of defectIds) if (!Object.hasOwn(parsed.data.matches, id)) problems.push(`defect ${id} is missing`);
   for (const [id, groups] of Object.entries(parsed.data.matches)) {
