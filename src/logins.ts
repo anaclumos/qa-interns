@@ -88,7 +88,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
     const parsed = entrySchema.safeParse(value);
     if (!parsed.success) {
       for (const issue of parsed.error.issues) {
-        problems.push(issue.path.length === 0 ? `${where}: ${issue.message}` : `${where}: ${issue.path.join(".")}: ${issue.message}`);
+        problems.push(issue.path.length === 0 ? `${where}: ${issue.message}` : `${where}: ${z.core.toDotPath(issue.path)}: ${issue.message}`);
       }
       continue;
     }
