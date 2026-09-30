@@ -782,6 +782,54 @@ USER qa
   );
 
   test(
+    "up and a failed up replace every hostEnv value that secrets names with [redacted] in the files they leave, and a running up leaves its live workspace untouched",
+    async () => {
+      const secret = join(root, "up-secret");
+      await cp(target, secret, { recursive: true });
+      const file = join(secret, ".devcontainer", "devcontainer.json");
+      const config = await Bun.file(file).json();
+      const settings = { ...config.customizations["qa-interns"], hostEnv: ["QA_SECRET_TOKEN"], secrets: { hostEnv: ["QA_SECRET_TOKEN"] } };
+      const initializeCommand = 'echo "initialize with $QA_SECRET_TOKEN" >&2 && printf %s "$QA_SECRET_TOKEN" > live-secret.txt';
+      await Bun.write(file, JSON.stringify({ ...config, initializeCommand, customizations: { "qa-interns": settings } }));
+      const git = ["git", "-C", secret, "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+      await execute([...git, "init", "-q"]);
+      await execute([...git, "add", "-A"]);
+      await execute([...git, "commit", "-q", "-m", "Ledger with a secret"]);
+      await Bun.write(file, JSON.stringify({ ...config, initializeCommand, customizations: { "qa-interns": { ...settings, seed: "echo not-json" } } }));
+      await execute([...git, "commit", "-q", "-a", "-m", "Broken seed"]);
+      const token = `tok_${crypto.randomUUID()}`;
+      const cli = (...args: string[]) =>
+        capture([process.execPath, join(import.meta.dir, "..", "src", "cli.ts"), ...args], { env: { ...process.env, QA_SECRET_TOKEN: token } });
+      const leaks = async (runDir: string) => {
+        const entries = await readdir(runDir, { recursive: true, withFileTypes: true });
+        const files = entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name)).filter((path) => !path.startsWith(join(runDir, "source", "")));
+        return files.filter((path) => readFileSync(path, "latin1").includes(token));
+      };
+
+      const up = await cli("up", secret, "--commit", "HEAD~1");
+      const runDir = up.stdout.split("\n")[0] ?? "";
+      try {
+        expect(up).toMatchObject({ code: 0 });
+        const live = join(runDir, "envs", "up", `qa-${(await readState(runDir)).runId}-up`, "live-secret.txt");
+        expect(await leaks(runDir)).toEqual([live]);
+        expect(readFileSync(live, "utf8")).toBe(token);
+        expect(readFileSync(join(runDir, "envs", "up", "env.log"), "utf8")).toContain("initialize with [redacted]");
+      } finally {
+        if (runDir !== "") expect(await cli("down", runDir)).toMatchObject({ code: 0 });
+      }
+
+      const broken = await cli("up", secret);
+      expect(broken.code).toBe(1);
+      const failedDir = broken.stdout.split("\n")[0] ?? "";
+      expect(await readState(failedDir)).toMatchObject({ phase: "failed" });
+      expect(await leaks(failedDir)).toEqual([]);
+      expect(readFileSync(join(failedDir, "envs", "up", "env.log"), "utf8")).toContain("initialize with [redacted]");
+      expect(await leftovers((await readState(failedDir)).runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "an intern that fills its 1 GiB disk, partly with a deleted file it keeps open, is stopped and keeps its findings",
     async () => {
       const lines: string[] = [];
