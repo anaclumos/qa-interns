@@ -29,6 +29,7 @@ import { ensureRunnerImage, runnerImage } from "../src/runner.ts";
 import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 import type { RelayRecord } from "../src/types.ts";
+import { freeBlock } from "./subnet.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -146,12 +147,8 @@ describe.skipIf(!dockerAvailable)("slots", () => {
     expect(new Set(held.map((entry) => entry.slot)).size).toBe(3);
   });
 
-  function testRange(): number {
-    return 4 * Math.floor(Math.random() * 64);
-  }
-
   test("skip a slot that another process holds until that process ends", async () => {
-    await withSubnet(`10.215.${testRange()}.0/22`, async () => {
+    await withSubnet(`10.215.${await freeBlock(215)}.0/22`, async () => {
       const module = join(import.meta.dir, "..", "src", "environment.ts");
       const holder = Bun.spawn([process.execPath, "-e", `const { freeSlot } = await import(${JSON.stringify(module)}); console.log((await freeSlot()).slot); await Bun.sleep(600000);`], {
         env: { ...process.env },
@@ -182,7 +179,7 @@ describe.skipIf(!dockerAvailable)("slots", () => {
   }
 
   test("skip slots that overlap a larger Docker network", async () => {
-    const range = `10.215.${testRange()}.0/22`;
+    const range = `10.215.${await freeBlock(215)}.0/22`;
     await withSubnet(range, () =>
       withNetwork(range, async () => {
         expect(await freeSlots()).toBe(0);
@@ -197,7 +194,7 @@ describe.skipIf(!dockerAvailable)("slots", () => {
     [3, 64],
     [3, 192],
   ])("skip and leave out of the count a slot that overlaps a smaller Docker network at offset %i.%i/26", async (block, address) => {
-    const third = testRange();
+    const third = await freeBlock(215);
     await withSubnet(`10.215.${third}.0/22`, () =>
       withNetwork(`10.215.${third + block}.${address}/26`, async () => {
         expect(await freeSlots()).toBe(1);
