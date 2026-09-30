@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, statfs } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -489,6 +489,16 @@ export async function createDisk(out: string, image: string, owner: string): Pro
 
 export async function saveDisk(out: string, image: string, owner: string): Promise<void> {
   await diskHelper(out, image, owner, saveDiskScript, []);
+}
+
+const mountsSchema = z.object({ filesystems: z.array(z.object({ target: z.string() })) });
+
+export async function removeDir(dir: string, image: string, owner: string): Promise<void> {
+  if (!existsSync(dir)) return;
+  const real = await realpath(dir);
+  const { filesystems } = mountsSchema.parse(JSON.parse(await execute(["findmnt", "--list", "--json", "--output", "TARGET"])));
+  for (const { target } of filesystems.filter((mount) => mount.target.startsWith(`${real}/`))) await saveDisk(target, image, owner);
+  await rm(dir, { recursive: true, force: true });
 }
 
 async function diskOuts(dir: string): Promise<string[]> {
