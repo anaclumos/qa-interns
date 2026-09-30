@@ -68,10 +68,11 @@ async function until(check: () => boolean | Promise<boolean>, what: string) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
-function fakeSession(label: string): Promise<Session> {
+function fakeSession(label: string, model: string | null = null): Promise<Session> {
   return openSession({
     container: agent,
     provider: { ...providers.claude, adapter: ["node", "/opt/qa/fake-agent.mjs"] },
+    model,
     transcript: path.join(internDir, `${label}-transcript.jsonl`),
     adapterLog: path.join(internDir, `${label}-adapter.log`),
   });
@@ -148,6 +149,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     session = await openSession({
       container: agent,
       provider: { ...providers.claude, adapter: ["node", "/opt/qa/fake-agent.mjs"] },
+      model: null,
       transcript,
       adapterLog,
     });
@@ -260,6 +262,32 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     } finally {
       await locked.close();
     }
+  });
+
+  test("a login model is set with session/set_config_option and reported from the agent's answer", async () => {
+    const chosen = await fakeSession("model", "fake-model-2");
+    try {
+      expect(chosen.model).toBe("fake-model-2");
+      const set = readFileSync(path.join(internDir, "model-transcript.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line): Line => JSON.parse(line))
+        .find((line) => line.from === "client" && line.message.method === "session/set_config_option");
+      expect(set?.message.params).toEqual({ sessionId: "fake-session-1", configId: "model", value: "fake-model-2" });
+    } finally {
+      await chosen.close();
+    }
+  });
+
+  test("a login model the agent does not offer fails the session with the agent's error", async () => {
+    let error: unknown;
+    try {
+      await fakeSession("unknown-model", "no-such-model");
+    } catch (reason) {
+      error = reason;
+    }
+    expect(error).toBeInstanceOf(AgentError);
+    expect(error).toMatchObject({ code: -32602, data: { message: "Invalid model value: no-such-model" } });
   });
 
   test("updates the agent prints between turns do not reach the next turn", async () => {

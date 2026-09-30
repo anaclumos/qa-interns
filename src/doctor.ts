@@ -3,6 +3,7 @@ import { arch, freemem, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { createDisk, devcontainer, environmentMemory, freeSlot, memoryPeak, saveDisk, slotSubnets } from "./environment.ts";
+import { message, oneLine } from "./findings.ts";
 import { loadLogins, Scheduler } from "./logins.ts";
 import { ensureRunnerImage } from "./runner.ts";
 import { runsDir } from "./state.ts";
@@ -112,8 +113,7 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
       print(`ok ${name}: ${await run()}`);
     } catch (error) {
       passed = false;
-      const text = error instanceof Error ? error.message : String(error);
-      print(`fail ${name}: ${text.replaceAll("\r", " ").replaceAll("\n", " ").slice(0, 500)}`);
+      print(`fail ${name}: ${oneLine(message(error)).slice(0, 500)}`);
     }
   };
 
