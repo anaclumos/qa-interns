@@ -1,4 +1,13 @@
-import { client, methods, ndJsonStream, PROTOCOL_VERSION, RequestError, type AnyMessage, type NewSessionResponse } from "@agentclientprotocol/sdk";
+import {
+  client,
+  methods,
+  ndJsonStream,
+  PROTOCOL_VERSION,
+  RequestError,
+  type AnyMessage,
+  type NewSessionResponse,
+  type SetSessionConfigOptionResponse,
+} from "@agentclientprotocol/sdk";
 import { spawn } from "node:child_process";
 import { appendFileSync, statSync } from "node:fs";
 import { Writable } from "node:stream";
@@ -28,14 +37,10 @@ export type Session = {
   close(): Promise<void>;
 };
 
-function modelOf(response: NewSessionResponse): string | null {
+function modelOf(response: NewSessionResponse | SetSessionConfigOptionResponse): string | null {
   const option = response.configOptions?.find((entry) => entry.id === "model");
   if (option && typeof option.currentValue === "string") return option.currentValue;
-  if (!("models" in response)) return null;
-  const models = response.models;
-  return typeof models === "object" && models !== null && "currentModelId" in models && typeof models.currentModelId === "string"
-    ? models.currentModelId
-    : null;
+  return z.object({ models: z.object({ currentModelId: z.string() }) }).safeParse(response).data?.models.currentModelId ?? null;
 }
 
 function appender(path: string): (data: string | Uint8Array) => void {
@@ -52,7 +57,13 @@ function appender(path: string): (data: string | Uint8Array) => void {
   };
 }
 
-export async function openSession(opts: { container: string; provider: ProviderSpec; transcript: string; adapterLog: string }): Promise<Session> {
+export async function openSession(opts: {
+  container: string;
+  provider: ProviderSpec;
+  model: string | null;
+  transcript: string;
+  adapterLog: string;
+}): Promise<Session> {
   const argv = ["docker", "exec", "-i", "-w", "/qa/out", opts.container, ...opts.provider.adapter];
   const log = appender(opts.adapterLog);
   const transcript = appender(opts.transcript);
@@ -208,7 +219,13 @@ export async function openSession(opts: { container: string; provider: ProviderS
     if (opts.provider.modeId !== null) {
       await connection.agent.request(methods.agent.session.setMode, { sessionId: started.sessionId, modeId: opts.provider.modeId });
     }
-    return started;
+    if (opts.model === null) return { started, model: modelOf(started.newSessionResponse) };
+    const chosen = await connection.agent.request(methods.agent.session.setConfigOption, {
+      sessionId: started.sessionId,
+      configId: "model",
+      value: opts.model,
+    });
+    return { started, model: modelOf(chosen) };
   };
 
   const timedOut = new Error(`${argv.join(" ")} did not start a session within ${startupMs / 1000} seconds`);
@@ -217,10 +234,10 @@ export async function openSession(opts: { container: string; provider: ProviderS
     const expired = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(timedOut), startupMs);
     });
-    const session = await Promise.race([setup(), expired]).finally(() => clearTimeout(timer));
+    const { started: session, model } = await Promise.race([setup(), expired]).finally(() => clearTimeout(timer));
 
     return {
-      model: modelOf(session.newSessionResponse),
+      model,
       async prompt(text) {
         let toolCalls = 0;
         let lastMessage = "";
