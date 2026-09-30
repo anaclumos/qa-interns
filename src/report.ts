@@ -129,9 +129,9 @@ function reported(first: Finding, fact: string) {
   return lines;
 }
 
-function lead(group: Group) {
+export function lead(group: Group) {
   const [first] = group.findings;
-  if (first === undefined) throw new Error(`group ${group.id} has no findings`);
+  if (first === undefined) throw new Error(`Group ${group.id} has no findings`);
   return first;
 }
 

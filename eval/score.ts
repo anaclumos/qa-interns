@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
+import { message } from "../src/findings.ts";
 import { defaultLoginsPath, loadLogins } from "../src/logins.ts";
 import { ask } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
@@ -42,7 +43,7 @@ function parseScore(raw: string, defectIds: string[], groupIds: string[]): Score
   try {
     data = JSON.parse(raw);
   } catch (error) {
-    throw new Error(`not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`not valid JSON: ${message(error)}`);
   }
   const parsed = scoreSchema.safeParse(data);
   if (!parsed.success) throw new Error(z.prettifyError(parsed.error));
@@ -126,6 +127,6 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  console.error(`score: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`score: ${message(error)}`);
   process.exitCode = 1;
 }
