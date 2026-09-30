@@ -220,6 +220,7 @@ async function attempt<T>(ctx: Context, id: string, count: number, env: Environm
     session = await openSession({
       container: env.runner,
       provider,
+      model: lease.login.model,
       transcript: join(ctx.runDir, "interns", id, "transcript.jsonl"),
       adapterLog: join(ctx.runDir, "interns", id, "adapter.log"),
     });

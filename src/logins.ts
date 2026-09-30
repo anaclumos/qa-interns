@@ -23,6 +23,7 @@ const entrySchema = z.strictObject({
     .optional(),
   seat: z.array(z.string().min(1)).min(1).optional(),
   concurrency: z.int().positive().default(1),
+  model: z.string().min(1).optional(),
 });
 
 function isDirectory(path: string): boolean {
@@ -113,7 +114,14 @@ export async function loadLogins(file: string): Promise<Login[]> {
         );
       }
     }
-    logins.push({ id: entry.id, provider: entry.provider, store: entry.store ?? null, seat: entry.seat ?? null, concurrency: entry.concurrency });
+    logins.push({
+      id: entry.id,
+      provider: entry.provider,
+      store: entry.store ?? null,
+      seat: entry.seat ?? null,
+      concurrency: entry.concurrency,
+      model: entry.model ?? null,
+    });
   }
   if (problems.length > 0) throw new Error(`${file} has problems:\n${problems.map((problem) => `  ${problem}`).join("\n")}`);
   return logins;
