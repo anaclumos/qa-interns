@@ -8,7 +8,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 
 - Linux 5.19 or later on x86-64, with cgroup v2. Chrome for Testing has no Linux ARM64 build. QA Interns reads the peak memory of each container from the `memory.peak` file of its cgroup, which older kernels and cgroup v1 do not have. `qa-interns doctor` checks that it can read that file.
 - Docker Engine with Compose 5.0 or later, the `isolated` bridge gateway mode, and privileged containers that can use loop devices. QA Interns mounts each intern's output disk from such a container, so the state directory must be on a mount with shared propagation, which is the systemd default. `qa-interns doctor` checks all of these. Compose 2 drops `env_file` paths from `docker compose config --no-env-resolution`, which the target checks read.
-- Bun 1.4 or later, Git, and `flock` from util-linux.
+- Bun 1.4 or later, Git, and `flock` and `findmnt` from util-linux.
 - `XDG_RUNTIME_DIR` set to a directory that only you can use, as a systemd login session sets it. QA Interns keeps the locks of its network blocks there.
 - At least one agent login: Claude Code, Codex, Cursor, or Grok (see [Logins](#logins)).
 - Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, 128 MiB for its relay when the target lists `egress` hosts, and each service's `mem_limit` (1 GiB when the service sets none) times its `scale` or `deploy.replicas`.
