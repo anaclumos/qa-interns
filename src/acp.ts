@@ -27,18 +27,6 @@ const chunkSchema = z.looseObject({
   }),
 });
 
-export class AgentError extends Error {
-  code: number;
-  data: unknown;
-
-  constructor(code: number, message: string, data: unknown) {
-    super(message);
-    this.name = "AgentError";
-    this.code = code;
-    this.data = data;
-  }
-}
-
 export type Session = {
   model: string | null;
   prompt(text: string): Promise<{ stopReason: string; toolCalls: number; lastMessage: string }>;
@@ -200,7 +188,7 @@ export async function openSession(opts: {
     })());
 
   const failure = async (error: unknown) => {
-    if (error instanceof RequestError) return new AgentError(error.code, error.message, error.data);
+    if (error instanceof RequestError) return error;
     await close();
     if (error === overlong || error === oversent) return error;
     const stderr = redact(await Bun.file(opts.adapterLog).text()).slice(-2000);

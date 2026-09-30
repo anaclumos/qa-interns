@@ -1,7 +1,8 @@
+import { RequestError } from "@agentclientprotocol/sdk";
 import { mkdir, rm } from "node:fs/promises";
 import { freemem } from "node:os";
 import { join } from "node:path";
-import { AgentError, openSession, type Session } from "./acp.ts";
+import { openSession, type Session } from "./acp.ts";
 import {
   buildImages,
   containerStats,
@@ -203,7 +204,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
   };
 }
 
-async function attempt<T>(ctx: Context, id: string, count: number, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<{ value: T } | AgentError> {
+async function attempt<T>(ctx: Context, id: string, count: number, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<{ value: T } | RequestError> {
   const provider = providers[lease.login.provider];
   let session: Session | undefined;
   const done = new AbortController();
@@ -228,7 +229,7 @@ async function attempt<T>(ctx: Context, id: string, count: number, env: Environm
     await execute(["docker", "kill", env.runner]);
     throw new Error(`${result}, so its runner was stopped`);
   } catch (error) {
-    if (error instanceof AgentError && provider.isLoginFailure(error)) return error;
+    if (error instanceof RequestError && provider.isLoginFailure(error)) return error;
     throw error;
   } finally {
     done.abort();
@@ -271,7 +272,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
         });
       });
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
-      if (!(outcome instanceof AgentError)) return outcome;
+      if (!(outcome instanceof RequestError)) return outcome;
       ctx.scheduler.exhaust(lease);
       await teardown();
       started = false;
