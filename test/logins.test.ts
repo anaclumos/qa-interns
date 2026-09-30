@@ -84,7 +84,7 @@ async function failure(name: string, content: unknown): Promise<string> {
 }
 
 function login(id: string, provider: Login["provider"], concurrency: number, seat: string[] | null = null): Login {
-  return { id, provider, store: seat === null ? join(dir, "stores", id) : null, seat, concurrency };
+  return { id, provider, store: seat === null ? join(dir, "stores", id) : null, seat, concurrency, model: null };
 }
 
 function held(lease: Lease | null): Lease {
@@ -141,16 +141,30 @@ describe("loadLogins", () => {
         { id: "claude-1", provider: "claude", store: claudeStore, concurrency: 2 },
         { id: "codex-1", provider: "codex", store: codexStore, concurrency: 1 },
         { id: "codex-pool", provider: "codex", seat: ["sh", "-c", "exec tokenmaxxing seat --codex \"$QA_INTERNS_LEASE_PID\""], concurrency: 2 },
-        { id: "cursor-1", provider: "cursor", store: cursorStore },
+        { id: "cursor-1", provider: "cursor", store: cursorStore, model: "grok-4.7[context=256k,reasoning_effort=high,fast=true]" },
         { id: "grok-1", provider: "grok", store: grokStore },
       ],
     });
     expect(await loadLogins(file)).toEqual([
-      { id: "claude-1", provider: "claude", store: claudeStore, seat: null, concurrency: 2 },
-      { id: "codex-1", provider: "codex", store: codexStore, seat: null, concurrency: 1 },
-      { id: "codex-pool", provider: "codex", store: null, seat: ["sh", "-c", "exec tokenmaxxing seat --codex \"$QA_INTERNS_LEASE_PID\""], concurrency: 2 },
-      { id: "cursor-1", provider: "cursor", store: cursorStore, seat: null, concurrency: 1 },
-      { id: "grok-1", provider: "grok", store: grokStore, seat: null, concurrency: 1 },
+      { id: "claude-1", provider: "claude", store: claudeStore, seat: null, concurrency: 2, model: null },
+      { id: "codex-1", provider: "codex", store: codexStore, seat: null, concurrency: 1, model: null },
+      {
+        id: "codex-pool",
+        provider: "codex",
+        store: null,
+        seat: ["sh", "-c", "exec tokenmaxxing seat --codex \"$QA_INTERNS_LEASE_PID\""],
+        concurrency: 2,
+        model: null,
+      },
+      {
+        id: "cursor-1",
+        provider: "cursor",
+        store: cursorStore,
+        seat: null,
+        concurrency: 1,
+        model: "grok-4.7[context=256k,reasoning_effort=high,fast=true]",
+      },
+      { id: "grok-1", provider: "grok", store: grokStore, seat: null, concurrency: 1, model: null },
     ]);
   });
 
@@ -456,7 +470,7 @@ describe("Scheduler", () => {
     const moving = join(dir, "moving", "claude-m");
     await mkdir(moving, { recursive: true });
     await Bun.write(join(moving, ".credentials.json"), "{}");
-    const scheduler = new Scheduler([{ id: "claude-m", provider: "claude", store: moving, seat: null, concurrency: 1 }, login("codex-pool", "codex", 1, ["sh", join(dir, "seat.sh")])]);
+    const scheduler = new Scheduler([{ id: "claude-m", provider: "claude", store: moving, seat: null, concurrency: 1, model: null }, login("codex-pool", "codex", 1, ["sh", join(dir, "seat.sh")])]);
     await rename(join(dir, "moving"), join(dir, "moved"));
     const lease = held(await scheduler.acquire("v1", ["claude"]));
     expect(lease.store).toBe(join(pool, "v1"));
@@ -488,7 +502,7 @@ describe("Scheduler", () => {
     await mkdir(join(store, "tokens"), { recursive: true });
     await Bun.write(join(store, "tokens", "auth.json"), "{}");
     await symlink("tokens/auth.json", join(store, "auth.json"));
-    const grok: Login = { id: "grok-linked", provider: "grok", store, seat: null, concurrency: 1 };
+    const grok: Login = { id: "grok-linked", provider: "grok", store, seat: null, concurrency: 1, model: null };
     const first = held(await new Scheduler([grok]).acquire("r1", []));
     await Bun.write(join(store, "auth.json.new"), "{}");
     await rename(join(store, "auth.json.new"), join(store, "auth.json"));
@@ -531,11 +545,11 @@ describe("Scheduler", () => {
     for (const store of [inner, twin]) await mkdir(store, { recursive: true });
     for (const store of [outer, inner, twin]) await Bun.write(join(store, "auth.json"), "{}");
     await Bun.write(join(inner, ".credentials.json"), "{}");
-    const cursor: Login = { id: "cursor-outer", provider: "cursor", store: outer, seat: null, concurrency: 1 };
-    const beside: Login = { id: "cursor-twin", provider: "cursor", store: twin, seat: null, concurrency: 1 };
-    const codex: Login = { id: "codex-inner", provider: "codex", store: inner, seat: null, concurrency: 1 };
-    const claude: Login = { id: "claude-inner", provider: "claude", store: inner, seat: null, concurrency: 1 };
-    const grok: Login = { id: "grok-inner", provider: "grok", store: inner, seat: null, concurrency: 1 };
+    const cursor: Login = { id: "cursor-outer", provider: "cursor", store: outer, seat: null, concurrency: 1, model: null };
+    const beside: Login = { id: "cursor-twin", provider: "cursor", store: twin, seat: null, concurrency: 1, model: null };
+    const codex: Login = { id: "codex-inner", provider: "codex", store: inner, seat: null, concurrency: 1, model: null };
+    const claude: Login = { id: "claude-inner", provider: "claude", store: inner, seat: null, concurrency: 1, model: null };
+    const grok: Login = { id: "grok-inner", provider: "grok", store: inner, seat: null, concurrency: 1, model: null };
 
     const outside = await holder([cursor], 1);
     expect(outside.count).toBe(1);

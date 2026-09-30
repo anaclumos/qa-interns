@@ -1,6 +1,6 @@
 export type Provider = "claude" | "codex" | "cursor" | "grok";
 
-export type Login = { id: string; provider: Provider; store: string | null; seat: string[] | null; concurrency: number };
+export type Login = { id: string; provider: Provider; store: string | null; seat: string[] | null; concurrency: number; model: string | null };
 
 export type Mount = { source: string; target: string; readOnly: boolean };
 
