@@ -382,11 +382,10 @@ function qaServices(spec: EnvironmentSpec, target: Target): string[] {
 }
 
 function overrideConfig(spec: EnvironmentSpec, target: Target, composeFile: string): Record<string, unknown> {
-  const runServices = target.config.runServices;
   return {
     ...target.config,
     dockerComposeFile: [...target.composeFiles, composeFile],
-    ...(Array.isArray(runServices) ? { runServices: [...runServices, ...qaServices(spec, target)] } : {}),
+    ...(target.runServices === undefined ? {} : { runServices: [...target.runServices, ...qaServices(spec, target)] }),
   };
 }
 
@@ -446,8 +445,7 @@ export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void
     throw new Error(`The dev container that devcontainer up created for ${project} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
   }
 
-  const runServices = target.config.runServices;
-  const services = Array.isArray(runServices) ? [target.service, ...runServices, ...qaServices(spec, target)] : [];
+  const services = target.runServices === undefined ? [] : [target.service, ...target.runServices, ...qaServices(spec, target)];
   await execute(
     ["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds, "--no-recreate", ...services],
     { env: upEnv, log },
