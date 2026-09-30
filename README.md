@@ -134,7 +134,7 @@ QA Interns runs the target's lifecycle commands, including `initializeCommand`, 
 }
 ```
 
-A login is a `store` directory or a `seat` command, with a `concurrency` limit (default 1).
+A login is a `store` directory or a `seat` command, with a `concurrency` limit (default 1) and an optional `model`. Without `model`, an intern runs on the agent's default model. With `model`, QA Interns sets the session's `model` config option to that value with `session/set_config_option` after it opens each session, and a value the agent does not offer fails the intern with the agent's error. The values are the agent's own, such as `grok-4.7[context=256k,reasoning_effort=high,fast=true]` for Cursor.
 
 | Provider | Store | How to fill it |
 | --- | --- | --- |
