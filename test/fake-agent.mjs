@@ -215,28 +215,25 @@ const prompt = async (params) => {
   return endTurn;
 };
 
+const modelOption = (current) => {
+  const offered = [...new Set([login().model ?? "fake-model-1", "fake-model-2"])];
+  return { id: "model", name: "Model", category: "model", type: "select", currentValue: current, options: offered.map((value) => ({ value, name: value })) };
+};
+
 const handlers = {
   initialize: () => ({
     result: { protocolVersion: 1, agentCapabilities: { loadSession: false }, agentInfo: { name: "fake-agent", version: "1.0.0" }, authMethods: [] },
   }),
   "session/new": (params) => {
     writeJson("/qa/out/fake-agent-session.json", { mcpServers: params.mcpServers, _meta: params._meta ?? null });
-    const model = login().model ?? "fake-model-1";
-    return {
-      result: {
-        sessionId,
-        configOptions: [
-          {
-            id: "model",
-            name: "Model",
-            category: "model",
-            type: "select",
-            currentValue: model,
-            options: [{ value: model, name: model }],
-          },
-        ],
-      },
-    };
+    return { result: { sessionId, configOptions: [modelOption(login().model ?? "fake-model-1")] } };
+  },
+  "session/set_config_option": (params) => {
+    const option = modelOption(params.value);
+    if (params.configId !== "model" || !option.options.some((entry) => entry.value === params.value)) {
+      return { error: { code: -32602, message: "Invalid params", data: { message: `Invalid model value: ${params.value}` } } };
+    }
+    return { result: { configOptions: [option] } };
   },
   "session/set_mode": () => ({ result: {} }),
   "session/prompt": prompt,
