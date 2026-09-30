@@ -599,6 +599,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
   const ref = await resolveTarget(opts.dir, opts.rev, false);
   const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0 }, opts.print);
   const ctx = context(runId, runDir, "", new Scheduler([]), async () => {});
+  const dirs = [join(runDir, "envs"), join(runDir, "interns")];
   const phase = async (next: RunPhase) => {
     checkStopping(ctx);
     state.phase = next;
@@ -612,6 +613,15 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         await step();
       } catch (reason) {
         problems.push(`teardown failed: ${message(reason)}`);
+      }
+    }
+    if (problems.length > 1) {
+      if (hasSecrets()) problems.push(`secret values stay in the files under ${dirs.join(" and ")}`);
+    } else {
+      try {
+        await redactFiles(dirs);
+      } catch (reason) {
+        problems.push(`secret values stay in the files under ${dirs.join(" and ")}: ${message(reason)}`);
       }
     }
     state.phase = "failed";
@@ -643,6 +653,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
           runner: { image: ctx.runnerImage, out: join(runDir, outDir(copyName, 1)), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] },
           egress: [],
         });
+        await redactFiles(dirs);
         await phase("up");
         opts.print(`project ${env.project}`);
         opts.print(`runner ${env.runner}`);
