@@ -1,8 +1,9 @@
+import { RequestError } from "@agentclientprotocol/sdk";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { AgentError, openSession, type Session } from "../src/acp.ts";
+import { openSession, type Session } from "../src/acp.ts";
 import { providers } from "../src/providers.ts";
 import { forgetSecrets, keepSeedSecrets } from "../src/secrets.ts";
 
@@ -177,7 +178,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     expect(result).toEqual({ stopReason: "end_turn", toolCalls: 0, lastMessage: "Nothing more to test." });
   });
 
-  test("a usage limit rejects the prompt with an AgentError that Claude counts as a login failure", async () => {
+  test("a usage limit rejects the prompt with a RequestError that Claude counts as a login failure", async () => {
     writeFileSync(credentials, JSON.stringify({ limit: true }));
     let error: unknown;
     try {
@@ -186,9 +187,9 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
       error = reason;
     }
     writeFileSync(credentials, "{}");
-    expect(error).toBeInstanceOf(AgentError);
+    expect(error).toBeInstanceOf(RequestError);
     expect(error).toMatchObject({ code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } });
-    expect(error instanceof AgentError && providers.claude.isLoginFailure(error)).toBe(true);
+    expect(error instanceof RequestError && providers.claude.isLoginFailure(error)).toBe(true);
   });
 
   test("cancel during a slow prompt resolves it as cancelled", async () => {
