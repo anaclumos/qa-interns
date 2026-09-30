@@ -4,6 +4,7 @@ import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
+import { oneLine } from "./findings.ts";
 import type { RunState } from "./types.ts";
 
 const stateSchema = z.object({
@@ -126,7 +127,7 @@ export function formatStatus(state: RunState): string {
       intern.provider ?? "-",
       intern.status,
       String(intern.findings),
-      (intern.detail ?? "").replaceAll("\r", " ").replaceAll("\n", " "),
+      oneLine(intern.detail ?? ""),
     ]),
   ];
   return [...align(summary), "", ...align(interns)].join("\n");
