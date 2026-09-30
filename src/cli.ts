@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { doctor } from "./doctor.ts";
 import { imageBuilders, removeCopies, stopRun } from "./environment.ts";
-import { errorCode, stripControl } from "./findings.ts";
+import { errorCode, message, stripControl } from "./findings.ts";
 import { defaultLoginsPath } from "./logins.ts";
 import { readReplay } from "./report.ts";
 import { runQa, startCopy } from "./run.ts";
@@ -236,6 +236,6 @@ async function main(args: string[]): Promise<number> {
 try {
   process.exitCode = await main(Bun.argv.slice(2));
 } catch (error) {
-  process.stderr.write(`qa-interns: ${stripControl(error instanceof Error ? error.message : String(error))}\n`);
+  process.stderr.write(`qa-interns: ${stripControl(message(error))}\n`);
   process.exitCode = 1;
 }
