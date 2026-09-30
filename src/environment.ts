@@ -1,5 +1,5 @@
 import { closeSync, existsSync, mkdirSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, statfs } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -382,11 +382,10 @@ function qaServices(spec: EnvironmentSpec, target: Target): string[] {
 }
 
 function overrideConfig(spec: EnvironmentSpec, target: Target, composeFile: string): Record<string, unknown> {
-  const runServices = target.config.runServices;
   return {
     ...target.config,
     dockerComposeFile: [...target.composeFiles, composeFile],
-    ...(Array.isArray(runServices) ? { runServices: [...runServices, ...qaServices(spec, target)] } : {}),
+    ...(target.runServices === undefined ? {} : { runServices: [...target.runServices, ...qaServices(spec, target)] }),
   };
 }
 
@@ -446,8 +445,7 @@ export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void
     throw new Error(`The dev container that devcontainer up created for ${project} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
   }
 
-  const runServices = target.config.runServices;
-  const services = Array.isArray(runServices) ? [target.service, ...runServices, ...qaServices(spec, target)] : [];
+  const services = target.runServices === undefined ? [] : [target.service, ...target.runServices, ...qaServices(spec, target)];
   await execute(
     ["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds, "--no-recreate", ...services],
     { env: upEnv, log },
@@ -502,6 +500,16 @@ export async function createDisk(out: string, image: string, owner: string): Pro
 
 export async function saveDisk(out: string, image: string, owner: string): Promise<void> {
   await diskHelper(out, image, owner, saveDiskScript, []);
+}
+
+const mountsSchema = z.object({ filesystems: z.array(z.object({ target: z.string() })) });
+
+export async function removeDir(dir: string, image: string, owner: string): Promise<void> {
+  if (!existsSync(dir)) return;
+  const real = await realpath(dir);
+  const { filesystems } = mountsSchema.parse(JSON.parse(await execute(["findmnt", "--list", "--json", "--output", "TARGET"])));
+  for (const { target } of filesystems.filter((mount) => mount.target.startsWith(`${real}/`))) await saveDisk(target, image, owner);
+  await rm(dir, { recursive: true, force: true });
 }
 
 async function diskOuts(dir: string): Promise<string[]> {

@@ -8,7 +8,7 @@ import { providers } from "./providers.ts";
 import { stateDir } from "./state.ts";
 import { errorCode } from "./findings.ts";
 import { trackGroup } from "./target.ts";
-import type { Login, Provider } from "./types.ts";
+import { providerNames, type Login, type Provider } from "./types.ts";
 
 export const defaultLoginsPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "qa-interns", "logins.json");
 
@@ -16,7 +16,7 @@ const example = `{"logins": [{"id": "claude-1", "provider": "claude", "store": "
 
 const entrySchema = z.strictObject({
   id: z.string().min(1),
-  provider: z.enum(["claude", "codex", "cursor", "grok"]),
+  provider: z.enum(providerNames),
   store: z
     .string()
     .refine(isAbsolute, { error: (issue) => `${JSON.stringify(issue.input)} is not an absolute path`, abort: true })
@@ -97,7 +97,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
     const parsed = entrySchema.safeParse(value);
     if (!parsed.success) {
       for (const issue of parsed.error.issues) {
-        problems.push(issue.path.length === 0 ? `${where}: ${issue.message}` : `${where}: ${issue.path.join(".")}: ${issue.message}`);
+        problems.push(issue.path.length === 0 ? `${where}: ${issue.message}` : `${where}: ${z.core.toDotPath(issue.path)}: ${issue.message}`);
       }
       continue;
     }

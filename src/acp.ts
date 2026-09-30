@@ -8,10 +8,7 @@ import {
   type NewSessionResponse,
   type SetSessionConfigOptionResponse,
 } from "@agentclientprotocol/sdk";
-import { spawn } from "node:child_process";
 import { appendFileSync, statSync } from "node:fs";
-import { Writable } from "node:stream";
-import { ReadableStream } from "node:stream/web";
 import { z } from "zod";
 import { version } from "../package.json";
 import type { ProviderSpec } from "./providers.ts";
@@ -79,16 +76,7 @@ export async function openSession(opts: {
   const argv = ["docker", "exec", "-i", "-w", "/qa/out", opts.container, ...opts.provider.adapter];
   const log = appender(opts.adapterLog);
   const transcript = appender(opts.transcript);
-  const child = spawn("docker", argv.slice(1), { stdio: "pipe" });
-  const { stdin, stdout, stderr } = child;
-  if (stdin === null || stdout === null || stderr === null) throw new Error(`${argv.join(" ")} started without stdio pipes`);
-  const exited = Promise.all([
-    new Promise<void>((resolve) => {
-      child.once("exit", () => resolve());
-      child.once("close", () => resolve());
-    }),
-    new Promise<void>((resolve) => stderr.once("close", () => resolve())),
-  ]);
+  const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
 
   const line = (t: string, from: "client" | "agent", message: unknown) => transcript(`${JSON.stringify({ t, from, message })}\n`);
   const queue: { t: string; from: "client" | "agent"; message: unknown; content: { text: string } | null; bytes: number }[] = [];
@@ -150,15 +138,14 @@ export async function openSession(opts: {
     },
   });
   let sent = 0;
-  const stdinWriter = Writable.toWeb(stdin).getWriter();
   const input = new WritableStream<Uint8Array>({
     write(bytes) {
       sent += bytes.byteLength;
       if (sent > sentLimit) throw oversent;
-      return stdinWriter.write(bytes);
+      Promise.resolve(child.stdin.write(bytes)).catch((error: unknown) => connection.close(error));
     },
   });
-  const wire = ndJsonStream(input, ReadableStream.from<Uint8Array>(stdout).pipeThrough(lines));
+  const wire = ndJsonStream(input, child.stdout.pipeThrough(lines));
   const writer = wire.writable.getWriter();
   let turn: string | number | null | undefined;
   const stream = {
@@ -191,21 +178,22 @@ export async function openSession(opts: {
       return { outcome: option ? { outcome: "selected", optionId: option.optionId } : { outcome: "cancelled" } };
     })
     .connect(stream);
-  child.once("error", (error) => connection.close(error));
-  stderr.on("data", (data: Buffer) => {
-    try {
-      log(data);
-    } catch (error) {
-      connection.close(error);
+  const logged = (async () => {
+    for await (const data of child.stderr) {
+      try {
+        log(data);
+      } catch (error) {
+        connection.close(error);
+      }
     }
-  });
+  })();
 
   let closing: Promise<void> | undefined;
   const close = () =>
     (closing ??= (async () => {
-      stdin.end();
+      child.stdin.end();
       const kill = setTimeout(() => child.kill("SIGKILL"), 10_000);
-      await exited;
+      await Promise.all([child.exited, logged]);
       clearTimeout(kill);
       connection.close();
       release(true);
