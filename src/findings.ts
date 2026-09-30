@@ -22,7 +22,7 @@ const folderFailures = new Map([
 ]);
 
 export function errorCode(error: unknown): string | null {
-  return error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : null;
+  return z.object({ code: z.string() }).safeParse(error).data?.code ?? null;
 }
 
 export function message(error: unknown): string {

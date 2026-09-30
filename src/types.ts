@@ -2,7 +2,7 @@ export const providerNames = ["claude", "codex", "cursor", "grok"] as const;
 
 export type Provider = (typeof providerNames)[number];
 
-export type Login = { id: string; provider: Provider; store: string | null; seat: string[] | null; concurrency: number };
+export type Login = { id: string; provider: Provider; store: string | null; seat: string[] | null; concurrency: number; model: string | null };
 
 export type Mount = { source: string; target: string; readOnly: boolean };
 

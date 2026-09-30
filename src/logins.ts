@@ -6,7 +6,8 @@ import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { providers } from "./providers.ts";
 import { stateDir } from "./state.ts";
-import { track } from "./target.ts";
+import { errorCode } from "./findings.ts";
+import { trackGroup } from "./target.ts";
 import { providerNames, type Login, type Provider } from "./types.ts";
 
 export const defaultLoginsPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "qa-interns", "logins.json");
@@ -23,6 +24,7 @@ const entrySchema = z.strictObject({
     .optional(),
   seat: z.array(z.string().min(1)).min(1).optional(),
   concurrency: z.int().positive().default(1),
+  model: z.string().min(1).optional(),
 });
 
 function isDirectory(path: string): boolean {
@@ -30,7 +32,7 @@ function isDirectory(path: string): boolean {
 }
 
 function rawId(value: unknown): string | null {
-  return typeof value === "object" && value !== null && "id" in value && typeof value.id === "string" ? value.id : null;
+  return z.object({ id: z.string() }).safeParse(value).data?.id ?? null;
 }
 
 type Store = { store: string; credential: string | null };
@@ -113,7 +115,14 @@ export async function loadLogins(file: string): Promise<Login[]> {
         );
       }
     }
-    logins.push({ id: entry.id, provider: entry.provider, store: entry.store ?? null, seat: entry.seat ?? null, concurrency: entry.concurrency });
+    logins.push({
+      id: entry.id,
+      provider: entry.provider,
+      store: entry.store ?? null,
+      seat: entry.seat ?? null,
+      concurrency: entry.concurrency,
+      model: entry.model ?? null,
+    });
   }
   if (problems.length > 0) throw new Error(`${file} has problems:\n${problems.map((problem) => `  ${problem}`).join("\n")}`);
   return logins;
@@ -135,13 +144,24 @@ function mountedPath(provider: Provider, store: string): string {
 const lockHeld = 75;
 
 async function seatStore(command: string[], leasePid: number, intern: string): Promise<string | null> {
-  const child = track(Bun.spawn(command, {
+  const child = trackGroup(Bun.spawn(command, {
     env: { ...process.env, QA_INTERNS_LEASE_PID: String(leasePid), QA_INTERNS_INTERN: intern },
     stdout: "pipe",
     stderr: "inherit",
-    timeout: 60_000,
+    detached: true,
   }));
-  const [stdout, exitCode] = await Promise.all([child.stdout.text(), child.exited]);
+  const signal = (name: "SIGTERM" | "SIGKILL") => {
+    try {
+      process.kill(-child.pid, name);
+    } catch (error) {
+      if (errorCode(error) !== "ESRCH") throw error;
+    }
+  };
+  const term = setTimeout(() => {
+    signal("SIGTERM");
+    setTimeout(() => signal("SIGKILL"), 10_000);
+  }, 60_000);
+  const [stdout, exitCode] = await Promise.all([child.stdout.text(), child.exited]).finally(() => clearTimeout(term));
   const store = stdout
     .split("\n")
     .map((line) => line.trim())
