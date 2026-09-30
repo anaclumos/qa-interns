@@ -12,6 +12,7 @@ import { redact } from "../src/secrets.ts";
 import { newRunId, readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
 import type { EnvironmentStats, Finding, Provider, RunState } from "../src/types.ts";
+import { freeBlock } from "./subnet.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -508,7 +509,7 @@ USER qa
   test(
     "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, and a run fails when every block overlaps one",
     async () => {
-      const third = 4 * Math.floor(Math.random() * 64);
+      const third = await freeBlock(214);
       const subnet = `10.214.${third}.0/22`;
       const blockers: string[] = [];
       const block = async (range: string) => {
