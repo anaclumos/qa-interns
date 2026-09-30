@@ -7,21 +7,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 import { z } from "zod";
 import { errorCode } from "./findings.ts";
 import { keepHostSecrets, redact } from "./secrets.ts";
+import type { RunState } from "./types.ts";
 
-export type ConnectionLimits = { concurrent?: number; perMinute?: number; total?: number };
-export type QaSettings = {
-  urls: Record<string, string>;
-  ready: string;
-  seed: string;
-  focus: string[];
-  offLimits: string[];
-  knownGaps: string[];
-  hostEnv: string[];
-  secrets: { hostEnv: string[]; seed: string[] };
-  egress: string[];
-  connectionLimits: Record<string, ConnectionLimits>;
-};
-export type TargetRef = { repo: string; path: string; commit: string; dirty: boolean };
+export type QaSettings = z.infer<typeof settingsSchema>;
+export type TargetRef = RunState["target"];
 export type ComposeService = {
   build: boolean;
   image: string | null;
