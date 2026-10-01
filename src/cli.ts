@@ -19,7 +19,7 @@ const usage = `Usage: qa-interns <command> [options]
 Commands:
   doctor [--logins <file>]
       Check Docker, Compose, the isolated network mode, the Dev Container CLI,
-      the runner image and its agents, the logins, and free memory.
+      the runner image and its agents, and the logins.
   validate <target-dir> [--commit <rev> | --dirty]
       Check the target's dev container and Compose files at the commit (default
       HEAD), or with --dirty in a copy of its working tree, as run does before it

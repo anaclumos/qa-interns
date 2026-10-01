@@ -11,7 +11,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 - Bun 1.4 or later, Git, and `flock` and `findmnt` from util-linux.
 - `XDG_RUNTIME_DIR` set to a directory that only you can use, as a systemd login session sets it. QA Interns keeps the locks of its network blocks there.
 - At least one agent login: Claude Code, Codex, Cursor, or Grok (see [Logins](#logins)).
-- Memory for the environments you run at once. An environment reserves 2 GiB for its runner, 128 MiB for its proxy, 128 MiB for its relay when the target lists `egress` hosts, and each service's `mem_limit` (1 GiB when the service sets none) times its `scale` or `deploy.replicas`.
+- Memory for the environments you run at once. QA Interns does not check free memory before it starts an environment. An environment caps its runner at 2 GiB, its proxy at 128 MiB, its relay at 128 MiB when the target lists `egress` hosts, and each container of a service at the service's `mem_limit`, or 1 GiB when the service sets none.
 
 ## Install
 
@@ -152,7 +152,7 @@ A login is a `store` directory or a `seat` command, with a `concurrency` limit (
 
 1. Exports the target at the commit, or copies its working tree with `--dirty`, and checks its dev container and Compose files.
 2. Builds the target's images once.
-3. Starts one environment per intern, each as its own Compose project on its own isolated network, at most as many at once as free memory, login capacity, and free network slots allow, and at most four starting at a time. Checks each dev container that `devcontainer up` created.
+3. Starts one environment per intern, each as its own Compose project on its own isolated network, at most as many at once as login capacity and free network slots allow. Checks each dev container that `devcontainer up` created.
 4. Starts one agent per intern inside that intern's runner container, over the Agent Client Protocol.
 5. Gives each intern the rules, one charter, the application URLs, and the seeded accounts. The intern tests until its time box ends and writes each finding as JSON.
 6. Groups duplicate findings in one judge pass, then hands each group to a different intern in a fresh environment, on a different provider when one is free, which reproduces it from the written finding alone.
