@@ -49,11 +49,12 @@ export const providers: Record<Provider, ProviderSpec> = {
     adapter: ["claude-agent-acp"],
     env: {
       CLAUDE_CONFIG_DIR: "/home/qa/.claude",
+      CLAUDE_SECURESTORAGE_CONFIG_DIR: "/home/qa/.claude-login",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       ENABLE_CLAUDEAI_MCP_SERVERS: "false",
       DISABLE_AUTOUPDATER: "1",
     },
-    mounts: (store) => [{ source: path.join(storePath(store), ".credentials.json"), target: "/home/qa/.claude/.credentials.json", readOnly: false }],
+    mounts: (store) => [{ source: storePath(store), target: "/home/qa/.claude-login", readOnly: false }],
     files: [],
     tmpfs: ["/home/qa/.claude"],
     egress: ["api.anthropic.com", "platform.claude.com"],
