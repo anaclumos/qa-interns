@@ -275,12 +275,6 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
   return `${lines.join("\n")}\n`;
 }
 
-export function environmentMemory(target: Target | null): number {
-  const services = Object.values(target?.services ?? {}).filter((service) => service.active);
-  const relay = (target?.settings.egress.length ?? 0) > 0 ? 128 * mib : 0;
-  return services.reduce((sum, service) => sum + (service.memLimit ?? gib) * service.replicas, 2 * gib + 128 * mib + relay);
-}
-
 function urlHosts(urls: Record<string, string>): string[] {
   return [...new Set(Object.values(urls).map((url) => new URL(url).hostname))];
 }

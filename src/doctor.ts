@@ -1,15 +1,14 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
-import { arch, freemem, tmpdir } from "node:os";
+import { arch, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { createDisk, devcontainer, environmentMemory, freeSlot, memoryPeak, removeDir, saveDisk, slotSubnets } from "./environment.ts";
+import { createDisk, devcontainer, freeSlot, memoryPeak, removeDir, saveDisk, slotSubnets } from "./environment.ts";
 import { message, oneLine } from "./findings.ts";
 import { loadLogins, Scheduler } from "./logins.ts";
 import { ensureRunnerImage } from "./runner.ts";
 import { runsDir } from "./state.ts";
 import { composeVersion, execute } from "./target.ts";
 
-const gib = 1024 ** 3;
 const agents = [
   ["claude-agent-acp", "--version"],
   ["codex-acp", "--version"],
@@ -154,13 +153,6 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
     const logins = await loadLogins(loginsFile);
     const scheduler = new Scheduler(logins);
     return `${loginsFile}: ${logins.length} ${logins.length === 1 ? "login" : "logins"}, providers ${scheduler.providers().join(", ")}, capacity ${scheduler.capacity()}`;
-  });
-  await check("memory", async () => {
-    const free = freemem();
-    const base = environmentMemory(null);
-    const summary = `${(free / gib).toFixed(1)} GiB free; an environment reserves ${(base / gib).toFixed(1)} GiB for its runner and proxy plus each service's mem_limit (1 GiB when unset)`;
-    if (free < base) throw new Error(summary);
-    return summary;
   });
   return passed;
 }

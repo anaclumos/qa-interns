@@ -1,12 +1,10 @@
 import { RequestError } from "@agentclientprotocol/sdk";
 import { mkdir, rm } from "node:fs/promises";
-import { freemem } from "node:os";
 import { join } from "node:path";
 import { openSession, type Session } from "./acp.ts";
 import {
   buildImages,
   containerStats,
-  environmentMemory,
   freeSlot,
   freeSlots,
   networkRange,
@@ -79,7 +77,6 @@ type Context = {
   scheduler: Scheduler;
   images: Record<string, string>;
   sessions: Set<Session>;
-  startups: Limit;
   teardowns: string[];
   environments: EnvironmentStats[];
   held: number;
@@ -93,7 +90,6 @@ const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
 const stopWaitMs = 30_000;
-const gib = 1024 ** 3;
 const noLogin = "no login has spare capacity";
 const copyName = "up";
 
@@ -150,7 +146,6 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     scheduler,
     images: {},
     sessions: new Set(),
-    startups: limit(4),
     teardowns: [],
     environments: [],
     held: 0,
@@ -259,17 +254,14 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
   try {
     await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, project, startedAt: now() });
     for (let count = 1; ; count += 1) {
-      const current = lease;
-      const env = await ctx.startups(async () => {
-        checkStopping(ctx);
-        slot = await freeSlot();
-        const environment: EnvironmentStats = { intern: id, attempt: count, startedAt: now(), readyAt: null, containers: null };
-        ctx.environments.push(environment);
-        started = true;
-        unread = environment;
-        return startEnvironment(environmentSpec(ctx, id, slot.slot, target, current, count), () => {
-          environment.readyAt = now();
-        });
+      checkStopping(ctx);
+      slot = await freeSlot();
+      const environment: EnvironmentStats = { intern: id, attempt: count, startedAt: now(), readyAt: null, containers: null };
+      ctx.environments.push(environment);
+      started = true;
+      unread = environment;
+      const env = await startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease, count), () => {
+        environment.readyAt = now();
       });
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
       if (!(outcome instanceof RequestError)) return outcome;
@@ -731,14 +723,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
     ctx.runnerImage = await opts.runnerImage();
     const target = await loadTarget(ref, source);
     egress = target.settings.egress;
-    const memory = environmentMemory(target);
-    const free = freemem();
     const slots = await freeSlots();
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
-    const concurrency = Math.min(opts.replay?.groups.length ?? opts.interns, Math.floor(free / memory), scheduler.capacity(), slots);
-    if (concurrency < 1) {
-      throw new Error(`Free memory is ${(free / gib).toFixed(1)} GiB, and one environment of this target reserves ${(memory / gib).toFixed(1)} GiB`);
-    }
+    const concurrency = Math.min(opts.replay?.groups.length ?? opts.interns, scheduler.capacity(), slots);
     state.options.concurrency = concurrency;
     const cards = deck(target.settings.focus);
     state.interns = Array.from({ length: opts.interns }, (_, index) => {
