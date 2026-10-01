@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
-import { closeSync, mkdirSync, openSync, realpathSync, statSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, openSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
@@ -48,6 +48,10 @@ function resolveStore(provider: Provider, store: string): Store {
   return { store: realpathSync(store), credential: statSync(credential, { throwIfNoEntry: false })?.isFile() === true ? realpathSync(credential) : null };
 }
 
+function claudeConfigDirs(): string[] {
+  return [...new Set([join(homedir(), ".claude"), process.env.CLAUDE_CONFIG_DIR ?? ""].filter(isDirectory).map((dir) => realpathSync(dir)))];
+}
+
 function storeProblems(provider: Provider, path: string, found: Store, known: Held[]): string[] {
   const problems: string[] = [];
   if (found.store === "/") problems.push(`store ${path} is the root of the file system`);
@@ -65,6 +69,16 @@ function storeProblems(provider: Provider, path: string, found: Store, known: He
   else if (!same) {
     const first = known.find((other) => other.credential === found.credential);
     if (first !== undefined) problems.push(`${join(path, name)} is the same file as the credential of ${first.where}; one credential serves one process at a time`);
+  }
+  if (found.credential !== null && mountedPath(provider, path) === found.store && lstatSync(join(path, name)).isSymbolicLink()) {
+    problems.push(`${join(path, name)} is a symbolic link; a runner mounts only the store, so the credential is a regular file in it`);
+  }
+  if (provider === "claude") {
+    for (const config of claudeConfigDirs()) {
+      if (config === found.store || config.startsWith(`${found.store}/`)) {
+        problems.push(`claude store ${path} is or contains the Claude Code config directory ${config}; a runner can read and change every file in its store`);
+      }
+    }
   }
   return problems;
 }
