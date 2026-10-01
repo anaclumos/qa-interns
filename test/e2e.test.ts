@@ -131,7 +131,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
 USER root
 COPY fake-agent.mjs /opt/qa-fake/fake-agent.mjs
 RUN rm /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok \\
- && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$CLAUDE_CONFIG_DIR/.credentials.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/claude-agent-acp \\
+ && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$CLAUDE_SECURESTORAGE_CONFIG_DIR/.credentials.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/claude-agent-acp \\
  && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$XDG_CONFIG_HOME/cursor/auth.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/cursor-agent \\
  && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$GROK_AUTH_PATH" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/grok \\
  && chmod 755 /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok

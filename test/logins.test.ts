@@ -225,6 +225,42 @@ describe("loadLogins", () => {
     expect(message).toContain(`logins[0] "claude-empty": claude store ${emptyStore} has no .credentials.json`);
   });
 
+  test("rejects a claude store that is or contains the Claude Code config directory", async () => {
+    const previous = process.env.CLAUDE_CONFIG_DIR;
+    const link = join(dir, "claude-config-link");
+    await symlink(claudeStore, link);
+    await mkdir(join(dir, "stores", "claude-2", "config"), { recursive: true });
+    try {
+      process.env.CLAUDE_CONFIG_DIR = link;
+      const is = await failure("claude-config.json", { logins: [{ id: "claude-1", provider: "claude", store: claudeStore }] });
+      expect(is).toContain(`logins[0] "claude-1": claude store ${claudeStore} is or contains the Claude Code config directory ${claudeStore}`);
+      process.env.CLAUDE_CONFIG_DIR = join(dir, "stores", "claude-2", "config");
+      const contains = await failure("claude-config-parent.json", { logins: [{ id: "claude-2", provider: "claude", store: join(dir, "stores", "claude-2") }] });
+      expect(contains).toContain(`logins[0] "claude-2": claude store ${join(dir, "stores", "claude-2")} is or contains the Claude Code config directory ${join(dir, "stores", "claude-2", "config")}`);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = previous;
+    }
+  });
+
+  test("rejects a store mounted whole whose credential file is a symbolic link", async () => {
+    const linked = join(dir, "stores", "claude-linked");
+    const inside = join(dir, "stores", "grok-linked");
+    await mkdir(linked, { recursive: true });
+    await mkdir(inside, { recursive: true });
+    await symlink(join(claudeStore, ".credentials.json"), join(linked, ".credentials.json"));
+    await Bun.write(join(inside, "real.json"), "{}");
+    await symlink(join(inside, "real.json"), join(inside, "auth.json"));
+    const message = await failure("linked-credential.json", {
+      logins: [
+        { id: "claude-linked", provider: "claude", store: linked },
+        { id: "grok-linked", provider: "grok", store: inside },
+      ],
+    });
+    expect(message).toContain(`logins[0] "claude-linked": ${join(linked, ".credentials.json")} is a symbolic link`);
+    expect(message).toContain(`logins[1] "grok-linked": ${join(inside, "auth.json")} is a symbolic link`);
+  });
+
   test("rejects a grok store without auth.json", async () => {
     const message = await failure("grok.json", { logins: [{ id: "grok-empty", provider: "grok", store: emptyStore }] });
     expect(message).toContain(`logins[0] "grok-empty": grok store ${emptyStore} has no auth.json`);
@@ -351,7 +387,7 @@ describe("Scheduler", () => {
     expect(scheduler.capacity()).toBe(0);
     expect(scheduler.providers()).toEqual([]);
     expect(await scheduler.acquire("i8", [])).toBeNull();
-    const unknown = { login: login("claude-9", "claude", 1), store: join(dir, "stores", "claude-9"), mounted: join(dir, "stores", "claude-9", ".credentials.json"), release: () => {} };
+    const unknown = { login: login("claude-9", "claude", 1), store: join(dir, "stores", "claude-9"), mounted: join(dir, "stores", "claude-9"), release: () => {} };
     expect(() => scheduler.exhaust(unknown)).toThrow("No login with id claude-9");
     releaseAll([cursor, ...picks]);
   });
