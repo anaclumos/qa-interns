@@ -81,8 +81,7 @@ type Context = {
   sessions: Set<Session>;
   teardowns: string[];
   environments: EnvironmentStats[];
-  held: number;
-  waiting: (() => void)[];
+  waiting: Set<() => void>;
   stopping: boolean;
   update(id: string, patch: Partial<InternState>): Promise<void>;
 };
@@ -92,6 +91,7 @@ const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
 const stopWaitMs = 30_000;
+const loginWaitMs = 30_000;
 const noLogin = "no login has spare capacity";
 const copyName = "up";
 
@@ -150,8 +150,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     sessions: new Set(),
     teardowns: [],
     environments: [],
-    held: 0,
-    waiting: [],
+    waiting: new Set(),
     stopping: false,
     update,
   };
@@ -160,9 +159,9 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
 async function acquire(ctx: Context, id: string): Promise<Lease | null> {
   for (;;) {
     checkStopping(ctx);
+    const leased = ctx.scheduler.leased();
     const lease = await ctx.scheduler.acquire(id);
     if (lease !== null) {
-      ctx.held += 1;
       let released = false;
       return {
         ...lease,
@@ -170,13 +169,23 @@ async function acquire(ctx: Context, id: string): Promise<Lease | null> {
           if (released) return;
           released = true;
           lease.release();
-          ctx.held -= 1;
-          for (const wake of ctx.waiting.splice(0)) wake();
+          for (const wake of ctx.waiting) wake();
         },
       };
     }
-    if (ctx.held === 0 || ctx.scheduler.capacity() === 0) return null;
-    await new Promise<void>((resolve) => ctx.waiting.push(resolve));
+    if (!ctx.scheduler.leased()) {
+      if (!leased) return null;
+      continue;
+    }
+    await new Promise<void>((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        ctx.waiting.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, loginWaitMs);
+      ctx.waiting.add(wake);
+    });
   }
 }
 
@@ -482,6 +491,7 @@ function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args:
 
 async function stop(ctx: Context, running: Promise<unknown> | undefined): Promise<void> {
   ctx.stopping = true;
+  for (const wake of ctx.waiting) wake();
   killCommands();
   const closed = await Promise.allSettled(
     [...ctx.sessions].map(async (session) => {

@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, realpath, rename, rm, symlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rename, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadLogins, Scheduler, type Lease } from "../src/logins.ts";
@@ -199,16 +199,50 @@ describe("loadLogins", () => {
   });
 
   test("rejects a relative store and a store that is not a directory", async () => {
-    const message = await failure("stores.json", {
-      logins: [
-        { id: "claude-1", provider: "claude", store: "stores/claude-1" },
-        { id: "claude-2", provider: "claude", store: join(dir, "stores", "missing") },
-        { id: "claude-3", provider: "claude", store: join(claudeStore, ".credentials.json") },
-      ],
-    });
-    expect(message).toContain("logins[0] \"claude-1\": store: \"stores/claude-1\" is not an absolute path");
-    expect(message).toContain(`logins[1] "claude-2": store: "${join(dir, "stores", "missing")}" is not an existing directory`);
-    expect(message).toContain(`logins[2] "claude-3": store: "${join(claudeStore, ".credentials.json")}" is not an existing directory`);
+    const loop = join(dir, "store-loop");
+    const locked = join(dir, "store-locked");
+    await symlink(loop, loop);
+    await mkdir(join(locked, "store"), { recursive: true });
+    await chmod(locked, 0o000);
+    const unreachable = [join(claudeStore, ".credentials.json", "store"), join(dir, "a".repeat(256)), loop, join(locked, "store")];
+    try {
+      const message = await failure("stores.json", {
+        logins: [
+          { id: "claude-1", provider: "claude", store: "stores/claude-1" },
+          { id: "claude-2", provider: "claude", store: join(dir, "stores", "missing") },
+          { id: "claude-3", provider: "claude", store: join(claudeStore, ".credentials.json") },
+          ...unreachable.map((store, index) => ({ id: `claude-${index + 4}`, provider: "claude", store })),
+        ],
+      });
+      expect(message).toContain("logins[0] \"claude-1\": store: \"stores/claude-1\" is not an absolute path");
+      expect(message).toContain(`logins[1] "claude-2": store: "${join(dir, "stores", "missing")}" is not an existing directory`);
+      expect(message).toContain(`logins[2] "claude-3": store: "${join(claudeStore, ".credentials.json")}" is not an existing directory`);
+      for (const [index, store] of unreachable.entries()) expect(message).toContain(`logins[${index + 3}] "claude-${index + 4}": store: "${store}" is not an existing directory`);
+    } finally {
+      await chmod(locked, 0o700);
+    }
+  });
+
+  test("rejects a store whose credential file is a symbolic link loop or cannot be read", async () => {
+    const looped = join(dir, "codex-looped");
+    const closed = join(dir, "codex-closed");
+    await mkdir(looped, { recursive: true });
+    await symlink(join(looped, "auth.json"), join(looped, "auth.json"));
+    await mkdir(closed, { recursive: true });
+    await Bun.write(join(closed, "auth.json"), "{}");
+    await chmod(closed, 0o600);
+    try {
+      const message = await failure("unread-credential.json", {
+        logins: [
+          { id: "codex-looped", provider: "codex", store: looped },
+          { id: "codex-closed", provider: "codex", store: closed },
+        ],
+      });
+      expect(message).toContain(`logins[0] "codex-looped": codex store ${looped} has no auth.json`);
+      expect(message).toContain(`logins[1] "codex-closed": codex store ${closed} has no auth.json`);
+    } finally {
+      await chmod(closed, 0o700);
+    }
   });
 
   test("rejects a codex store without auth.json or with concurrency above 1", async () => {
@@ -397,6 +431,16 @@ describe("Scheduler", () => {
     await expect(scheduler.acquire("q5")).rejects.toThrow("exited with 7");
   });
 
+  test("a login whose quota command exits 1 no longer counts as leased while another process holds it", async () => {
+    const cursor = { ...login("cursor-1", "cursor", 1), quota: ["sh", "-c", "exit 1"] };
+    const other = await holder([{ ...cursor, quota: null }], 1);
+    expect(other.count).toBe(1);
+    const scheduler = new Scheduler([cursor]);
+    expect(scheduler.leased()).toBe(true);
+    expect(await scheduler.acquire("q6")).toBeNull();
+    expect(scheduler.leased()).toBe(false);
+  });
+
   test("capacity counts concurrency of logins not exhausted, and release is idempotent", async () => {
     const scheduler = new Scheduler([login("claude-1", "claude", 1), login("codex-1", "codex", 1), login("cursor-1", "cursor", 3)]);
     expect(scheduler.capacity()).toBe(5);
@@ -505,15 +549,19 @@ describe("Scheduler", () => {
     const bare = join(dir, "seat-cases", "bare");
     const linked = join(dir, "seat-cases", "linked");
     const real = join(dir, "seat-cases", "real");
+    const locked = join(dir, "seat-cases", "locked");
     await mkdir(bare, { recursive: true });
     await mkdir(linked, { recursive: true });
     await mkdir(real, { recursive: true });
+    await mkdir(join(locked, "store"), { recursive: true });
     await Bun.write(join(dir, "seat-cases", "unrelated-file"), "{}");
     await symlink(join(dir, "seat-cases", "unrelated-file"), join(linked, "auth.json"));
     await Bun.write(join(real, "auth.json"), "{}");
     await symlink(real, join(dir, "seat-cases", "through"));
     await Bun.write(join(dir, "stores", "auth.json"), "{}");
+    await chmod(locked, 0o000);
     const through = join(dir, "seat-cases", "through");
+    const underFile = join(codexStore, "auth.json", "store");
     const cases: [Login["provider"], string, string][] = [
       ["cursor", "/", "store / is the root of the file system"],
       ["codex", bare, `codex store ${bare} has no auth.json`],
@@ -522,14 +570,20 @@ describe("Scheduler", () => {
       ["codex", linked, `${join(linked, "auth.json")} is a symbolic link; a runner can place a link in its own store to choose what another run mounts, so the credential is a regular file in the store`],
       ["cursor", through, `store ${through} resolves through a symbolic link to ${real}; a runner can place a link in its own store to choose what another run mounts`],
       ["codex", join(dir, "missing"), `store ${join(dir, "missing")} is not an existing directory`],
+      ["codex", underFile, `store ${underFile} is not an existing directory`],
+      ["codex", join(locked, "store"), `store ${join(locked, "store")} is not an existing directory`],
     ];
-    for (const [provider, store, problem] of cases) {
-      const scheduler = new Scheduler([login("seat-pool", provider, 1, ["echo", store]), login("codex-1", "codex", 1)]);
-      const lease = held(await scheduler.acquire("s1"));
-      expect([store, lease.login.id]).toEqual([store, "codex-1"]);
-      expect(await scheduler.acquire("s2")).toBeNull();
-      expect([store, scheduler.refusals("s2")]).toEqual([store, expect.arrayContaining([`seat store of login seat-pool: ${problem}`])]);
-      lease.release();
+    try {
+      for (const [provider, store, problem] of cases) {
+        const scheduler = new Scheduler([login("seat-pool", provider, 1, ["echo", store]), login("codex-1", "codex", 1)]);
+        const lease = held(await scheduler.acquire("s1"));
+        expect([store, lease.login.id]).toEqual([store, "codex-1"]);
+        expect(await scheduler.acquire("s2")).toBeNull();
+        expect([store, scheduler.refusals("s2")]).toEqual([store, expect.arrayContaining([`seat store of login seat-pool: ${problem}`])]);
+        lease.release();
+      }
+    } finally {
+      await chmod(locked, 0o700);
     }
   });
 
@@ -629,6 +683,44 @@ describe("Scheduler", () => {
     releaseAll([one, two]);
   });
 
+  test("a lease that this or another process holds or is acquiring counts as leased until it ends, unless its login is exhausted here", async () => {
+    const codex = login("codex-1", "codex", 1);
+    const scheduler = new Scheduler([codex]);
+    expect(scheduler.leased()).toBe(false);
+    const own = held(await scheduler.acquire("v1"));
+    expect(scheduler.leased()).toBe(true);
+    own.release();
+    expect(scheduler.leased()).toBe(false);
+
+    const other = await holder([codex], 1);
+    expect(other.count).toBe(1);
+    expect(await scheduler.acquire("v2")).toBeNull();
+    expect(scheduler.leased()).toBe(true);
+    const exhausted = new Scheduler([codex]);
+    exhausted.exhaust({ login: codex, store: codexStore, mounted: codexStore, release: () => {} });
+    expect(exhausted.leased()).toBe(false);
+    other.child.kill("SIGKILL");
+    await other.child.exited;
+    expect(scheduler.leased()).toBe(false);
+
+    await Bun.write(join(dir, "slow-seat.sh"), ["#!/bin/sh", "sleep 0.5", "exec sh \"$(dirname \"$0\")/seat.sh\"", ""].join("\n"));
+    const seat = login("codex-pool", "codex", 2, ["sh", join(dir, "slow-seat.sh")]);
+    const seats = new Scheduler([seat]);
+    const pending = seats.acquire("v3");
+    expect(new Scheduler([seat]).leased()).toBe(true);
+    held(await pending).release();
+    expect(seats.leased()).toBe(false);
+    const elsewhere = await holder([seat], 1);
+    expect(elsewhere.count).toBe(1);
+    expect(seats.leased()).toBe(true);
+    const lent = new Scheduler([{ id: "codex-h0", provider: "codex", store: join(pool, "h0"), seat: null, quota: null, concurrency: 1, model: null }]);
+    expect(lent.leased()).toBe(true);
+    elsewhere.child.kill("SIGKILL");
+    await elsewhere.child.exited;
+    expect(seats.leased()).toBe(false);
+    expect(lent.leased()).toBe(false);
+  });
+
   test("another process's lease blocks a lease whose mounted path contains or sits inside its own until that process ends", async () => {
     const outer = join(dir, "nested", "outer");
     const inner = join(outer, "inner");
@@ -645,6 +737,7 @@ describe("Scheduler", () => {
     const outside = await holder([cursor], 1);
     expect(outside.count).toBe(1);
     expect(await new Scheduler([codex]).acquire("u1")).toBeNull();
+    expect(new Scheduler([codex]).leased()).toBe(true);
     expect(await new Scheduler([claude]).acquire("u2")).toBeNull();
     expect(await new Scheduler([grok]).acquire("u3")).toBeNull();
     const next = held(await new Scheduler([beside]).acquire("u4"));
