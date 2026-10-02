@@ -596,7 +596,7 @@ async function newRun(ref: TargetRef, options: RunState["options"], print: (line
 
 export async function startCopy(opts: CopyOptions): Promise<string> {
   const ref = await resolveTarget(opts.dir, opts.rev, false);
-  const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0 }, opts.print);
+  const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0, confirmConcurrency: 0 }, opts.print);
   const ctx = context(runId, runDir, "", new Scheduler([]), async () => {});
   const dirs = [join(runDir, "envs"), join(runDir, "interns")];
   const phase = async (next: RunPhase) => {
@@ -675,7 +675,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
 export async function runQa(opts: RunOptions): Promise<string> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
   const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
-  const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 };
+  const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0, confirmConcurrency: 0 };
   const { runId, runDir, state, save } = await newRun(ref, options, opts.print);
 
   const ctx = context(runId, runDir, "", scheduler, async (id, patch) => {
@@ -744,8 +744,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     egress = target.settings.egress;
     const slots = await freeSlots();
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
-    const concurrency = Math.min(opts.replay?.groups.length ?? opts.interns, scheduler.capacity(), slots);
-    state.options.concurrency = concurrency;
+    const width = Math.min(scheduler.capacity(), slots);
+    state.options.concurrency = Math.min(opts.interns, width);
     const cards = deck(target.settings.focus);
     state.interns = Array.from({ length: opts.interns }, (_, index) => {
       const charter = cards[index % cards.length];
@@ -757,11 +757,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     await phase("building");
     ctx.images = await buildImages(runId, target, source);
-    const running = limit(concurrency);
 
     if (groups === null) {
       await phase("testing");
-      const results = await settle(state.interns.map((intern) => running(() => explore(ctx, intern, target, opts.minutes))));
+      const testing = limit(state.options.concurrency);
+      const results = await settle(state.interns.map((intern) => testing(() => explore(ctx, intern, target, opts.minutes))));
       findings = results.flatMap((result) => result.findings);
       rejected = results.flatMap((result) => result.rejected);
       if (results.every((result) => result.outcome.status !== "done")) {
@@ -788,11 +788,13 @@ export async function runQa(opts: RunOptions): Promise<string> {
       }));
     }
 
+    state.options.confirmConcurrency = Math.min(groups.length, width);
     await phase("confirming");
     const confirmations = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id) }));
     state.interns.push(...confirmations.map((entry) => entry.intern));
     await save();
-    await settle(confirmations.map(({ group, intern }) => running(() => reproduce(ctx, intern, group, target, opts.confirmMinutes))));
+    const confirming = limit(state.options.confirmConcurrency);
+    await settle(confirmations.map(({ group, intern }) => confirming(() => reproduce(ctx, intern, group, target, opts.confirmMinutes))));
     if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null)) {
       throw new Error(`No confirming intern recorded a result: ${confirmations.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
     }

@@ -45,7 +45,7 @@ function runState(runId: string, startedAt: string): RunState {
     pid: 48213,
     pidStart: 8312765,
     target: { repo: "/home/qa/src/ledger", path: "apps/web", commit: "8d2f1c07b9e4a3f6d5c2b1a0e9f8d7c6b5a4f3e2", dirty: false },
-    options: { interns: 3, minutes: 30, confirmMinutes: 10, concurrency: 3 },
+    options: { interns: 3, minutes: 30, confirmMinutes: 10, concurrency: 3, confirmConcurrency: 0 },
     phase: "testing",
     error: null,
     startedAt,
@@ -108,7 +108,7 @@ describe("state file", () => {
 
   test("concurrent writes land in call order", async () => {
     const dir = await mkdtemp(join(tmpdir(), "qa-interns-run-"));
-    const states = Array.from({ length: 20 }, (_, index) => ({ ...runState("3f9a1c2e", "2026-09-26T09:10:00.000Z"), options: { interns: index + 1, minutes: 30, confirmMinutes: 10, concurrency: 3 } }));
+    const states = Array.from({ length: 20 }, (_, index) => ({ ...runState("3f9a1c2e", "2026-09-26T09:10:00.000Z"), options: { interns: index + 1, minutes: 30, confirmMinutes: 10, concurrency: 3, confirmConcurrency: 0 } }));
     await Promise.all(states.map((state) => writeState(dir, state)));
     expect((await readState(dir)).options.interns).toBe(20);
     await rm(dir, { recursive: true });
