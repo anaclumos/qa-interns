@@ -27,7 +27,7 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true };
+type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; second?: true };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
@@ -259,6 +259,39 @@ USER qa
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "the confirming phase runs one confirmation per group at once, more than the run has testing interns",
+    async () => {
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("wide", [
+          { id: "claude-wide-1", provider: "claude", second: true },
+          { id: "claude-wide-2", provider: "claude", second: true },
+        ]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null, options: { interns: 1, concurrency: 1, confirmConcurrency: 2 } });
+      const confirmations = state.interns.filter((entry) => entry.role === "confirm");
+      expect(confirmations.map((entry) => [entry.id, entry.status, entry.detail])).toEqual([
+        ["c1", "done", "reproduced"],
+        ["c2", "done", "reproduced"],
+      ]);
+      const starts = confirmations.map((entry) => Date.parse(entry.startedAt ?? ""));
+      const ends = confirmations.map((entry) => Date.parse(entry.endedAt ?? ""));
+      expect(Math.max(...starts)).toBeLessThan(Math.min(...ends));
     },
     timeout,
   );
