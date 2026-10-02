@@ -277,12 +277,12 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, work: 
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
       if (!(outcome instanceof Error)) return outcome;
       ctx.scheduler.exhaust(lease);
+      await note(outcome instanceof RequestError ? `login ${lease.login.id} failed with ${message(outcome)}` : outcome.message);
       await teardown();
       started = false;
       slot?.release();
       slot = undefined;
       lease.release();
-      await note(outcome instanceof RequestError ? `login ${lease.login.id} failed with ${message(outcome)}` : outcome.message);
       await ctx.update(id, { status: "queued" });
       const next = await acquire(ctx, id);
       if (next === null) return null;
