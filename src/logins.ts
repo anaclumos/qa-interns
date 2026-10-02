@@ -242,11 +242,14 @@ export class Scheduler {
   private readonly live = new Set<Held>();
 
   constructor(logins: Login[]) {
+    const known: Held[] = [];
     this.slots = logins.map((login) => {
       if (login.store === null) return { login, active: 0, exhausted: false, store: null };
       const found = resolveStore(login.provider, login.store);
-      if (found.credential === null) throw new Error(`${login.provider} store ${login.store} has no ${credentialName(login.provider)}`);
+      const problems = storeProblems(login.provider, login.store, found, known);
+      if (found.credential === null || problems.length > 0) throw new Error(`login ${login.id}: ${problems.join("; ")}`);
       const store = { store: found.store, credential: found.credential, mounted: mountedPath(login.provider, login.store), where: `login ${login.id}` };
+      known.push(store);
       return { login, active: 0, exhausted: false, store };
     });
   }
@@ -308,6 +311,16 @@ export class Scheduler {
   private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null): Lease | null {
     const unlock = lock(grant.mounted, slots);
     if (unlock === null) return null;
+    try {
+      const store = realpathSync(grant.store);
+      const mounted = mountedPath(slot.login.provider, grant.store);
+      if (store !== grant.store || mounted !== grant.mounted) {
+        throw new Error(`${grant.where}: store ${grant.store} changed after its check; it resolves to ${store} and mounts ${mounted}, not ${grant.mounted}`);
+      }
+    } catch (error) {
+      unlock();
+      throw error;
+    }
     this.used[slot.login.provider] += 1;
     const entry = { ...grant };
     this.live.add(entry);

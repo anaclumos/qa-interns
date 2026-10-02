@@ -191,7 +191,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
       image: ctx.runnerImage,
       out: join(ctx.runDir, outDir(name, attempt)),
       env: { ...runnerEnv(target === null ? {} : target.settings.urls), ...provider.env },
-      mounts: provider.mounts(lease.store),
+      mounts: provider.mounts(lease.store).map((mount) => ({ ...mount, source: lease.mounted })),
       files: provider.files,
       tmpfs: provider.tmpfs,
     },
