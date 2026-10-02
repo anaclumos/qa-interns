@@ -636,6 +636,44 @@ describe("Scheduler", () => {
     releaseAll([one, two]);
   });
 
+  test("a lease that this or another process holds or is acquiring counts as leased until it ends, unless its login is exhausted here", async () => {
+    const codex = login("codex-1", "codex", 1);
+    const scheduler = new Scheduler([codex]);
+    expect(scheduler.leased()).toBe(false);
+    const own = held(await scheduler.acquire("v1", []));
+    expect(scheduler.leased()).toBe(true);
+    own.release();
+    expect(scheduler.leased()).toBe(false);
+
+    const other = await holder([codex], 1);
+    expect(other.count).toBe(1);
+    expect(await scheduler.acquire("v2", [])).toBeNull();
+    expect(scheduler.leased()).toBe(true);
+    const exhausted = new Scheduler([codex]);
+    exhausted.exhaust({ login: codex, store: codexStore, mounted: codexStore, release: () => {} });
+    expect(exhausted.leased()).toBe(false);
+    other.child.kill("SIGKILL");
+    await other.child.exited;
+    expect(scheduler.leased()).toBe(false);
+
+    await Bun.write(join(dir, "slow-seat.sh"), ["#!/bin/sh", "sleep 0.5", "exec sh \"$(dirname \"$0\")/seat.sh\"", ""].join("\n"));
+    const seat = login("codex-pool", "codex", 2, ["sh", join(dir, "slow-seat.sh")]);
+    const seats = new Scheduler([seat]);
+    const pending = seats.acquire("v3", []);
+    expect(new Scheduler([seat]).leased()).toBe(true);
+    held(await pending).release();
+    expect(seats.leased()).toBe(false);
+    const elsewhere = await holder([seat], 1);
+    expect(elsewhere.count).toBe(1);
+    expect(seats.leased()).toBe(true);
+    const lent = new Scheduler([{ id: "codex-h0", provider: "codex", store: join(pool, "h0"), seat: null, concurrency: 1, model: null }]);
+    expect(lent.leased()).toBe(true);
+    elsewhere.child.kill("SIGKILL");
+    await elsewhere.child.exited;
+    expect(seats.leased()).toBe(false);
+    expect(lent.leased()).toBe(false);
+  });
+
   test("another process's lease blocks a lease whose mounted path contains or sits inside its own until that process ends", async () => {
     const outer = join(dir, "nested", "outer");
     const inner = join(outer, "inner");
@@ -652,6 +690,7 @@ describe("Scheduler", () => {
     const outside = await holder([cursor], 1);
     expect(outside.count).toBe(1);
     expect(await new Scheduler([codex]).acquire("u1", [])).toBeNull();
+    expect(new Scheduler([codex]).leased()).toBe(true);
     expect(await new Scheduler([claude]).acquire("u2", [])).toBeNull();
     expect(await new Scheduler([grok]).acquire("u3", [])).toBeNull();
     const next = held(await new Scheduler([beside]).acquire("u4", []));

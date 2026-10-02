@@ -211,40 +211,85 @@ function ancestors(path: string): string[] {
   return found;
 }
 
-function lock(mounted: string, slots: number): (() => void) | null {
+function locksDir(): string {
   const dir = join(stateDir(), "locks");
   mkdirSync(dir, { recursive: true });
-  const file = (path: string, kind: string) => join(dir, `${createHash("sha256").update(path).digest("hex")}-${kind}.lock`);
-  const take = (lockFile: string, ...options: string[]) => {
-    const fd = flock(lockFile, ...options);
-    if (fd === null) throw new Error(`${lockFile} is locked by a process that does not hold ${join(dir, "acquire.lock")}`);
-    return fd;
-  };
-  const above = ancestors(mounted);
-  const held: number[] = [];
-  const release = () => {
-    for (const fd of held) closeSync(fd);
-  };
-  const mutex = take(join(dir, "acquire.lock"), "--exclusive");
+  return dir;
+}
+
+function lockFile(dir: string, path: string, kind: string): string {
+  return join(dir, `${createHash("sha256").update(path).digest("hex")}-${kind}.lock`);
+}
+
+function take(dir: string, file: string, ...options: string[]): number {
+  const fd = flock(file, ...options);
+  if (fd === null) throw new Error(`${file} is locked by a process that does not hold ${join(dir, "acquire.lock")}`);
+  return fd;
+}
+
+function exclusive<T>(dir: string, body: () => T): T {
+  const mutex = take(dir, join(dir, "acquire.lock"), "--exclusive");
   try {
-    for (const test of [file(mounted, "under"), ...above.map((path) => file(path, "at"))]) {
-      const fd = flock(test, "--exclusive", "--nonblock");
-      if (fd === null) return null;
-      closeSync(fd);
-    }
-    for (let slot = 0; slot < slots && held.length === 0; slot++) {
-      const fd = flock(file(mounted, String(slot)), "--exclusive", "--nonblock");
-      if (fd !== null) held.push(fd);
-    }
-    if (held.length === 0) return null;
-    for (const share of [file(mounted, "at"), ...above.map((path) => file(path, "under"))]) held.push(take(share, "--shared", "--nonblock"));
-  } catch (error) {
-    release();
-    throw error;
+    return body();
   } finally {
     closeSync(mutex);
   }
-  return release;
+}
+
+function claim(key: string): () => void {
+  const dir = locksDir();
+  const fd = exclusive(dir, () => take(dir, lockFile(dir, key, "leased"), "--shared", "--nonblock"));
+  return () => closeSync(fd);
+}
+
+function claimed(key: string): boolean {
+  const dir = locksDir();
+  return exclusive(dir, () => {
+    const fd = flock(lockFile(dir, key, "leased"), "--exclusive", "--nonblock");
+    if (fd !== null) closeSync(fd);
+    return fd === null;
+  });
+}
+
+function slotLock(dir: string, mounted: string, slots: number): number | null {
+  for (const test of [lockFile(dir, mounted, "under"), ...ancestors(mounted).map((path) => lockFile(dir, path, "at"))]) {
+    const fd = flock(test, "--exclusive", "--nonblock");
+    if (fd === null) return null;
+    closeSync(fd);
+  }
+  for (let slot = 0; slot < slots; slot++) {
+    const fd = flock(lockFile(dir, mounted, String(slot)), "--exclusive", "--nonblock");
+    if (fd !== null) return fd;
+  }
+  return null;
+}
+
+function blocked(mounted: string, slots: number): boolean {
+  const dir = locksDir();
+  return exclusive(dir, () => {
+    const fd = slotLock(dir, mounted, slots);
+    if (fd !== null) closeSync(fd);
+    return fd === null;
+  });
+}
+
+function lock(mounted: string, slots: number): (() => void) | null {
+  const dir = locksDir();
+  return exclusive(dir, () => {
+    const fd = slotLock(dir, mounted, slots);
+    if (fd === null) return null;
+    const held = [fd];
+    const release = () => {
+      for (const each of held) closeSync(each);
+    };
+    try {
+      for (const share of [lockFile(dir, mounted, "at"), ...ancestors(mounted).map((path) => lockFile(dir, path, "under"))]) held.push(take(dir, share, "--shared", "--nonblock"));
+    } catch (error) {
+      release();
+      throw error;
+    }
+    return release;
+  });
 }
 
 export class Scheduler {
@@ -267,6 +312,10 @@ export class Scheduler {
     });
   }
 
+  leased(): boolean {
+    return this.slots.some((slot) => !slot.exhausted && (slot.store === null ? claimed(JSON.stringify(slot.login.seat)) : blocked(slot.store.mounted, slot.login.concurrency)));
+  }
+
   capacity(): number {
     return this.slots.filter((slot) => !slot.exhausted).reduce((sum, slot) => sum + slot.login.concurrency, 0);
   }
@@ -283,12 +332,16 @@ export class Scheduler {
       const slot = this.next(avoid, tried);
       if (slot === undefined) return null;
       tried.add(slot);
+      const unclaim = slot.store === null ? claim(JSON.stringify(slot.login.seat)) : () => {};
       slot.active += 1;
       let lease: Lease | null = null;
       try {
-        lease = await this.lease(slot, intern, refused);
+        lease = await this.lease(slot, intern, refused, unclaim);
       } finally {
-        if (lease === null) slot.active -= 1;
+        if (lease === null) {
+          slot.active -= 1;
+          unclaim();
+        }
       }
       if (lease !== null) return lease;
     }
@@ -305,9 +358,9 @@ export class Scheduler {
     return this.refused.get(intern) ?? [];
   }
 
-  private async lease(slot: Slot, intern: string, refused: string[]): Promise<Lease | null> {
+  private async lease(slot: Slot, intern: string, refused: string[], unclaim: () => void): Promise<Lease | null> {
     const { login } = slot;
-    if (slot.store !== null) return this.grant(slot, slot.store, login.concurrency, null);
+    if (slot.store !== null) return this.grant(slot, slot.store, login.concurrency, null, unclaim);
     if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
     const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
     const refuse = (problems: string[]) => refused.push(...problems.map((problem) => `seat store of login ${login.id}: ${problem}`));
@@ -323,7 +376,7 @@ export class Scheduler {
         refuse(problems);
         if (problems.length === 0) {
           const mounted = mountedPath(login.provider, path);
-          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, 1, keeper);
+          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, 1, keeper, unclaim);
         }
       }
     } finally {
@@ -332,7 +385,7 @@ export class Scheduler {
     return lease;
   }
 
-  private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null): Lease | null {
+  private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null, unclaim: () => void): Lease | null {
     const unlock = lock(grant.mounted, slots);
     if (unlock === null) return null;
     try {
@@ -360,6 +413,7 @@ export class Scheduler {
         this.live.delete(entry);
         keeper?.kill();
         unlock();
+        unclaim();
       },
     };
   }
