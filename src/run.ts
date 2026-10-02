@@ -308,7 +308,7 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, wor
   try {
     const result = await leased(ctx, id, target, work, note);
     outcome = result === null ? { status: "limited" } : { status: "done", value: result.value };
-    if (result === null) notes.push(noLogin);
+    if (result === null) notes.push(noLogin, ...ctx.scheduler.refusals(id));
   } catch (error) {
     notes.push(ctx.stopping ? "interrupted" : message(error));
     outcome = { status: "failed", error };

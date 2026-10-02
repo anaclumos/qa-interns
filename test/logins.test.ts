@@ -496,6 +496,7 @@ describe("Scheduler", () => {
     expect(lease?.login.id).toBe("cursor-1");
     expect(lease?.store).toBe(cursorStore);
     expect(await scheduler.acquire("i2")).toBeNull();
+    expect(scheduler.refusals("i2")).toEqual(["seat store of login claude-pool: the last line its command printed is not an absolute path"]);
     expect(scheduler.capacity()).toBe(8);
     lease?.release();
   });
@@ -512,19 +513,22 @@ describe("Scheduler", () => {
     await Bun.write(join(real, "auth.json"), "{}");
     await symlink(real, join(dir, "seat-cases", "through"));
     await Bun.write(join(dir, "stores", "auth.json"), "{}");
-    const cases: [Login["provider"], string][] = [
-      ["cursor", "/"],
-      ["codex", bare],
-      ["codex", codexStore],
-      ["cursor", join(dir, "stores")],
-      ["codex", linked],
-      ["cursor", join(dir, "seat-cases", "through")],
+    const through = join(dir, "seat-cases", "through");
+    const cases: [Login["provider"], string, string][] = [
+      ["cursor", "/", "store / is the root of the file system"],
+      ["codex", bare, `codex store ${bare} has no auth.json`],
+      ["codex", codexStore, `duplicate store ${codexStore}, already used by login codex-1; one store serves one process at a time`],
+      ["cursor", join(dir, "stores"), `store ${join(dir, "stores")} contains or is inside the store of login codex-1; a runner mounting one could read or change the other`],
+      ["codex", linked, `${join(linked, "auth.json")} is a symbolic link; a runner can place a link in its own store to choose what another run mounts, so the credential is a regular file in the store`],
+      ["cursor", through, `store ${through} resolves through a symbolic link to ${real}; a runner can place a link in its own store to choose what another run mounts`],
+      ["codex", join(dir, "missing"), `store ${join(dir, "missing")} is not an existing directory`],
     ];
-    for (const [provider, store] of cases) {
+    for (const [provider, store, problem] of cases) {
       const scheduler = new Scheduler([login("seat-pool", provider, 1, ["echo", store]), login("codex-1", "codex", 1)]);
       const lease = held(await scheduler.acquire("s1"));
       expect([store, lease.login.id]).toEqual([store, "codex-1"]);
       expect(await scheduler.acquire("s2")).toBeNull();
+      expect([store, scheduler.refusals("s2")]).toEqual([store, expect.arrayContaining([`seat store of login seat-pool: ${problem}`])]);
       lease.release();
     }
   });
