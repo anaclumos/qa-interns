@@ -237,7 +237,7 @@ export function invoiceDetailPage(ctx: Ctx, invoice: Invoice & { lines: Line[] }
 <tfoot>
 <tr><td colspan="3">Subtotal</td><td class="num">${money(invoice.subtotal, invoice.currency)}</td></tr>
 <tr><td colspan="3">Tax (${invoice.taxRate}%)</td><td class="num">${money(invoice.tax, invoice.currency)}</td></tr>
-<tr><th colspan="3">Total</th><th class="num">${money(invoice.total, invoice.currency)}</th></tr>
+<tr><th scope="row" colspan="3">Total</th><td class="num"><strong>${money(invoice.total, invoice.currency)}</strong></td></tr>
 </tfoot>
 </table>
 <script>
@@ -305,7 +305,7 @@ export function invoiceFormPage(ctx: Ctx, invoice: (Invoice & { lines: Line[] })
 <fieldset>
 <legend>Line items</legend>
 <table>
-<thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th></th></tr></thead>
+<thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th><span class="visually-hidden">Remove</span></th></tr></thead>
 <tbody id="lines">${lines}</tbody>
 </table>
 <p><button type="button" id="add-line">Add line</button></p>
@@ -391,7 +391,7 @@ export function teamPage(ctx: Ctx, members: Member[], error: string) {
     `<h1>${esc(ctx.team.name)}</h1>
 <p>Your role: ${ctx.role}</p>
 <table>
-<thead><tr><th>Name</th><th>Email</th><th>Role</th>${isOwner ? "<th></th>" : ""}</tr></thead>
+<thead><tr><th>Name</th><th>Email</th><th>Role</th>${isOwner ? `<th><span class="visually-hidden">Remove</span></th>` : ""}</tr></thead>
 <tbody>${rows}</tbody>
 </table>
 ${
