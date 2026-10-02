@@ -26,7 +26,7 @@ import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation,
 import { hasQuota, loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
-import { lead, renderReplay, renderReport, writeTickets } from "./report.ts";
+import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
@@ -442,7 +442,7 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check(attempt);
-    await note(answer.result === null ? `confirmation failed: ${answer.error}` : answer.result.reproduced ? "reproduced" : "did not reproduce");
+    await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
   });
   const answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };

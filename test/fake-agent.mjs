@@ -193,7 +193,7 @@ const confirmationTurn = () => {
   }
   mkdirSync("/qa/out/evidence", { recursive: true });
   writeFileSync("/qa/out/evidence/reproduction.txt", "fake reproduction\n");
-  writeJson("/qa/out/confirmation.json", { reproduced: true, observed: "fake reproduction", evidence: ["evidence/reproduction.txt"] });
+  writeJson("/qa/out/confirmation.json", { steps: true, task: true, observed: "fake reproduction", evidence: ["evidence/reproduction.txt"] });
   say("Wrote the confirmation.");
   return endTurn;
 };

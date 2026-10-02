@@ -211,7 +211,7 @@ USER qa
         confirmation: {
           intern: "c1",
           provider: "grok",
-          result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
+          result: { steps: true, task: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
           error: null,
         },
       });
@@ -240,7 +240,7 @@ USER qa
       expect(services("judge")).toEqual(["qa-proxy", "qa-runner"]);
 
       const markdown = await Bun.file(join(runDir, "report.md")).text();
-      const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Seen once"));
+      const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Not confirmed"));
       expect(confirmed).toContain(`### ${title}`);
       expect(confirmed).toContain("- Reproductions: 3 (i1, i2, c1)");
       const usage = markdown.slice(markdown.indexOf("## Environments"));
@@ -405,7 +405,7 @@ USER qa
         id: "g1",
         reproduced: true,
         finding: { id: "i1/fake-home", title, environment: { commit: source.target.commit, environment: `qa-${source.runId}-i1` } },
-        confirmation: { intern: "c1", provider: "claude", result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] }, error: null },
+        confirmation: { intern: "c1", provider: "claude", result: { steps: true, task: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] }, error: null },
       });
       expect(report.environments.map((entry: EnvironmentStats) => [entry.intern, entry.attempt, entry.readyAt === null, entry.containers?.map((container) => container.service)])).toEqual([
         ["c1", 1, false, ["db", "qa-proxy", "qa-runner", "web"]],
@@ -518,7 +518,7 @@ USER qa
         confirmation: {
           intern: "c1",
           provider: "claude",
-          result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
+          result: { steps: true, task: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
           error: null,
         },
       });

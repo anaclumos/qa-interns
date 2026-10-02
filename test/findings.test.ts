@@ -336,10 +336,11 @@ describe("readConfirmation", () => {
     await write(
       "c1",
       "confirmation.json",
-      JSON.stringify({ reproduced: true, observed: "Page 2 starts with \"INV-0014 Stark Industries\", the last row of page 1.", evidence: ["/qa/out/evidence/repeat.png"] }),
+      JSON.stringify({ steps: true, task: true, observed: "Page 2 starts with \"INV-0014 Stark Industries\", the last row of page 1.", evidence: ["/qa/out/evidence/repeat.png"] }),
     );
     expect(await readConfirmation(runDir, "c1", 1)).toEqual({
-      reproduced: true,
+      steps: true,
+      task: true,
       observed: "Page 2 starts with \"INV-0014 Stark Industries\", the last row of page 1.",
       evidence: ["interns/c1/out/evidence/repeat.png"],
     });
@@ -347,8 +348,16 @@ describe("readConfirmation", () => {
 
   test("reads a later attempt from its own folder", async () => {
     await Bun.write(path.join(runDir, "interns", "c7", "out-2", "evidence", "repeat.png"), "png bytes");
-    await Bun.write(path.join(runDir, "interns", "c7", "out-2", "confirmation.json"), JSON.stringify({ reproduced: false, observed: "Page 2 starts with INV-0013.", evidence: ["evidence/repeat.png"] }));
-    expect(await readConfirmation(runDir, "c7", 2)).toEqual({ reproduced: false, observed: "Page 2 starts with INV-0013.", evidence: ["interns/c7/out-2/evidence/repeat.png"] });
+    await Bun.write(
+      path.join(runDir, "interns", "c7", "out-2", "confirmation.json"),
+      JSON.stringify({ steps: true, task: false, observed: "The steps open page 2 twice. The page's Next link shows INV-0013 first.", evidence: ["evidence/repeat.png"] }),
+    );
+    expect(await readConfirmation(runDir, "c7", 2)).toEqual({
+      steps: true,
+      task: false,
+      observed: "The steps open page 2 twice. The page's Next link shows INV-0013 first.",
+      evidence: ["interns/c7/out-2/evidence/repeat.png"],
+    });
     await expect(readConfirmation(runDir, "c7", 1)).rejects.toThrow("the file does not exist");
   });
 
@@ -356,13 +365,18 @@ describe("readConfirmation", () => {
     await expect(readConfirmation(runDir, "c2", 1)).rejects.toThrow("the file does not exist");
   });
 
-  test("throws when reproduced is not a boolean", async () => {
-    await write("c3", "confirmation.json", JSON.stringify({ reproduced: "yes", observed: "The row repeats.", evidence: [] }));
-    await expect(readConfirmation(runDir, "c3", 1)).rejects.toThrow("reproduced must be true or false");
+  test("throws when steps is not a boolean or task is missing", async () => {
+    await write("c3", "confirmation.json", JSON.stringify({ steps: "yes", observed: "The row repeats.", evidence: [] }));
+    await expect(readConfirmation(runDir, "c3", 1)).rejects.toThrow("steps must be true or false; task is required");
+  });
+
+  test("throws on a confirmation with one reproduced result instead of steps and task", async () => {
+    await write("c8", "confirmation.json", JSON.stringify({ reproduced: true, observed: "The row repeats.", evidence: [] }));
+    await expect(readConfirmation(runDir, "c8", 1)).rejects.toThrow("has unknown fields reproduced (the allowed fields are steps, task, observed, evidence)");
   });
 
   test("throws when confirmation.json is a symlink or a FIFO", async () => {
-    await Bun.write(path.join(outside, "confirmation.json"), JSON.stringify({ reproduced: true, observed: "Planted outside the out dir.", evidence: [] }));
+    await Bun.write(path.join(outside, "confirmation.json"), JSON.stringify({ steps: true, task: true, observed: "Planted outside the out dir.", evidence: [] }));
     await mkdir(path.join(runDir, "interns", "c5", "out"), { recursive: true });
     await symlink(path.join(outside, "confirmation.json"), path.join(runDir, "interns", "c5", "out", "confirmation.json"));
     await expect(readConfirmation(runDir, "c5", 1)).rejects.toThrow("the file is a symbolic link");
@@ -372,7 +386,7 @@ describe("readConfirmation", () => {
   });
 
   test("throws when an evidence file does not exist", async () => {
-    await write("c4", "confirmation.json", JSON.stringify({ reproduced: false, observed: "Page 2 starts with INV-0013.", evidence: ["evidence/none.png"] }));
+    await write("c4", "confirmation.json", JSON.stringify({ steps: false, task: false, observed: "Page 2 starts with INV-0013.", evidence: ["evidence/none.png"] }));
     await expect(readConfirmation(runDir, "c4", 1)).rejects.toThrow("evidence path evidence/none.png does not exist");
   });
 });
