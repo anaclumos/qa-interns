@@ -315,6 +315,31 @@ describe("loadLogins", () => {
     expect(message).toContain(`logins[0] "grok-empty": grok store ${emptyStore} has no auth.json`);
   });
 
+  test("accepts an opencode store whose auth.json holds one opencode-go API key, and rejects any other content without quoting it", async () => {
+    const store = (name: string) => join(dir, "stores", `opencode-${name}`);
+    const contents: Record<string, string> = {
+      key: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" } }),
+      empty: "{}",
+      blank: JSON.stringify({ "opencode-go": { type: "api", key: "" } }),
+      extra: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" }, anthropic: { type: "api", key: "other-key" } }),
+      wellknown: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" }, "https://example.test": { type: "wellknown", key: "TOKEN", token: "remote-token" } }),
+      broken: "{",
+    };
+    for (const [name, content] of Object.entries(contents)) {
+      await mkdir(store(name), { recursive: true });
+      await Bun.write(join(store(name), "auth.json"), content);
+    }
+    const file = await writeLogins("opencode.json", { logins: [{ id: "opencode-key", provider: "opencode", store: store("key"), model: "opencode-go/mimo-v2.6-pro" }] });
+    expect(await loadLogins(file)).toEqual([{ id: "opencode-key", provider: "opencode", store: store("key"), seat: null, quota: null, concurrency: 1, model: "opencode-go/mimo-v2.6-pro" }]);
+
+    const bad = ["empty", "blank", "extra", "wellknown", "broken"];
+    const message = await failure("opencode-bad.json", { logins: bad.map((name) => ({ id: `opencode-${name}`, provider: "opencode", store: store(name) })) });
+    for (const [index, name] of bad.entries()) {
+      expect(message).toContain(`logins[${index}] "opencode-${name}": ${join(store(name), "auth.json")} must hold one opencode-go API key and nothing else`);
+    }
+    for (const value of ["go-key", "other-key", "remote-token"]) expect(message).not.toContain(value);
+  });
+
   test("rejects two logins that name the same store after resolving the path", async () => {
     const message = await failure("same-store.json", {
       logins: [
