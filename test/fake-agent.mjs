@@ -149,6 +149,16 @@ const charterTurn = async (text) => {
     observed: "The home page body contains the fake defect marker.",
     evidence: ["evidence/page.html"],
   });
+  if (login().second === true) {
+    writeJson("/qa/out/findings/fake-second.json", {
+      title: "Home page shows a second fake defect",
+      kind: "error",
+      conditions: { account: "no account, signed out", data: "freshly seeded data", viewport: "1280x800", browser: "fresh profile", network: "normal" },
+      steps: [`Open ${url}`],
+      observed: "The home page body contains a second fake defect marker.",
+      evidence: ["evidence/page.html"],
+    });
+  }
   const cut = Math.floor((account?.password.length ?? 0) / 2);
   if (account !== undefined) say(`Signed in as ${account.email} with ${account.password.slice(0, cut)}`);
   update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" });
