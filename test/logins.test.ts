@@ -475,7 +475,7 @@ describe("Scheduler", () => {
     expect(lease?.login.id).toBe("cursor-1");
     expect(lease?.store).toBe(cursorStore);
     expect(await scheduler.acquire("i2", [])).toBeNull();
-    expect(scheduler.refusals("i2")).toEqual(['seat store of login claude-pool: "pool/i1" is not an absolute path']);
+    expect(scheduler.refusals("i2")).toEqual(["seat store of login claude-pool: the last line its command printed is not an absolute path"]);
     expect(scheduler.capacity()).toBe(8);
     lease?.release();
   });
@@ -493,7 +493,7 @@ describe("Scheduler", () => {
       ["codex", codexStore, `duplicate store ${codexStore}, already used by login codex-1; one store serves one process at a time`],
       ["cursor", join(dir, "stores"), `store ${join(dir, "stores")} contains or is inside the store of login codex-1; a runner mounting one could read or change the other`],
       ["codex", linked, `${join(linked, "auth.json")} is the same file as the credential of login codex-1; one credential serves one process at a time`],
-      ["codex", join(dir, "missing"), `${JSON.stringify(join(dir, "missing"))} is not an existing directory`],
+      ["codex", join(dir, "missing"), `store ${join(dir, "missing")} is not an existing directory`],
     ];
     for (const [provider, store, problem] of cases) {
       const scheduler = new Scheduler([login("seat-pool", provider, 1, ["echo", store]), login("codex-1", "codex", 1)]);

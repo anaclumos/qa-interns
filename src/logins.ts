@@ -14,15 +14,14 @@ export const defaultLoginsPath = join(process.env.XDG_CONFIG_HOME || join(homedi
 
 const example = `{"logins": [{"id": "claude-1", "provider": "claude", "store": "/absolute/path/to/login-store"}]}`;
 
-const storePath = z
-  .string()
-  .refine(isAbsolute, { error: (issue) => `${JSON.stringify(issue.input)} is not an absolute path`, abort: true })
-  .refine(isDirectory, { error: (issue) => `${JSON.stringify(issue.input)} is not an existing directory` });
-
 const entrySchema = z.strictObject({
   id: z.string().min(1),
   provider: z.enum(providerNames),
-  store: storePath.optional(),
+  store: z
+    .string()
+    .refine(isAbsolute, { error: (issue) => `${JSON.stringify(issue.input)} is not an absolute path`, abort: true })
+    .refine(isDirectory, { error: (issue) => `${JSON.stringify(issue.input)} is not an existing directory` })
+    .optional(),
   seat: z.array(z.string().min(1)).min(1).optional(),
   concurrency: z.int().positive().default(1),
   model: z.string().min(1).optional(),
@@ -299,11 +298,10 @@ export class Scheduler {
     const refuse = (problems: string[]) => refused.push(...problems.map((problem) => `seat store of login ${login.id}: ${problem}`));
     let lease: Lease | null = null;
     try {
-      const printed = await seatStore(login.seat, keeper.pid, intern);
-      const checked = printed === null ? null : storePath.safeParse(printed);
-      if (checked?.success === false) refuse(checked.error.issues.map((issue) => issue.message));
-      if (checked?.success === true) {
-        const path = checked.data;
+      const path = await seatStore(login.seat, keeper.pid, intern);
+      if (path !== null && !isAbsolute(path)) refuse(["the last line its command printed is not an absolute path"]);
+      else if (path !== null && !isDirectory(path)) refuse([`store ${path} is not an existing directory`]);
+      else if (path !== null) {
         const found = resolveStore(login.provider, path);
         const known = [...this.slots.flatMap((other) => other.store ?? []), ...this.live];
         const problems = storeProblems(login.provider, path, found, known);
