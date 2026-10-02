@@ -379,6 +379,16 @@ describe("Scheduler", () => {
     third.release();
   });
 
+  test("a quota command that exits 1 before a lease of a seat login exhausts the whole login without running its seat command", async () => {
+    const pool = { ...login("codex-pool", "codex", 4, ["sh", join(dir, "seat.sh")]), quota: ["sh", "-c", "exit 1"] };
+    const scheduler = new Scheduler([pool, login("grok-1", "grok", 1)]);
+    const lease = held(await scheduler.acquire("w1"));
+    expect(lease.login.id).toBe("grok-1");
+    expect(await Bun.file(join(dir, "seat-w1.pid")).exists()).toBe(false);
+    expect(scheduler.providers()).toEqual(["grok"]);
+    lease.release();
+  });
+
   test("a quota command that exits with another code fails the lease with its exit and stderr and leaves its login available", async () => {
     const broken = { ...login("cursor-1", "cursor", 1), quota: ["sh", "-c", "echo 'the spend API did not answer' >&2; exit 7"] };
     const scheduler = new Scheduler([broken, login("grok-1", "grok", 1)]);
