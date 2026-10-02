@@ -604,9 +604,12 @@ describe("Scheduler", () => {
     const elsewhere = await holder([seat], 1);
     expect(elsewhere.count).toBe(1);
     expect(seats.leased()).toBe(true);
+    const lent = new Scheduler([{ id: "codex-h0", provider: "codex", store: join(pool, "h0"), seat: null, concurrency: 1, model: null }]);
+    expect(lent.leased()).toBe(true);
     elsewhere.child.kill("SIGKILL");
     await elsewhere.child.exited;
     expect(seats.leased()).toBe(false);
+    expect(lent.leased()).toBe(false);
   });
 
   test("another process's lease blocks a lease whose mounted path contains or sits inside its own until that process ends", async () => {
@@ -625,6 +628,7 @@ describe("Scheduler", () => {
     const outside = await holder([cursor], 1);
     expect(outside.count).toBe(1);
     expect(await new Scheduler([codex]).acquire("u1", [])).toBeNull();
+    expect(new Scheduler([codex]).leased()).toBe(true);
     expect(await new Scheduler([claude]).acquire("u2", [])).toBeNull();
     expect(await new Scheduler([grok]).acquire("u3", [])).toBeNull();
     const next = held(await new Scheduler([beside]).acquire("u4", []));

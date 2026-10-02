@@ -171,7 +171,10 @@ async function acquire(ctx: Context, id: string, avoid: Provider[]): Promise<Lea
         },
       };
     }
-    if (!leased && !ctx.scheduler.leased()) return null;
+    if (!ctx.scheduler.leased()) {
+      if (!leased) return null;
+      continue;
+    }
     await new Promise<void>((resolve) => {
       const wake = () => {
         clearTimeout(timer);

@@ -137,7 +137,7 @@ export type Lease = { login: Login; store: string; mounted: string; release(): v
 
 type Grant = { store: string; credential: string; mounted: string; where: string };
 
-type Slot = { login: Login; key: string; active: number; exhausted: boolean; store: Grant | null };
+type Slot = { login: Login; active: number; exhausted: boolean; store: Grant | null };
 
 function mountedPath(provider: Provider, store: string): string {
   const mounts = providers[provider].mounts(store);
@@ -230,45 +230,54 @@ function claim(key: string): () => void {
   return () => closeSync(fd);
 }
 
-function claimed(keys: string[]): boolean {
+function claimed(key: string): boolean {
   const dir = locksDir();
-  return exclusive(dir, () =>
-    keys.some((key) => {
-      const fd = flock(lockFile(dir, key, "leased"), "--exclusive", "--nonblock");
-      if (fd !== null) closeSync(fd);
-      return fd === null;
-    }),
-  );
+  return exclusive(dir, () => {
+    const fd = flock(lockFile(dir, key, "leased"), "--exclusive", "--nonblock");
+    if (fd !== null) closeSync(fd);
+    return fd === null;
+  });
+}
+
+function slotLock(dir: string, mounted: string, slots: number): number | null {
+  for (const test of [lockFile(dir, mounted, "under"), ...ancestors(mounted).map((path) => lockFile(dir, path, "at"))]) {
+    const fd = flock(test, "--exclusive", "--nonblock");
+    if (fd === null) return null;
+    closeSync(fd);
+  }
+  for (let slot = 0; slot < slots; slot++) {
+    const fd = flock(lockFile(dir, mounted, String(slot)), "--exclusive", "--nonblock");
+    if (fd !== null) return fd;
+  }
+  return null;
+}
+
+function blocked(mounted: string, slots: number): boolean {
+  const dir = locksDir();
+  return exclusive(dir, () => {
+    const fd = slotLock(dir, mounted, slots);
+    if (fd !== null) closeSync(fd);
+    return fd === null;
+  });
 }
 
 function lock(mounted: string, slots: number): (() => void) | null {
   const dir = locksDir();
-  const file = (path: string, kind: string) => lockFile(dir, path, kind);
-  const above = ancestors(mounted);
-  const held: number[] = [];
-  const release = () => {
-    for (const fd of held) closeSync(fd);
-  };
-  const mutex = take(dir, join(dir, "acquire.lock"), "--exclusive");
-  try {
-    for (const test of [file(mounted, "under"), ...above.map((path) => file(path, "at"))]) {
-      const fd = flock(test, "--exclusive", "--nonblock");
-      if (fd === null) return null;
-      closeSync(fd);
+  return exclusive(dir, () => {
+    const fd = slotLock(dir, mounted, slots);
+    if (fd === null) return null;
+    const held = [fd];
+    const release = () => {
+      for (const each of held) closeSync(each);
+    };
+    try {
+      for (const share of [lockFile(dir, mounted, "at"), ...ancestors(mounted).map((path) => lockFile(dir, path, "under"))]) held.push(take(dir, share, "--shared", "--nonblock"));
+    } catch (error) {
+      release();
+      throw error;
     }
-    for (let slot = 0; slot < slots && held.length === 0; slot++) {
-      const fd = flock(file(mounted, String(slot)), "--exclusive", "--nonblock");
-      if (fd !== null) held.push(fd);
-    }
-    if (held.length === 0) return null;
-    for (const share of [file(mounted, "at"), ...above.map((path) => file(path, "under"))]) held.push(take(dir, share, "--shared", "--nonblock"));
-  } catch (error) {
-    release();
-    throw error;
-  } finally {
-    closeSync(mutex);
-  }
-  return release;
+    return release;
+  });
 }
 
 export class Scheduler {
@@ -279,16 +288,16 @@ export class Scheduler {
 
   constructor(logins: Login[]) {
     this.slots = logins.map((login) => {
-      if (login.store === null) return { login, key: JSON.stringify(login.seat), active: 0, exhausted: false, store: null };
+      if (login.store === null) return { login, active: 0, exhausted: false, store: null };
       const found = resolveStore(login.provider, login.store);
       if (found.credential === null) throw new Error(`${login.provider} store ${login.store} has no ${credentialName(login.provider)}`);
       const store = { store: found.store, credential: found.credential, mounted: mountedPath(login.provider, login.store), where: `login ${login.id}` };
-      return { login, key: store.mounted, active: 0, exhausted: false, store };
+      return { login, active: 0, exhausted: false, store };
     });
   }
 
   leased(): boolean {
-    return claimed(this.slots.filter((slot) => !slot.exhausted).map((slot) => slot.key));
+    return this.slots.some((slot) => !slot.exhausted && (slot.store === null ? claimed(JSON.stringify(slot.login.seat)) : blocked(slot.store.mounted, slot.login.concurrency)));
   }
 
   capacity(): number {
@@ -305,7 +314,7 @@ export class Scheduler {
       const slot = this.next(avoid, tried);
       if (slot === undefined) return null;
       tried.add(slot);
-      const unclaim = claim(slot.key);
+      const unclaim = slot.store === null ? claim(JSON.stringify(slot.login.seat)) : () => {};
       slot.active += 1;
       let lease: Lease | null = null;
       try {
