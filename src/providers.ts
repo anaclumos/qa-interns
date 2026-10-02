@@ -96,4 +96,20 @@ export const providers: Record<Provider, ProviderSpec> = {
     isLoginFailure: (error) =>
       error.code === authRequired || error.code === rateLimited || (error.code === internalError && grokLoginData.safeParse(error.data).success),
   },
+  "opencode-go": {
+    adapter: ["opencode", "acp"],
+    env: {
+      XDG_DATA_HOME: "/home/qa/.local/share",
+      OPENCODE_DISABLE_MODELS_FETCH: "true",
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ enabled_providers: ["opencode-go"], permission: { websearch: "deny" } }),
+    },
+    mounts: (store) => [{ source: path.join(storePath(store), "auth.json"), target: "/home/qa/.local/share/opencode/auth.json", readOnly: true }],
+    files: [],
+    tmpfs: ["/home/qa/.local", "/home/qa/.local/share", "/home/qa/.local/share/opencode"],
+    egress: ["opencode.ai"],
+    sessionMeta: null,
+    modeId: null,
+    isLoginFailure: (error) => error.code === authRequired,
+  },
 };

@@ -4,7 +4,7 @@ import type { confirmationSchema } from "./findings.ts";
 import type { storedFindingSchema } from "./report.ts";
 import type { stateSchema } from "./state.ts";
 
-export const providerNames = ["claude", "codex", "cursor", "grok"] as const;
+export const providerNames = ["claude", "codex", "cursor", "grok", "opencode-go"] as const;
 
 export type Provider = (typeof providerNames)[number];
 

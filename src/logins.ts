@@ -234,7 +234,7 @@ function lock(mounted: string, slots: number): (() => void) | null {
 
 export class Scheduler {
   private readonly slots: Slot[];
-  private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0, grok: 0 };
+  private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0, grok: 0, "opencode-go": 0 };
   private readonly exhaustedMounts = new Set<string>();
   private readonly live = new Set<Held>();
 

@@ -2,7 +2,7 @@ import { RequestError } from "@agentclientprotocol/sdk";
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
 import { providers } from "../src/providers.ts";
-import type { Provider } from "../src/types.ts";
+import { providerNames, type Provider } from "../src/types.ts";
 
 const authRequired = new RequestError(-32000, "Authentication required", undefined);
 const cursorAuthRequired = new RequestError(-32000, "Authentication required", {
@@ -44,6 +44,9 @@ const grokRefreshFailed = new RequestError(
   "Unauthorized (401) from https://cli-chat-proxy.grok.com/v1/responses: authentication_error: token expired\n\n  Model:     grok-4.6\n  Auth:      ApiKey\n  Version:   1.0.41\n  Available: grok-4.6, grok-4.5",
 );
 
+const opencodeAuthRequired = new RequestError(-32000, "Authentication required: provider authentication required", { providerId: "opencode-go" });
+const opencodeApiError = new RequestError(-32603, "Internal error: Invalid API key.", { service: "session", errorName: "APIError" });
+
 const cases: [Provider, string, RequestError, boolean][] = [
   ["claude", "authentication required", authRequired, true],
   ["claude", "rate limit", claudeRateLimit, true],
@@ -75,6 +78,11 @@ const cases: [Provider, string, RequestError, boolean][] = [
   ["grok", "the codex usage limit shape", codexUsageLimit, false],
   ["claude", "the grok rate limit shape", grokRateLimit, false],
   ["codex", "the grok no credits shape", grokNoCredits, false],
+  ["opencode-go", "authentication required", opencodeAuthRequired, true],
+  ["opencode-go", "provider api error", opencodeApiError, false],
+  ["opencode-go", "the claude rate limit shape", claudeRateLimit, false],
+  ["opencode-go", "the grok rate limit shape", grokRateLimit, false],
+  ["opencode-go", "the grok no credits shape", grokNoCredits, false],
 ];
 
 describe("isLoginFailure", () => {
@@ -108,12 +116,20 @@ describe("mounts", () => {
     expect(providers.grok.env.GROK_AUTH_PATH).toBe(path.join(mounts[0]?.target ?? "", "auth.json"));
   });
 
-  test.each(["claude", "codex", "cursor", "grok"] as const)("%s rejects a relative store", (provider) => {
+  test("opencode-go mounts only auth.json from the store, read-only, into its data dir", () => {
+    const mounts = providers["opencode-go"].mounts("/srv/qa-logins/opencode-go-1");
+    expect(mounts).toEqual([
+      { source: "/srv/qa-logins/opencode-go-1/auth.json", target: "/home/qa/.local/share/opencode/auth.json", readOnly: true },
+    ]);
+    expect(path.join(providers["opencode-go"].env.XDG_DATA_HOME ?? "", "opencode", "auth.json")).toBe(mounts[0]?.target ?? "");
+  });
+
+  test.each([...providerNames])("%s rejects a relative store", (provider) => {
     expect(() => providers[provider].mounts("logins/one")).toThrow('login store must be an absolute path, got "logins/one"');
   });
 
   test("the provider env points at or into every mount target", () => {
-    for (const provider of ["claude", "codex", "cursor", "grok"] as const) {
+    for (const provider of providerNames) {
       const spec = providers[provider];
       const roots = Object.values(spec.env).filter((value) => value.startsWith("/"));
       for (const mount of [...spec.mounts("/srv/qa-logins/x"), ...spec.files]) {
