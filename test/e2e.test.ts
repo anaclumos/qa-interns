@@ -182,6 +182,7 @@ USER qa
       const state = await readState(runDir);
       expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger" }, options: { interns: 2 } });
       expect(state.options.concurrency).toBeGreaterThanOrEqual(1);
+      expect(state.options.confirmConcurrency).toBe(1);
       expect(state.interns.map((entry) => [entry.id, entry.role, entry.status, entry.findings, entry.model])).toEqual([
         ["i1", "intern", "done", 1, "fake-model-1"],
         ["i2", "intern", "done", 1, "fake-model-1"],
@@ -353,7 +354,7 @@ USER qa
       expect(lines[0]).toBe(runDir);
       expect(lines.filter((line) => line.startsWith("phase "))).toEqual(["phase preparing", "phase building", "phase confirming", "phase reporting"]);
       const state = await readState(runDir);
-      expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger", commit: next }, options: { interns: 0, minutes: 0, confirmMinutes: 0.5 } });
+      expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger", commit: next }, options: { interns: 0, minutes: 0, confirmMinutes: 0.5, concurrency: 0, confirmConcurrency: 1 } });
       expect(state.interns.map((entry) => [entry.id, entry.role, entry.group, entry.charter, entry.status, entry.detail])).toEqual([["c1", "confirm", "g1", title, "done", "reproduced"]]);
       const prompts = (await Bun.file(join(runDir, "interns", "c1", "transcript.jsonl")).text())
         .split("\n")

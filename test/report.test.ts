@@ -31,7 +31,7 @@ const state: RunState = {
   pid: 48213,
   pidStart: 8312765,
   target: { repo: "/home/owner/src/qa-interns", path: "eval/ledger", commit: "3f9c2e1d8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d", dirty: false },
-  options: { interns: 3, minutes: 30, confirmMinutes: 10, concurrency: 3 },
+  options: { interns: 3, minutes: 30, confirmMinutes: 10, concurrency: 3, confirmConcurrency: 3 },
   phase: "done",
   error: null,
   startedAt: "2026-09-26T09:00:00.000Z",
@@ -404,7 +404,7 @@ describe("renderReplay", () => {
     ...state,
     runId: "9b4d2f61",
     target: { ...state.target, commit: "a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9" },
-    options: { interns: 0, minutes: 0, confirmMinutes: 10, concurrency: 3 },
+    options: { interns: 0, minutes: 0, confirmMinutes: 10, concurrency: 0, confirmConcurrency: 3 },
     interns: state.interns.filter((entry) => entry.role === "confirm"),
   };
   const replay = { runId: state.runId, target: state.target, groups: [exportTotal, overlap, negative] };
