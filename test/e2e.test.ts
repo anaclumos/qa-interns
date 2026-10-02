@@ -486,6 +486,9 @@ USER qa
 
       expect(lines).toContain("i1 starting on claude-charter-limit (claude)");
       expect(lines).toContain("i1 starting on claude-confirm-limit (claude)");
+      const queued = lines.indexOf(`i1 queued: login claude-charter-limit failed with -32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"}`);
+      expect(queued).toBeGreaterThan(lines.indexOf("i1 starting on claude-charter-limit (claude)"));
+      expect(queued).toBeLessThan(lines.indexOf("i1 starting on claude-confirm-limit (claude)"));
       expect(internalSubnet(runDir, "i1")).not.toBe(first);
       expect(lines).toContain("c1 starting on claude-confirm-limit (claude)");
       expect(lines).toContain("c1 starting on claude-no-confirm (claude)");
@@ -493,10 +496,10 @@ USER qa
       expect(state.phase).toBe("done");
       const moved = intern(state, "i1");
       expect(moved).toMatchObject({ login: "claude-confirm-limit", model: "fake-model-b", status: "done", findings: 2 });
-      expect(moved.detail).toStartWith(`moved from claude-charter-limit to claude-confirm-limit after a login failure (-32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"})`);
+      expect(moved.detail).toStartWith(`login claude-charter-limit failed with -32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"}; moved to claude-confirm-limit`);
       const confirmer = intern(state, "c1");
       expect(confirmer).toMatchObject({ login: "claude-no-confirm", model: "fake-model-c", status: "done" });
-      expect(confirmer.detail).toStartWith(`moved from claude-confirm-limit to claude-no-confirm after a login failure (-32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"})`);
+      expect(confirmer.detail).toStartWith(`login claude-confirm-limit failed with -32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"}; moved to claude-no-confirm`);
       expect(confirmer.detail).toEndWith("; confirmation failed: no confirmation.json written");
 
       const transcript = (await Bun.file(join(runDir, "interns", "i1", "transcript.jsonl")).text())
@@ -603,7 +606,7 @@ USER qa
         model: "fake-model-b",
         status: "done",
         findings: 1,
-        detail: 'stopped at minute 0: "\n\nUpgrade your plan to continue"; moved from cursor-quota to claude-next after its quota command reported no quota; stopped at minute 0: "Nothing more to test."',
+        detail: 'stopped at minute 0: "\n\nUpgrade your plan to continue"; the quota command of login cursor-quota reported no quota; moved to claude-next; stopped at minute 0: "Nothing more to test."',
       });
       expect(state.interns.map((entry) => [entry.id, entry.login, entry.status])).toEqual([
         ["i1", "claude-next", "done"],
