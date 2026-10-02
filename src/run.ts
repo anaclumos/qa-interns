@@ -271,12 +271,11 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
       slot?.release();
       slot = undefined;
       lease.release();
+      await note(`login ${lease.login.id} failed with ${message(outcome)}`);
+      await ctx.update(id, { status: "queued" });
       const next = await acquire(ctx, id, avoid);
-      if (next === null) {
-        await note(`login ${lease.login.id} failed with ${message(outcome)}`);
-        return null;
-      }
-      await note(`moved from ${lease.login.id} to ${next.login.id} after a login failure (${message(outcome)})`);
+      if (next === null) return null;
+      await note(`moved to ${next.login.id}`);
       lease = next;
       await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, model: null });
     }
