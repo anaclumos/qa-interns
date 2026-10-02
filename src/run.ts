@@ -274,7 +274,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, work: 
       slot = undefined;
       lease.release();
       const next = await acquire(ctx, id);
-      const failure = outcome instanceof RequestError ? `${outcome.code}: ${outcome.message}` : null;
+      const failure = outcome instanceof RequestError ? message(outcome) : null;
       if (next === null) {
         await note(failure === null ? outcome.message : `login ${lease.login.id} failed with ${failure}`);
         return null;
