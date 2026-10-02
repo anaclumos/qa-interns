@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { readRelayLogs, removeCopies, removeDir, writeChromePolicy } from "../src/environment.ts";
+import { readRelayLogs, removeCopies, removeDir, stopRun, writeChromePolicy } from "../src/environment.ts";
 import { errorCode } from "../src/findings.ts";
 import { readReplay } from "../src/report.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
@@ -27,7 +27,7 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; stray?: true };
+type FakeLogin = { id: string; provider: Provider; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; stray?: true };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
@@ -459,10 +459,10 @@ USER qa
       expect(state.phase).toBe("done");
       const moved = intern(state, "i1");
       expect(moved).toMatchObject({ login: "claude-confirm-limit", model: "fake-model-b", status: "done", findings: 2 });
-      expect(moved.detail).toStartWith(`moved from claude-charter-limit to claude-confirm-limit after a login failure (-32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"})`);
+      expect(moved.detail).toStartWith(`login claude-charter-limit failed with -32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"}; moved to claude-confirm-limit`);
       const confirmer = intern(state, "c1");
       expect(confirmer).toMatchObject({ login: "claude-no-confirm", model: "fake-model-c", status: "done" });
-      expect(confirmer.detail).toStartWith(`moved from claude-confirm-limit to claude-no-confirm after a login failure (-32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"})`);
+      expect(confirmer.detail).toStartWith(`login claude-confirm-limit failed with -32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"}; moved to claude-no-confirm`);
       expect(confirmer.detail).toEndWith("; confirmation failed: no confirmation.json written");
 
       const transcript = (await Bun.file(join(runDir, "interns", "i1", "transcript.jsonl")).text())
@@ -534,6 +534,52 @@ USER qa
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an intern whose teardown fails after a login failure names the failed login in its detail",
+    async () => {
+      const lines: string[] = [];
+      const failure = `login claude-limit failed with -32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"}`;
+      let held = null as string | null;
+      const run = runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("teardown", [{ id: "claude-limit", provider: "claude", limit: true }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: (line) => {
+          lines.push(line);
+          const [dir] = lines;
+          if (dir === undefined || line !== "i1 starting on claude-limit (claude)") return;
+          held = `qair-f-e2e-held-${basename(dir)}`;
+          Bun.spawnSync(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${basename(dir)}-i1`, held], { stdout: "ignore" });
+          Bun.spawnSync(["docker", "run", "-d", "--rm", "--name", held, "--network", held, fakeImage], { stdout: "ignore" });
+        },
+      });
+
+      try {
+        await expect(run).rejects.toThrow(`No testing intern completed: i1 failed: ${failure}; teardown failed: `);
+      } finally {
+        if (held !== null) {
+          await capture(["docker", "rm", "-f", held]);
+          await capture(["docker", "network", "rm", held]);
+        }
+        const [dir] = lines;
+        if (dir !== undefined) await stopRun(dir, basename(dir));
+      }
+      const runDir = lines[0];
+      if (runDir === undefined) throw new Error("runQa printed no run directory");
+      const state = await readState(runDir);
+      expect(intern(state, "i1")).toMatchObject({ login: "claude-limit", status: "failed" });
+      expect(intern(state, "i1").detail).toStartWith(`${failure}; teardown failed: docker compose down left objects of qa-${state.runId}-i1 behind`);
+      expect(await leftovers(state.runId)).toEqual([]);
     },
     timeout,
   );
