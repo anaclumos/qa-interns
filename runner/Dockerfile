@@ -7,6 +7,7 @@ RUN apt-get update \
       e2fsprogs \
       ffmpeg \
       procps \
+      ripgrep \
       libxcb-shm0 libx11-xcb1 libx11-6 libxcb1 libxext6 libxrandr2 libxcomposite1 \
       libxcursor1 libxdamage1 libxfixes3 libxi6 libgtk-3-0t64 libpangocairo-1.0-0 \
       libpango-1.0-0 libatk1.0-0t64 libcairo-gobject2 libcairo2 libgdk-pixbuf-2.0-0 \
@@ -38,6 +39,11 @@ RUN curl -fsSLo /usr/local/bin/grok https://x.ai/cli/grok-1.0.41-linux-x86_64 \
  && chmod 0755 /usr/local/bin/grok \
  && mkdir /etc/grok \
  && printf '%s\n' 'allowed_mcp_servers = []' '[managed_mcps]' 'enabled = false' 'gateway_tools_enabled = false' '[features]' 'telemetry = false' '[telemetry]' 'trace_upload = false' > /etc/grok/requirements.toml
+
+RUN curl -fsSLo /tmp/opencode.tar.gz https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-linux-x64-baseline.tar.gz \
+ && echo "24b0d458d21ef548b2752166303defcf7f4945b049fb4876ab78dfaf86d81b27  /tmp/opencode.tar.gz" | sha256sum -c \
+ && tar -xzf /tmp/opencode.tar.gz --no-same-owner -C /usr/local/bin opencode \
+ && rm /tmp/opencode.tar.gz
 
 ARG QA_UID
 ARG QA_GID

@@ -7,7 +7,8 @@ import { z } from "zod";
 import { providers } from "./providers.ts";
 import { readJson, stateDir } from "./state.ts";
 import { errorCode } from "./findings.ts";
-import { trackGroup } from "./target.ts";
+import { redact } from "./secrets.ts";
+import { capture, trackGroup } from "./target.ts";
 import { providerNames, type Login, type Provider } from "./types.ts";
 
 export const defaultLoginsPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "qa-interns", "logins.json");
@@ -23,6 +24,7 @@ const entrySchema = z.strictObject({
     .refine(isDirectory, { error: (issue) => `${JSON.stringify(issue.input)} is not an existing directory` })
     .optional(),
   seat: z.array(z.string().min(1)).min(1).optional(),
+  quota: z.array(z.string().min(1)).min(1).optional(),
   concurrency: z.int().positive().default(1),
   model: z.string().min(1).optional(),
 });
@@ -125,6 +127,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
       provider: entry.provider,
       store: entry.store ?? null,
       seat: entry.seat ?? null,
+      quota: entry.quota ?? null,
       concurrency: entry.concurrency,
       model: entry.model ?? null,
     });
@@ -147,6 +150,14 @@ function mountedPath(provider: Provider, store: string): string {
 }
 
 const lockHeld = 75;
+const quotaMs = 60_000;
+
+export async function hasQuota(login: Login): Promise<boolean> {
+  if (login.quota === null) return true;
+  const { code, stderr } = await capture(login.quota, { timeout: quotaMs });
+  if (code === 0 || code === 1) return code === 0;
+  throw new Error(`The quota command of login ${login.id} exited with ${code}: ${redact(stderr).trim().slice(-2000)}`);
+}
 
 async function seatStore(command: string[], leasePid: number, intern: string): Promise<string | null> {
   const child = trackGroup(Bun.spawn(command, {
@@ -237,7 +248,6 @@ function lock(mounted: string, slots: number): (() => void) | null {
 
 export class Scheduler {
   private readonly slots: Slot[];
-  private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0, grok: 0 };
   private readonly exhaustedMounts = new Set<string>();
   private readonly live = new Set<Held>();
 
@@ -259,10 +269,10 @@ export class Scheduler {
     return [...new Set(this.slots.filter((slot) => !slot.exhausted).map((slot) => slot.login.provider))];
   }
 
-  async acquire(intern: string, avoid: Provider[]): Promise<Lease | null> {
+  async acquire(intern: string): Promise<Lease | null> {
     const tried = new Set<Slot>();
     while (true) {
-      const slot = this.next(avoid, tried);
+      const slot = this.next(tried);
       if (slot === undefined) return null;
       tried.add(slot);
       slot.active += 1;
@@ -285,6 +295,10 @@ export class Scheduler {
 
   private async lease(slot: Slot, intern: string): Promise<Lease | null> {
     const { login } = slot;
+    if (!(await hasQuota(login))) {
+      slot.exhausted = true;
+      return null;
+    }
     if (slot.store !== null) return this.grant(slot, slot.store, login.concurrency, null);
     if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
     const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
@@ -308,7 +322,6 @@ export class Scheduler {
   private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null): Lease | null {
     const unlock = lock(grant.mounted, slots);
     if (unlock === null) return null;
-    this.used[slot.login.provider] += 1;
     const entry = { ...grant };
     this.live.add(entry);
     let released = false;
@@ -327,15 +340,7 @@ export class Scheduler {
     };
   }
 
-  private next(avoid: Provider[], tried: Set<Slot>): Slot | undefined {
-    const spare = (slot: Slot) => slot.login.concurrency - slot.active;
-    return this.slots
-      .filter((slot) => !slot.exhausted && !tried.has(slot) && spare(slot) > 0)
-      .sort(
-        (a, b) =>
-          Number(avoid.includes(a.login.provider)) - Number(avoid.includes(b.login.provider)) ||
-          this.used[a.login.provider] - this.used[b.login.provider] ||
-          spare(b) - spare(a),
-      )[0];
+  private next(tried: Set<Slot>): Slot | undefined {
+    return this.slots.find((slot) => !slot.exhausted && !tried.has(slot) && slot.active < slot.login.concurrency);
   }
 }
