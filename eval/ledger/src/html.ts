@@ -172,7 +172,7 @@ ${option("", "Newest first", options.sort)}${option("due", "Due date, earliest f
 <div><button>Apply</button></div>
 </form>
 <p>${count} ${count === 1 ? "invoice" : "invoices"}</p>
-<div class="scroll"><table>
+<div class="scroll" role="region" aria-label="Invoices" tabindex="0"><table>
 <thead><tr>${canEdit ? `<th><span class="visually-hidden">Select</span></th>` : ""}<th>Number</th><th>Customer</th><th>Issue date</th><th>Due date</th><th class="num">Total</th><th>Status</th></tr></thead>
 <tbody>${rows || `<tr><td colspan="${canEdit ? 7 : 6}">No invoices on this page.</td></tr>`}</tbody>
 </table></div>
@@ -232,7 +232,7 @@ export function invoiceDetailPage(ctx: Ctx, invoice: Invoice & { lines: Line[] }
 <dt>Currency</dt><dd>${invoice.currency}</dd>
 <dt>Tax rate</dt><dd>${invoice.taxRate}%</dd>
 </dl>
-<div class="scroll"><table>
+<div class="scroll" role="region" aria-label="Line items" tabindex="0"><table>
 <thead><tr><th>Description</th><th class="num">Quantity</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
 <tbody>${lines}</tbody>
 <tfoot>
@@ -305,7 +305,7 @@ export function invoiceFormPage(ctx: Ctx, invoice: (Invoice & { lines: Line[] })
 </div>
 <fieldset>
 <legend>Line items</legend>
-<div class="scroll"><table>
+<div class="scroll" role="region" aria-label="Line items" tabindex="0"><table>
 <thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th></th></tr></thead>
 <tbody id="lines">${lines}</tbody>
 </table></div>
@@ -391,7 +391,7 @@ export function teamPage(ctx: Ctx, members: Member[], error: string) {
     ctx,
     `<h1>${esc(ctx.team.name)}</h1>
 <p>Your role: ${ctx.role}</p>
-<div class="scroll"><table>
+<div class="scroll" role="region" aria-label="Team members" tabindex="0"><table>
 <thead><tr><th>Name</th><th>Email</th><th>Role</th>${isOwner ? "<th></th>" : ""}</tr></thead>
 <tbody>${rows}</tbody>
 </table></div>
