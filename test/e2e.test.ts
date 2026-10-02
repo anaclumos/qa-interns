@@ -27,15 +27,15 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; stray?: true; second?: true };
+type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; stray?: true; second?: true };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
-  for (const { id: login, provider, ...credentials } of entries) {
+  for (const { id: login, provider, quota, ...credentials } of entries) {
     const store = join(root, "stores", name, login);
     await mkdir(store, { recursive: true });
     await Bun.write(join(store, provider === "claude" ? ".credentials.json" : "auth.json"), JSON.stringify(credentials));
-    list.push({ id: login, provider, store });
+    list.push({ id: login, provider, store, quota });
   }
   const file = join(root, `${name}-logins.json`);
   await Bun.write(file, JSON.stringify({ logins: list }));
@@ -210,7 +210,7 @@ USER qa
         reproductions: ["i1", "i2", "c1"],
         confirmation: {
           intern: "c1",
-          provider: "cursor",
+          provider: "grok",
           result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
           error: null,
         },
@@ -573,6 +573,56 @@ USER qa
   );
 
   test(
+    "an intern whose agent stops at a plan limit moves to the next login when the quota command of its login exits 1, and that login stays exhausted for the run",
+    async () => {
+      const lines: string[] = [];
+      const count = join(root, "quota-count");
+      const quota = ["sh", "-c", `n=$(cat '${count}' 2>/dev/null || echo 0); echo $((n + 1)) > '${count}'; [ "$n" -eq 0 ]`];
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("quota", [
+          { id: "cursor-quota", provider: "cursor", quota, upgrade: true, model: "fake-model-a" },
+          { id: "claude-next", provider: "claude", model: "fake-model-b" },
+        ]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      expect(lines).toContain("i1 starting on cursor-quota (cursor)");
+      expect(lines).toContain("i1 starting on claude-next (claude)");
+      const state = await readState(runDir);
+      expect(state.phase).toBe("done");
+      expect(intern(state, "i1")).toMatchObject({
+        login: "claude-next",
+        model: "fake-model-b",
+        status: "done",
+        findings: 1,
+        detail: 'stopped at minute 0: "\n\nUpgrade your plan to continue"; moved from cursor-quota to claude-next after its quota command reported no quota; stopped at minute 0: "Nothing more to test."',
+      });
+      expect(state.interns.map((entry) => [entry.id, entry.login, entry.status])).toEqual([
+        ["i1", "claude-next", "done"],
+        ["c1", "claude-next", "done"],
+      ]);
+      expect(await Bun.file(count).text()).toBe("2\n");
+
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      const findings: Finding[] = report.groups[0].findings;
+      expect(findings.map((finding) => [finding.id, finding.environment.provider, finding.environment.model])).toEqual([["i1/out-2/fake-home", "claude", "fake-model-b"]]);
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, and a run fails when every block overlaps one",
     async () => {
       const third = await freeBlock(214);
@@ -660,7 +710,7 @@ USER qa
         script,
         [
           `import { loadLogins, Scheduler } from ${JSON.stringify(join(import.meta.dir, "..", "src", "logins.ts"))};`,
-          "const lease = await new Scheduler(await loadLogins(process.argv[2])).acquire(\"h1\", []);",
+          "const lease = await new Scheduler(await loadLogins(process.argv[2])).acquire(\"h1\");",
           "console.log(lease === null ? \"none\" : \"held\");",
           "for await (const _ of Bun.stdin.stream()) {}",
           "",

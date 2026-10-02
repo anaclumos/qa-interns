@@ -52,7 +52,7 @@ beforeAll(async () => {
       `import { Scheduler } from ${JSON.stringify(join(import.meta.dir, "..", "src", "logins.ts"))};`,
       "const scheduler = new Scheduler(JSON.parse(process.argv[2]));",
       "const leases = [];",
-      "for (let index = 0; index < Number(process.argv[3]); index++) leases.push(await scheduler.acquire(`h${index}`, []));",
+      "for (let index = 0; index < Number(process.argv[3]); index++) leases.push(await scheduler.acquire(`h${index}`));",
       "console.log(leases.filter((lease) => lease !== null).length);",
       "for await (const _ of Bun.stdin.stream()) {}",
       "",
@@ -84,7 +84,7 @@ async function failure(name: string, content: unknown): Promise<string> {
 }
 
 function login(id: string, provider: Login["provider"], concurrency: number, seat: string[] | null = null): Login {
-  return { id, provider, store: seat === null ? join(dir, "stores", id) : null, seat, concurrency, model: null };
+  return { id, provider, store: seat === null ? join(dir, "stores", id) : null, seat, quota: null, concurrency, model: null };
 }
 
 function held(lease: Lease | null): Lease {
@@ -141,18 +141,19 @@ describe("loadLogins", () => {
         { id: "claude-1", provider: "claude", store: claudeStore, concurrency: 2 },
         { id: "codex-1", provider: "codex", store: codexStore, concurrency: 1 },
         { id: "codex-pool", provider: "codex", seat: ["sh", "-c", "exec tokenmaxxing seat --codex \"$QA_INTERNS_LEASE_PID\""], concurrency: 2 },
-        { id: "cursor-1", provider: "cursor", store: cursorStore, model: "grok-4.7[context=256k,reasoning_effort=high,fast=true]" },
+        { id: "cursor-1", provider: "cursor", store: cursorStore, quota: ["sh", "-c", "exit 0"], model: "grok-4.7[context=256k,reasoning_effort=high,fast=true]" },
         { id: "grok-1", provider: "grok", store: grokStore },
       ],
     });
     expect(await loadLogins(file)).toEqual([
-      { id: "claude-1", provider: "claude", store: claudeStore, seat: null, concurrency: 2, model: null },
-      { id: "codex-1", provider: "codex", store: codexStore, seat: null, concurrency: 1, model: null },
+      { id: "claude-1", provider: "claude", store: claudeStore, seat: null, quota: null, concurrency: 2, model: null },
+      { id: "codex-1", provider: "codex", store: codexStore, seat: null, quota: null, concurrency: 1, model: null },
       {
         id: "codex-pool",
         provider: "codex",
         store: null,
         seat: ["sh", "-c", "exec tokenmaxxing seat --codex \"$QA_INTERNS_LEASE_PID\""],
+        quota: null,
         concurrency: 2,
         model: null,
       },
@@ -161,10 +162,11 @@ describe("loadLogins", () => {
         provider: "cursor",
         store: cursorStore,
         seat: null,
+        quota: ["sh", "-c", "exit 0"],
         concurrency: 1,
         model: "grok-4.7[context=256k,reasoning_effort=high,fast=true]",
       },
-      { id: "grok-1", provider: "grok", store: grokStore, seat: null, concurrency: 1, model: null },
+      { id: "grok-1", provider: "grok", store: grokStore, seat: null, quota: null, concurrency: 1, model: null },
     ]);
   });
 
@@ -354,7 +356,7 @@ describe("loadLogins", () => {
         { id: "claude-1", provider: "claude", store: claudeStore },
         { id: "claude-1", provider: "claude", store: claudeStore },
         { provider: "cursor", store: cursorStore, concurency: 2 },
-        { id: "codex-pool", provider: "codex", seat: [], concurrency: 0 },
+        { id: "codex-pool", provider: "codex", seat: [], quota: [], concurrency: 0 },
       ],
     });
     expect(message.split("\n").slice(1)).toEqual([
@@ -363,35 +365,80 @@ describe("loadLogins", () => {
       "  logins[2]: id: Invalid input: expected string, received undefined",
       "  logins[2]: Unrecognized key: \"concurency\"",
       "  logins[3] \"codex-pool\": seat: Too small: expected array to have >=1 items",
+      "  logins[3] \"codex-pool\": quota: Too small: expected array to have >=1 items",
       "  logins[3] \"codex-pool\": concurrency: Too small: expected number to be >0",
     ]);
   });
 });
 
 describe("Scheduler", () => {
-  test("prefers providers not avoided, then the least used provider, then the most spare capacity, then file order", async () => {
-    const scheduler = new Scheduler([login("claude-1", "claude", 1), login("claude-2", "claude", 2), login("codex-1", "codex", 1), login("cursor-1", "cursor", 1)]);
-    const first = await scheduler.acquire("i1", []);
-    const second = await scheduler.acquire("i2", []);
-    const third = await scheduler.acquire("i3", []);
-    const fourth = await scheduler.acquire("i4", ["claude"]);
-    const fifth = await scheduler.acquire("i5", ["claude"]);
-    expect([first, second, third, fourth, fifth].map((lease) => lease?.login.id)).toEqual(["claude-2", "codex-1", "cursor-1", "claude-1", "claude-2"]);
-    expect(first?.store).toBe(join(dir, "stores", "claude-2"));
-    expect(await scheduler.acquire("i6", [])).toBeNull();
-    releaseAll([first, second, third, fourth, fifth]);
+  test("leases the first login in file order that is not exhausted and has spare concurrency", async () => {
+    const scheduler = new Scheduler([login("cursor-1", "cursor", 2), login("grok-1", "grok", 1), login("claude-1", "claude", 1)]);
+    const leases = [];
+    for (const intern of ["i1", "i2", "i3", "i4"]) leases.push(held(await scheduler.acquire(intern)));
+    expect(leases.map((lease) => lease.login.id)).toEqual(["cursor-1", "cursor-1", "grok-1", "claude-1"]);
+    expect(await scheduler.acquire("i5")).toBeNull();
+    const [first, second, grok, claude] = leases;
+    first?.release();
+    const again = held(await scheduler.acquire("i6"));
+    expect(again.login.id).toBe("cursor-1");
+    scheduler.exhaust(again);
+    again.release();
+    second?.release();
+    expect(await scheduler.acquire("i7")).toBeNull();
+    grok?.release();
+    const next = held(await scheduler.acquire("i8"));
+    expect(next.login.id).toBe("grok-1");
+    releaseAll([claude, next]);
   });
 
-  test("avoids providers when another has spare capacity and counts use across the run", async () => {
-    const scheduler = new Scheduler([login("claude-1", "claude", 2), login("codex-1", "codex", 3), login("cursor-1", "cursor", 1)]);
-    const cursor = await scheduler.acquire("c1", ["claude", "codex"]);
-    expect(cursor?.login.id).toBe("cursor-1");
-    const codex = await scheduler.acquire("c2", ["claude"]);
-    expect(codex?.login.id).toBe("codex-1");
-    codex?.release();
-    const claude = await scheduler.acquire("c3", []);
-    expect(claude?.login.id).toBe("claude-1");
-    releaseAll([cursor, claude]);
+  test("a quota command that exits 1 before a lease exhausts its login for the run, and the next login is leased", async () => {
+    const calls = join(dir, "quota-calls");
+    const code = join(dir, "quota-code");
+    await Bun.write(code, "0");
+    const cursor = { ...login("cursor-1", "cursor", 2), quota: ["sh", "-c", `echo checked >> '${calls}'; exit "$(cat '${code}')"`] };
+    const scheduler = new Scheduler([cursor, login("grok-1", "grok", 1)]);
+    const first = held(await scheduler.acquire("q1"));
+    expect(first.login.id).toBe("cursor-1");
+    await Bun.write(code, "1");
+    const second = held(await scheduler.acquire("q2"));
+    expect(second.login.id).toBe("grok-1");
+    expect(scheduler.capacity()).toBe(1);
+    expect(scheduler.providers()).toEqual(["grok"]);
+    await Bun.write(code, "0");
+    releaseAll([first, second]);
+    const third = held(await scheduler.acquire("q3"));
+    expect(third.login.id).toBe("grok-1");
+    expect(await Bun.file(calls).text()).toBe("checked\nchecked\n");
+    third.release();
+  });
+
+  test("a quota command that exits 1 before a lease of a seat login exhausts the whole login without running its seat command", async () => {
+    const pool = { ...login("codex-pool", "codex", 4, ["sh", join(dir, "seat.sh")]), quota: ["sh", "-c", "exit 1"] };
+    const scheduler = new Scheduler([pool, login("grok-1", "grok", 1)]);
+    const lease = held(await scheduler.acquire("w1"));
+    expect(lease.login.id).toBe("grok-1");
+    expect(await Bun.file(join(dir, "seat-w1.pid")).exists()).toBe(false);
+    expect(scheduler.providers()).toEqual(["grok"]);
+    lease.release();
+  });
+
+  test("a quota command that exits with another code fails the lease with its exit and stderr and leaves its login available", async () => {
+    const broken = { ...login("cursor-1", "cursor", 1), quota: ["sh", "-c", "echo 'the spend API did not answer' >&2; exit 7"] };
+    const scheduler = new Scheduler([broken, login("grok-1", "grok", 1)]);
+    await expect(scheduler.acquire("q4")).rejects.toThrow("The quota command of login cursor-1 exited with 7: the spend API did not answer");
+    expect(scheduler.capacity()).toBe(2);
+    await expect(scheduler.acquire("q5")).rejects.toThrow("exited with 7");
+  });
+
+  test("a login whose quota command exits 1 no longer counts as leased while another process holds it", async () => {
+    const cursor = { ...login("cursor-1", "cursor", 1), quota: ["sh", "-c", "exit 1"] };
+    const other = await holder([{ ...cursor, quota: null }], 1);
+    expect(other.count).toBe(1);
+    const scheduler = new Scheduler([cursor]);
+    expect(scheduler.leased()).toBe(true);
+    expect(await scheduler.acquire("q6")).toBeNull();
+    expect(scheduler.leased()).toBe(false);
   });
 
   test("capacity counts concurrency of logins not exhausted, and release is idempotent", async () => {
@@ -399,36 +446,36 @@ describe("Scheduler", () => {
     expect(scheduler.capacity()).toBe(5);
     expect(scheduler.providers()).toEqual(["claude", "codex", "cursor"]);
 
-    const claude = await scheduler.acquire("i1", ["codex", "cursor"]);
+    const claude = await scheduler.acquire("i1");
     expect(claude?.login.id).toBe("claude-1");
     expect(scheduler.capacity()).toBe(5);
     claude?.release();
     claude?.release();
-    const again = await scheduler.acquire("i2", ["codex", "cursor"]);
+    const again = await scheduler.acquire("i2");
     expect(again?.login.id).toBe("claude-1");
-    const cursor = await scheduler.acquire("i3", ["codex", "cursor"]);
-    expect(cursor?.login.id).toBe("cursor-1");
+    const codex = await scheduler.acquire("i3");
+    expect(codex?.login.id).toBe("codex-1");
 
     scheduler.exhaust(held(again));
     expect(scheduler.capacity()).toBe(4);
     expect(scheduler.providers()).toEqual(["codex", "cursor"]);
     again?.release();
-    const picks = await Promise.all(["i4", "i5", "i6", "i7"].map((intern) => scheduler.acquire(intern, [])));
-    expect(picks.map((lease) => lease?.login.id ?? null).sort()).toEqual(["codex-1", "cursor-1", "cursor-1", null]);
+    const picks = await Promise.all(["i4", "i5", "i6", "i7"].map((intern) => scheduler.acquire(intern)));
+    expect(picks.map((lease) => lease?.login.id ?? null).sort()).toEqual(["cursor-1", "cursor-1", "cursor-1", null]);
 
-    scheduler.exhaust(held(picks.find((lease) => lease?.login.id === "cursor-1") ?? null));
-    scheduler.exhaust(held(picks.find((lease) => lease?.login.id === "codex-1") ?? null));
+    scheduler.exhaust(held(picks[0] ?? null));
+    scheduler.exhaust(held(codex));
     expect(scheduler.capacity()).toBe(0);
     expect(scheduler.providers()).toEqual([]);
-    expect(await scheduler.acquire("i8", [])).toBeNull();
+    expect(await scheduler.acquire("i8")).toBeNull();
     const unknown = { login: login("claude-9", "claude", 1), store: join(dir, "stores", "claude-9"), mounted: join(dir, "stores", "claude-9"), release: () => {} };
     expect(() => scheduler.exhaust(unknown)).toThrow("No login with id claude-9");
-    releaseAll([cursor, ...picks]);
+    releaseAll([codex, ...picks]);
   });
 
   test("a seat command gives each intern its own store and a lease pid that lives until release", async () => {
     const scheduler = new Scheduler([login("codex-pool", "codex", 2, ["sh", join(dir, "seat.sh")])]);
-    const [one, two, three] = await Promise.all(["i1", "i2", "i3"].map((intern) => scheduler.acquire(intern, [])));
+    const [one, two, three] = await Promise.all(["i1", "i2", "i3"].map((intern) => scheduler.acquire(intern)));
     expect(one?.store).toBe(join(pool, "i1"));
     expect(two?.store).toBe(join(pool, "i2"));
     expect(three).toBeNull();
@@ -439,25 +486,25 @@ describe("Scheduler", () => {
     one?.release();
     expect(await ended(first)).toBe(true);
     expect(alive(second)).toBe(true);
-    const four = await scheduler.acquire("i4", []);
+    const four = await scheduler.acquire("i4");
     expect(four?.store).toBe(join(pool, "i4"));
     releaseAll([two, four]);
   });
 
   test("a usage limit on a seat login exhausts only that store, and a later grant of it is released at once", async () => {
     const scheduler = new Scheduler([login("codex-pool", "codex", 2, ["sh", join(dir, "seat.sh")]), login("cursor-1", "cursor", 1)]);
-    const limited = held(await scheduler.acquire("j1", ["cursor"]));
+    const limited = held(await scheduler.acquire("j1"));
     expect(limited.store).toBe(join(pool, "j1"));
     scheduler.exhaust(limited);
     limited.release();
     expect(scheduler.capacity()).toBe(3);
     expect(scheduler.providers()).toEqual(["codex", "cursor"]);
 
-    const retry = await scheduler.acquire("j1", ["cursor"]);
+    const retry = await scheduler.acquire("j1");
     expect(retry?.login.id).toBe("cursor-1");
     expect(await ended(await leasePid("j1"))).toBe(true);
 
-    const others = await Promise.all(["j2", "j3"].map((intern) => scheduler.acquire(intern, ["cursor"])));
+    const others = await Promise.all(["j2", "j3"].map((intern) => scheduler.acquire(intern)));
     expect(others.map((lease) => lease?.store)).toEqual([join(pool, "j2"), join(pool, "j3")]);
     for (const lease of [retry, ...others]) lease?.release();
   });
@@ -471,14 +518,14 @@ describe("Scheduler", () => {
     );
     const command = ["sh", join(dir, "same-seat.sh")];
     const scheduler = new Scheduler([login("codex-pool-a", "codex", 2, command), login("codex-pool-b", "codex", 1, command)]);
-    const first = held(await scheduler.acquire("m1", []));
+    const first = held(await scheduler.acquire("m1"));
     expect(first.login.id).toBe("codex-pool-a");
     expect(first.store).toBe(await realpath(join(dir, "same-store")));
-    expect(await scheduler.acquire("m2", [])).toBeNull();
+    expect(await scheduler.acquire("m2")).toBeNull();
     expect(await ended(await leasePid("m2"))).toBe(true);
     expect(alive(await leasePid("m1"))).toBe(true);
     first.release();
-    const second = held(await scheduler.acquire("m3", []));
+    const second = held(await scheduler.acquire("m3"));
     expect(second.store).toBe(first.store);
     second.release();
   });
@@ -489,10 +536,10 @@ describe("Scheduler", () => {
       login("claude-pool", "claude", 3, ["sh", join(dir, "relative-seat.sh")]),
       login("cursor-1", "cursor", 1),
     ]);
-    const lease = await scheduler.acquire("i1", []);
+    const lease = await scheduler.acquire("i1");
     expect(lease?.login.id).toBe("cursor-1");
     expect(lease?.store).toBe(cursorStore);
-    expect(await scheduler.acquire("i2", [])).toBeNull();
+    expect(await scheduler.acquire("i2")).toBeNull();
     expect(scheduler.refusals("i2")).toEqual(["seat store of login claude-pool: the last line its command printed is not an absolute path"]);
     expect(scheduler.capacity()).toBe(8);
     lease?.release();
@@ -529,9 +576,9 @@ describe("Scheduler", () => {
     try {
       for (const [provider, store, problem] of cases) {
         const scheduler = new Scheduler([login("seat-pool", provider, 1, ["echo", store]), login("codex-1", "codex", 1)]);
-        const lease = held(await scheduler.acquire("s1", []));
+        const lease = held(await scheduler.acquire("s1"));
         expect([store, lease.login.id]).toEqual([store, "codex-1"]);
-        expect(await scheduler.acquire("s2", [])).toBeNull();
+        expect(await scheduler.acquire("s2")).toBeNull();
         expect([store, scheduler.refusals("s2")]).toEqual([store, expect.arrayContaining([`seat store of login seat-pool: ${problem}`])]);
         lease.release();
       }
@@ -544,9 +591,9 @@ describe("Scheduler", () => {
     const moving = join(dir, "moving", "claude-m");
     await mkdir(moving, { recursive: true });
     await Bun.write(join(moving, ".credentials.json"), "{}");
-    const scheduler = new Scheduler([{ id: "claude-m", provider: "claude", store: moving, seat: null, concurrency: 1, model: null }, login("codex-pool", "codex", 1, ["sh", join(dir, "seat.sh")])]);
+    const scheduler = new Scheduler([login("codex-pool", "codex", 1, ["sh", join(dir, "seat.sh")]), { id: "claude-m", provider: "claude", store: moving, seat: null, quota: null, concurrency: 1, model: null }]);
     await rename(join(dir, "moving"), join(dir, "moved"));
-    const lease = held(await scheduler.acquire("v1", ["claude"]));
+    const lease = held(await scheduler.acquire("v1"));
     expect(lease.store).toBe(join(pool, "v1"));
     lease.release();
   });
@@ -556,7 +603,7 @@ describe("Scheduler", () => {
     await mkdir(join(store, "tokens"), { recursive: true });
     await Bun.write(join(store, "tokens", "auth.json"), "{}");
     await symlink("tokens/auth.json", join(store, "auth.json"));
-    const grok: Login = { id: "grok-linked", provider: "grok", store, seat: null, concurrency: 1, model: null };
+    const grok: Login = { id: "grok-linked", provider: "grok", store, seat: null, quota: null, concurrency: 1, model: null };
     expect(() => new Scheduler([grok])).toThrow(`login grok-linked: ${join(store, "auth.json")} is a symbolic link`);
     expect(() => new Scheduler([login("codex-1", "codex", 1), { ...login("codex-1", "codex", 1), id: "codex-2" }])).toThrow(
       `login codex-2: duplicate store ${codexStore}, already used by login codex-1`,
@@ -571,27 +618,27 @@ describe("Scheduler", () => {
       await Bun.write(join(store, ".credentials.json"), "{}");
       await Bun.write(join(store, "auth.json"), "{}");
     }
-    const claude: Login = { id: "claude-swapped", provider: "claude", store: child, seat: null, concurrency: 1, model: null };
-    const codex: Login = { id: "codex-swapped", provider: "codex", store: child, seat: null, concurrency: 1, model: null };
+    const claude: Login = { id: "claude-swapped", provider: "claude", store: child, seat: null, quota: null, concurrency: 1, model: null };
+    const codex: Login = { id: "codex-swapped", provider: "codex", store: child, seat: null, quota: null, concurrency: 1, model: null };
     const wholeStore = new Scheduler([claude]);
     const fileStore = new Scheduler([codex]);
     await rename(child, join(dir, "swapped", "kept"));
     await symlink(elsewhere, child);
-    await expect(wholeStore.acquire("x1", [])).rejects.toThrow(`login claude-swapped: store ${child} changed after its check; ${child} resolves to ${elsewhere}, not ${child}`);
-    await expect(fileStore.acquire("x2", [])).rejects.toThrow(
+    await expect(wholeStore.acquire("x1")).rejects.toThrow(`login claude-swapped: store ${child} changed after its check; ${child} resolves to ${elsewhere}, not ${child}`);
+    await expect(fileStore.acquire("x2")).rejects.toThrow(
       `login codex-swapped: store ${child} changed after its check; ${join(child, "auth.json")} resolves to ${join(elsewhere, "auth.json")}, not ${join(child, "auth.json")}`,
     );
     await rm(child);
     await rename(join(dir, "swapped", "kept"), child);
     await rename(join(child, "auth.json"), join(child, "auth.json.kept"));
     await symlink(join(elsewhere, "auth.json"), join(child, "auth.json"));
-    await expect(fileStore.acquire("x3", [])).rejects.toThrow(`${join(child, "auth.json")} resolves to ${join(elsewhere, "auth.json")}, not ${join(child, "auth.json")}`);
+    await expect(fileStore.acquire("x3")).rejects.toThrow(`${join(child, "auth.json")} resolves to ${join(elsewhere, "auth.json")}, not ${join(child, "auth.json")}`);
     await rm(join(child, "auth.json"));
     await rename(join(child, "auth.json.kept"), join(child, "auth.json"));
-    const whole = held(await wholeStore.acquire("x4", []));
+    const whole = held(await wholeStore.acquire("x4"));
     expect(whole.mounted).toBe(child);
     whole.release();
-    const file = held(await fileStore.acquire("x5", []));
+    const file = held(await fileStore.acquire("x5"));
     expect(file.mounted).toBe(join(child, "auth.json"));
     file.release();
   });
@@ -600,14 +647,14 @@ describe("Scheduler", () => {
     const store = join(dir, "grok-replaced");
     await mkdir(store);
     await Bun.write(join(store, "auth.json"), "{}");
-    const grok: Login = { id: "grok-replaced", provider: "grok", store, seat: null, concurrency: 1, model: null };
-    const first = held(await new Scheduler([grok]).acquire("r1", []));
+    const grok: Login = { id: "grok-replaced", provider: "grok", store, seat: null, quota: null, concurrency: 1, model: null };
+    const first = held(await new Scheduler([grok]).acquire("r1"));
     await Bun.write(join(store, "auth.json.new"), "{}");
     await rename(join(store, "auth.json.new"), join(store, "auth.json"));
     const other = new Scheduler([grok]);
-    expect(await other.acquire("r2", [])).toBeNull();
+    expect(await other.acquire("r2")).toBeNull();
     first.release();
-    const second = held(await other.acquire("r3", []));
+    const second = held(await other.acquire("r3"));
     expect(second.store).toBe(store);
     second.release();
   });
@@ -617,10 +664,10 @@ describe("Scheduler", () => {
     const other = await holder([codex], 1);
     expect(other.count).toBe(1);
     const scheduler = new Scheduler([codex]);
-    expect(await scheduler.acquire("p1", [])).toBeNull();
+    expect(await scheduler.acquire("p1")).toBeNull();
     other.child.kill("SIGKILL");
     await other.child.exited;
-    const lease = held(await scheduler.acquire("p2", []));
+    const lease = held(await scheduler.acquire("p2"));
     expect(lease.store).toBe(codexStore);
     lease.release();
 
@@ -628,11 +675,11 @@ describe("Scheduler", () => {
     const sharing = await holder([claude], 1);
     expect(sharing.count).toBe(1);
     const shared = new Scheduler([claude]);
-    const one = held(await shared.acquire("q1", []));
-    expect(await shared.acquire("q2", [])).toBeNull();
+    const one = held(await shared.acquire("q1"));
+    expect(await shared.acquire("q2")).toBeNull();
     sharing.child.stdin.end();
     await sharing.child.exited;
-    const two = held(await shared.acquire("q3", []));
+    const two = held(await shared.acquire("q3"));
     releaseAll([one, two]);
   });
 
@@ -640,14 +687,14 @@ describe("Scheduler", () => {
     const codex = login("codex-1", "codex", 1);
     const scheduler = new Scheduler([codex]);
     expect(scheduler.leased()).toBe(false);
-    const own = held(await scheduler.acquire("v1", []));
+    const own = held(await scheduler.acquire("v1"));
     expect(scheduler.leased()).toBe(true);
     own.release();
     expect(scheduler.leased()).toBe(false);
 
     const other = await holder([codex], 1);
     expect(other.count).toBe(1);
-    expect(await scheduler.acquire("v2", [])).toBeNull();
+    expect(await scheduler.acquire("v2")).toBeNull();
     expect(scheduler.leased()).toBe(true);
     const exhausted = new Scheduler([codex]);
     exhausted.exhaust({ login: codex, store: codexStore, mounted: codexStore, release: () => {} });
@@ -659,14 +706,14 @@ describe("Scheduler", () => {
     await Bun.write(join(dir, "slow-seat.sh"), ["#!/bin/sh", "sleep 0.5", "exec sh \"$(dirname \"$0\")/seat.sh\"", ""].join("\n"));
     const seat = login("codex-pool", "codex", 2, ["sh", join(dir, "slow-seat.sh")]);
     const seats = new Scheduler([seat]);
-    const pending = seats.acquire("v3", []);
+    const pending = seats.acquire("v3");
     expect(new Scheduler([seat]).leased()).toBe(true);
     held(await pending).release();
     expect(seats.leased()).toBe(false);
     const elsewhere = await holder([seat], 1);
     expect(elsewhere.count).toBe(1);
     expect(seats.leased()).toBe(true);
-    const lent = new Scheduler([{ id: "codex-h0", provider: "codex", store: join(pool, "h0"), seat: null, concurrency: 1, model: null }]);
+    const lent = new Scheduler([{ id: "codex-h0", provider: "codex", store: join(pool, "h0"), seat: null, quota: null, concurrency: 1, model: null }]);
     expect(lent.leased()).toBe(true);
     elsewhere.child.kill("SIGKILL");
     await elsewhere.child.exited;
@@ -681,36 +728,36 @@ describe("Scheduler", () => {
     for (const store of [inner, twin]) await mkdir(store, { recursive: true });
     for (const store of [outer, inner, twin]) await Bun.write(join(store, "auth.json"), "{}");
     await Bun.write(join(inner, ".credentials.json"), "{}");
-    const cursor: Login = { id: "cursor-outer", provider: "cursor", store: outer, seat: null, concurrency: 1, model: null };
-    const beside: Login = { id: "cursor-twin", provider: "cursor", store: twin, seat: null, concurrency: 1, model: null };
-    const codex: Login = { id: "codex-inner", provider: "codex", store: inner, seat: null, concurrency: 1, model: null };
-    const claude: Login = { id: "claude-inner", provider: "claude", store: inner, seat: null, concurrency: 1, model: null };
-    const grok: Login = { id: "grok-inner", provider: "grok", store: inner, seat: null, concurrency: 1, model: null };
+    const cursor: Login = { id: "cursor-outer", provider: "cursor", store: outer, seat: null, quota: null, concurrency: 1, model: null };
+    const beside: Login = { id: "cursor-twin", provider: "cursor", store: twin, seat: null, quota: null, concurrency: 1, model: null };
+    const codex: Login = { id: "codex-inner", provider: "codex", store: inner, seat: null, quota: null, concurrency: 1, model: null };
+    const claude: Login = { id: "claude-inner", provider: "claude", store: inner, seat: null, quota: null, concurrency: 1, model: null };
+    const grok: Login = { id: "grok-inner", provider: "grok", store: inner, seat: null, quota: null, concurrency: 1, model: null };
 
     const outside = await holder([cursor], 1);
     expect(outside.count).toBe(1);
-    expect(await new Scheduler([codex]).acquire("u1", [])).toBeNull();
+    expect(await new Scheduler([codex]).acquire("u1")).toBeNull();
     expect(new Scheduler([codex]).leased()).toBe(true);
-    expect(await new Scheduler([claude]).acquire("u2", [])).toBeNull();
-    expect(await new Scheduler([grok]).acquire("u3", [])).toBeNull();
-    const next = held(await new Scheduler([beside]).acquire("u4", []));
+    expect(await new Scheduler([claude]).acquire("u2")).toBeNull();
+    expect(await new Scheduler([grok]).acquire("u3")).toBeNull();
+    const next = held(await new Scheduler([beside]).acquire("u4"));
     outside.child.stdin.end();
     await outside.child.exited;
 
     const inside = await holder([codex], 1);
     expect(inside.count).toBe(1);
     const scheduler = new Scheduler([cursor]);
-    expect(await scheduler.acquire("u5", [])).toBeNull();
+    expect(await scheduler.acquire("u5")).toBeNull();
     inside.child.kill("SIGKILL");
     await inside.child.exited;
-    const lease = held(await scheduler.acquire("u6", []));
+    const lease = held(await scheduler.acquire("u6"));
     expect(lease.store).toBe(outer);
     releaseAll([next, lease]);
   });
 
   test("a seat command that cannot start throws and keeps no reservation", async () => {
     const scheduler = new Scheduler([login("codex-pool", "codex", 1, [join(dir, "missing-seat-command")])]);
-    await expect(scheduler.acquire("i1", [])).rejects.toThrow("ENOENT");
-    await expect(scheduler.acquire("i2", [])).rejects.toThrow("ENOENT");
+    await expect(scheduler.acquire("i1")).rejects.toThrow("ENOENT");
+    await expect(scheduler.acquire("i2")).rejects.toThrow("ENOENT");
   });
 });
