@@ -70,13 +70,23 @@ const overlap: Group = {
     finding("i1/pagination-overlap", "Invoice INV-0014 appears on page 1 and page 2", "Page 2 starts with \"INV-0014 Stark Industries\"."),
     finding("i2/page-two-repeats", "Page 2 repeats the last invoice of page 1", "The first row of page 2 is INV-0014.\nIt is also the last row of page 1."),
   ],
-  confirmation: { intern: "c1", provider: "codex", result: { reproduced: true, observed: "Page 2 starts with INV-0014.", evidence: ["interns/c1/out/evidence/repeat.png"] }, error: null },
+  confirmation: { intern: "c1", provider: "codex", result: { steps: true, task: true, observed: "Page 2 starts with INV-0014.", evidence: ["interns/c1/out/evidence/repeat.png"] }, error: null },
 };
 
 const exportTotal: Group = {
   id: "g2",
   findings: [finding("i3/export-total", "CSV export total for INV-0002 leaves out tax", "The CSV row for INV-0002 has the total 5246.00.", "The detail page at /invoices/2 shows €5,770.60.")],
-  confirmation: { intern: "c2", provider: "codex", result: { reproduced: false, observed: "The CSV row for INV-0002 has the total 5770.60.", evidence: [] }, error: null },
+  confirmation: {
+    intern: "c2",
+    provider: "codex",
+    result: {
+      steps: true,
+      task: false,
+      observed: "Following the steps, the CSV row for INV-0002 has the total 5246.00. Exported with the Export CSV button on /invoices, the row has the total 5770.60.",
+      evidence: [],
+    },
+    error: null,
+  },
 };
 
 const negative: Group = {
@@ -120,9 +130,11 @@ const egress: Egress = {
 const none: Egress = { hosts: [], relays: [] };
 
 describe("reproductions", () => {
-  test("counts distinct reporters plus the confirming intern only when it reproduced", () => {
+  test("counts distinct reporters plus the confirming intern only when both its steps and its task showed the failure", () => {
     expect(reproductions(overlap)).toEqual(["i1", "i2", "c1"]);
     expect(reproductions(exportTotal)).toEqual(["i3"]);
+    expect(reproductions({ ...exportTotal, confirmation: { ...exportTotal.confirmation!, result: { ...exportTotal.confirmation!.result!, steps: false, task: true } } })).toEqual(["i3"]);
+    expect(reproductions({ ...exportTotal, confirmation: { ...exportTotal.confirmation!, result: { ...exportTotal.confirmation!.result!, task: true } } })).toEqual(["i3", "c2"]);
     expect(reproductions(negative)).toEqual(["i3"]);
     expect(reproductions({ ...overlap, findings: [overlap.findings[0]!, { ...overlap.findings[0]!, id: "i1/again" }], confirmation: null })).toEqual(["i1"]);
   });
@@ -423,13 +435,13 @@ describe("renderReplay", () => {
     expect(reproduced).toContain(`### ${overlap.findings[0]!.title}`);
     expect(reproduced).toContain("- Group: g1 in run 7c1e9a04\n");
     expect(reproduced).toContain("1. Sign in as owner@acme.test with the password acme-owner-pass.");
-    expect(reproduced).toContain("Confirmation: c1 (codex) reproduced it.");
+    expect(reproduced).toContain("Confirmation: c1 (codex) reproduced it: the steps showed the failure, and the task done through the page's own controls showed it.");
     expect(reproduced).not.toContain("i2/page-two-repeats");
     expect(reproduced).not.toContain("interns/i1/out/evidence/pagination-overlap.png");
     const notReproduced = between(markdown, "## Not reproduced", "## Not checked");
     expect(notReproduced).toContain(`### ${exportTotal.findings[0]!.title}`);
     expect(notReproduced).toContain("> The detail page at /invoices/2 shows €5,770.60.");
-    expect(notReproduced).toContain("Confirmation: c2 (codex) did not reproduce it.");
+    expect(notReproduced).toContain("Confirmation: c2 (codex) did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
     const unchecked = between(markdown, "## Not checked", "## Interns");
     expect(unchecked).toContain(`### ${negative.findings[0]!.title}`);
     expect(unchecked).toContain("Confirmation: c3 failed: no login with spare capacity");

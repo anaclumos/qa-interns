@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { linkEvidence, stripControl } from "./findings.ts";
 import { readJson, readState } from "./state.ts";
-import { kinds, providerNames, type EnvironmentStats, type Finding, type Group, type InternState, type RelayRecord, type Rejected, type Replay, type RunState } from "./types.ts";
+import { kinds, providerNames, type Confirmation, type EnvironmentStats, type Finding, type Group, type InternState, type RelayRecord, type Rejected, type Replay, type RunState } from "./types.ts";
 
 export type Egress = { hosts: string[]; relays: { intern: string; records: RelayRecord[] }[] };
 
@@ -10,9 +10,14 @@ type EgressRow = { host: string | null; outcome: RelayRecord["outcome"] | "unrec
 
 type Ticket = { id: string; title: string; body: string; evidence: string[] };
 
+export function confirms(result: Confirmation): boolean {
+  return result.steps && result.task;
+}
+
 export function reproductions(group: Group): string[] {
   const interns = new Set(group.findings.map((finding) => finding.intern));
-  if (group.confirmation?.result?.reproduced) interns.add(group.confirmation.intern);
+  const outcome = group.confirmation;
+  if (outcome?.result && confirms(outcome.result)) interns.add(outcome.intern);
   return [...interns];
 }
 
@@ -87,13 +92,18 @@ function paths(list: string[]) {
   return list.length > 0 ? list.map((entry) => `- ${inline(entry)}`) : ["No evidence files."];
 }
 
+function verdict(result: Confirmation) {
+  const shown = (value: boolean) => (value ? "showed" : "did not show");
+  return `${confirms(result) ? "reproduced it" : "did not reproduce it"}: the steps ${shown(result.steps)} the failure, and the task done through the page's own controls ${shown(result.task)} it`;
+}
+
 function confirmation(group: Group) {
   const outcome = group.confirmation;
   if (outcome === null) return ["Confirmation: not attempted."];
   if (outcome.error !== null) return [`Confirmation: ${who(outcome)} failed: ${inline(outcome.error)}`];
   if (outcome.result === null) return [`Confirmation: ${who(outcome)} recorded no result.`];
   return [
-    `Confirmation: ${who(outcome)} ${outcome.result.reproduced ? "reproduced it" : "did not reproduce it"}.`,
+    `Confirmation: ${who(outcome)} ${verdict(outcome.result)}.`,
     "",
     ...quote(outcome.result.observed),
     "",
@@ -184,7 +194,7 @@ function ticket(state: RunState, group: Group, interns: string[]): Ticket {
   else if (outcome.error !== null) lines.push(`${who(outcome)} failed:`, "", ...block(outcome.error), "");
   else if (outcome.result === null) lines.push(`${who(outcome)} recorded no result.`, "");
   else {
-    lines.push(`${who(outcome)} ${outcome.result.reproduced ? "reproduced it" : "did not reproduce it"}.`, "", ...block(outcome.result.observed), "");
+    lines.push(`${who(outcome)} ${verdict(outcome.result)}.`, "", ...block(outcome.result.observed), "");
     lines.push("Confirmation evidence:", "", ...files(outcome.result.evidence), "");
   }
   const evidence = [...new Set([...first.evidence, ...(outcome?.result?.evidence ?? [])])];
@@ -326,7 +336,8 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
 }
 
 function outcome(group: Group) {
-  return group.confirmation?.result?.reproduced ?? null;
+  const result = group.confirmation?.result ?? null;
+  return result === null ? null : confirms(result);
 }
 
 export function renderReplay(state: RunState, replay: Replay, egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown } {

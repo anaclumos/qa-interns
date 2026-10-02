@@ -188,13 +188,15 @@ ${howToWork}
 
 Confirmation:
 - Your environment is freshly seeded. Follow the steps exactly, under the stated conditions. Try twice.
+- Then do the task that the finding says fails through the controls the page offers for it, under the same conditions. Try twice. When the steps are the only way to do the task, for example a request sent directly or another account's ID in a URL, the steps are the task.
 - Collect evidence under \`/qa/out/evidence/\`.
 - Then write \`/qa/out/confirmation.json\` with these fields and no others:
 
-{ "reproduced": true | false, "observed": "what happened, quoted from the page, the console, or the response", "evidence": ["paths under /qa/out of screenshots, recordings, HAR files, console logs"] }
+{ "steps": true | false, "task": true | false, "observed": "what happened, quoted from the page, the console, or the response", "evidence": ["paths under /qa/out of screenshots, recordings, HAR files, console logs"] }
 
-- \`reproduced\` is true when an attempt shows the failure the finding describes, and false when neither attempt does.
-- \`observed\` states what your attempts showed.
+- \`steps\` is true when an attempt that follows the steps shows the failure the finding describes, and false when neither attempt does.
+- \`task\` is true when an attempt at the task through the page's controls shows the same failure, and false when neither attempt does.
+- \`observed\` states what your attempts showed, for the steps and for the task.
 - Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.
 - The session ends when the time box ends. Write the file before then.`;
 }

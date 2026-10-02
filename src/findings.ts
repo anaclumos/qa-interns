@@ -103,10 +103,12 @@ const findingSchema = z.strictObject(
   { error: fields("must be one JSON object", findingFields) },
 );
 
-const confirmationFields = ["reproduced", "observed", "evidence"];
+const confirmationFields = ["steps", "task", "observed", "evidence"];
+
+const verdict = z.boolean({ error: required("must be true or false") });
 
 export const confirmationSchema = z.strictObject(
-  { reproduced: z.boolean({ error: required("must be true or false") }), observed: text, evidence: paths },
+  { steps: verdict, task: verdict, observed: text, evidence: paths },
   { error: fields("must be one JSON object", confirmationFields) },
 );
 
@@ -248,7 +250,7 @@ export function parseGroups(raw: string, ids: string[]): string[][] {
 export async function readConfirmation(runDir: string, intern: string, attempt: number): Promise<Confirmation> {
   const out = outDir(intern, attempt);
   const data = parse(confirmationSchema, await readAgentFile(path.join(runDir, out, "confirmation.json")));
-  return { reproduced: data.reproduced, observed: data.observed, evidence: (await evidence(runDir, out, data.evidence)).map(stripControl) };
+  return { steps: data.steps, task: data.task, observed: data.observed, evidence: (await evidence(runDir, out, data.evidence)).map(stripControl) };
 }
 
 const linkFailures = new Map([
