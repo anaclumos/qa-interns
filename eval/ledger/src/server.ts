@@ -252,23 +252,24 @@ const server = Bun.serve({
           sort === "due"
             ? sql`due_date, id`
             : sort === "total"
-              ? sql`total::numeric / (case currency when 'KRW' then 1 else 100 end) desc, id`
+              ? sql`currency, total desc, id`
               : sort === "customer"
                 ? sql`lower(customer), id`
                 : sql`id desc`;
         const requested = Number(params.get("page") ?? "1");
-        const pageNumber = Number.isSafeInteger(requested) && requested >= 1 && requested <= 100000 ? requested : 1;
         const filters = () => sql`
           team_id = ${ctx.team.id}
           ${q ? sql`and strpos(lower(customer), lower(${q}::text)) > 0` : sql``}
           ${status ? sql`and status = ${status}` : sql``}`;
         const [{ count }] = await sql`select count(*)::int as count from invoices where ${filters()}`;
+        const pages = Math.max(1, Math.ceil(count / pageSize));
+        const pageNumber = Number.isSafeInteger(requested) && requested >= 1 ? Math.min(requested, pages) : 1;
         const rows = await sql`
           select ${invoiceColumns()} from invoices
           where ${filters()} and deleted_at is null
           order by ${order}
           limit ${pageSize} offset ${(pageNumber - 1) * (pageSize - 1)}`;
-        return html(invoiceListPage(ctx, rows.map(toInvoice), count, { q, status, sort, page: pageNumber }));
+        return html(invoiceListPage(ctx, rows.map(toInvoice), count, { q, status, sort, page: pageNumber, pages }));
       }),
     },
     "/invoices/new": {

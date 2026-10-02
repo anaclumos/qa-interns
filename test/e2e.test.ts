@@ -649,6 +649,50 @@ USER qa
   );
 
   test(
+    "ask waits for a login that another process holds and runs once that process ends, and fails at once when no process holds a login",
+    async () => {
+      const runId = newRunId();
+      const options = await askOptions(runId, "score");
+      const script = join(root, "holder.ts");
+      await Bun.write(
+        script,
+        [
+          `import { loadLogins, Scheduler } from ${JSON.stringify(join(import.meta.dir, "..", "src", "logins.ts"))};`,
+          "const lease = await new Scheduler(await loadLogins(process.argv[2])).acquire(\"h1\", []);",
+          "console.log(lease === null ? \"none\" : \"held\");",
+          "for await (const _ of Bun.stdin.stream()) {}",
+          "",
+        ].join("\n"),
+      );
+      const holder = Bun.spawn([process.execPath, script, options.loginsFile], { env: { ...process.env }, stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+      try {
+        const { value } = await holder.stdout.getReader().read();
+        expect(new TextDecoder().decode(value).trim()).toBe("held");
+        let settled = false;
+        const answer = ask(options).finally(() => {
+          settled = true;
+        });
+        await Bun.sleep(3_000);
+        expect(settled).toBe(false);
+        holder.stdin.end();
+        await holder.exited;
+        expect(await answer).toEqual({ groups: [] });
+      } finally {
+        holder.kill("SIGKILL");
+        await holder.exited;
+      }
+      expect(await leftovers(runId)).toEqual([]);
+
+      const seatless = await askOptions(newRunId(), "score");
+      const file = join(root, `seatless-${runId}-logins.json`);
+      await Bun.write(file, JSON.stringify({ logins: [{ id: "claude-seatless", provider: "claude", seat: ["false"] }] }));
+      await expect(ask({ ...seatless, loginsFile: file })).rejects.toThrow("No login has spare capacity for score");
+      expect(await leftovers(seatless.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "an intern does not start when devcontainer up gives its dev container host access",
     async () => {
       const hostile = join(root, "hostile");

@@ -123,11 +123,10 @@ ${error ? `<p class="error" role="alert">${esc(error)}</p>` : ""}
   );
 }
 
-type ListOptions = { q: string; status: string; sort: string; page: number };
+type ListOptions = { q: string; status: string; sort: string; page: number; pages: number };
 
 export function invoiceListPage(ctx: Ctx, invoices: Invoice[], count: number, options: ListOptions) {
   const canEdit = ctx.role !== "viewer";
-  const pages = Math.max(1, Math.ceil(count / 10));
   const link = (page: number) => {
     const params = new URLSearchParams();
     if (options.q) params.set("q", options.q);
@@ -166,7 +165,7 @@ ${canEdit ? `<a href="/invoices/new">New invoice</a>` : ""}
 ${option("", "All statuses", options.status)}${option("draft", "Draft", options.status)}${option("sent", "Sent", options.status)}${option("paid", "Paid", options.status)}
 </select></div>
 <div><label for="sort">Sort by</label><select id="sort" name="sort">
-${option("", "Newest first", options.sort)}${option("due", "Due date, earliest first", options.sort)}${option("total", "Total, highest first", options.sort)}${option("customer", "Customer, A to Z", options.sort)}
+${option("", "Newest first", options.sort)}${option("due", "Due date, earliest first", options.sort)}${option("total", "Currency A to Z, then total, highest first", options.sort)}${option("customer", "Customer, A to Z", options.sort)}
 </select></div>
 <div><button>Apply</button></div>
 </form>
@@ -203,8 +202,8 @@ document.getElementById("bulk-paid").addEventListener("click", async () => {
 }
 <nav aria-label="Pagination" class="actions">
 ${options.page > 1 ? `<a href="${esc(link(options.page - 1))}">Previous</a>` : ""}
-<span>Page ${options.page} of ${pages}</span>
-${options.page < pages ? `<a href="${esc(link(options.page + 1))}">Next</a>` : ""}
+<span>Page ${options.page} of ${options.pages}</span>
+${options.page < options.pages ? `<a href="${esc(link(options.page + 1))}">Next</a>` : ""}
 </nav>`,
   );
 }
