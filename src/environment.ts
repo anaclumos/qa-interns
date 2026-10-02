@@ -244,7 +244,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     `    volumes: ${y(volumes)}`,
     `    environment: ${y(spec.runner.env)}`,
     ...hardening,
-    "    pids_limit: 1024",
+    "    pids_limit: 4096",
     `    ulimits: ${y({ fsize: outLimit })}`,
     `    mem_limit: ${y("2g")}`,
     "    cpus: 2",
