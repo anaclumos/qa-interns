@@ -386,18 +386,17 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
-    let toolCalls = 0;
     await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
-      toolCalls += turn.toolCalls;
       if (idle) {
         const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
-        if (toolCalls === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
+        if (session.toolCalls() === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
         await note(`${stopped}: "${turn.lastMessage}"`);
         return null;
       }
       const { rejected } = await readFindings(ctx.runDir, intern.id, attempt, environment);
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id, attempt));
     });
+    if (session.toolCalls() === 0) throw new Error(`made no tool call in its ${minutes} minutes`);
   });
   const results = await Promise.all(attempts.map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
   const findings = results.flatMap((result) => result.findings);

@@ -30,6 +30,7 @@ const chunkSchema = z.looseObject({
 export type Session = {
   model: string | null;
   prompt(text: string): Promise<{ stopReason: string; toolCalls: number; lastMessage: string }>;
+  toolCalls(): number;
   cancel(): Promise<void>;
   close(): Promise<void>;
 };
@@ -223,18 +224,19 @@ export async function openSession(opts: {
       timer = setTimeout(() => reject(timedOut), startupMs);
     });
     const { started: session, model } = await Promise.race([setup(), expired]).finally(() => clearTimeout(timer));
+    let calls = 0;
 
     return {
       model,
       async prompt(text) {
-        let toolCalls = 0;
+        const before = calls;
         let lastMessage = "";
         let complete = false;
         const drain = async () => {
           for (;;) {
             const message = await session.nextUpdate();
             if (message.kind === "stop") return;
-            if (message.update.sessionUpdate === "tool_call") toolCalls += 1;
+            if (message.update.sessionUpdate === "tool_call") calls += 1;
             if (!complete && message.update.sessionUpdate === "agent_message_chunk" && message.update.content.type === "text") {
               lastMessage += message.update.content.text;
               complete = redact(lastMessage).length >= lastMessageLength + 2 * longestSecret();
@@ -243,11 +245,12 @@ export async function openSession(opts: {
         };
         try {
           const [response] = await Promise.all([session.prompt(text), drain()]);
-          return { stopReason: response.stopReason, toolCalls, lastMessage: redact(lastMessage).slice(0, lastMessageLength) };
+          return { stopReason: response.stopReason, toolCalls: calls - before, lastMessage: redact(lastMessage).slice(0, lastMessageLength) };
         } catch (error) {
           throw await failure(error);
         }
       },
+      toolCalls: () => calls,
       cancel: () => connection.agent.notify(methods.agent.session.cancel, { sessionId: session.sessionId }),
       close,
     };
