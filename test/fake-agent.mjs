@@ -162,6 +162,10 @@ const charterTurn = async (text) => {
   if (account !== undefined) say(`Signed in as ${account.email} with ${account.password.slice(0, cut)}`);
   update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" });
   if (account !== undefined) say(`${account.password.slice(cut)}.`);
+  if (account !== undefined && login().stray === true) {
+    send({ id: account.password, result: {} });
+    send({ result: { text: account.password } });
+  }
   say("Recorded one finding.");
   if (login().flood === true) {
     hold("/qa/out/evidence/held.bin", 600);
