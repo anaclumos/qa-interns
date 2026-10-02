@@ -29,12 +29,13 @@ header nav form { margin: 0; display: flex; gap: 6px; align-items: center; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 main { max-width: 1040px; margin: 0 auto; padding: 20px; }
 a { color: #0550ae; }
+.scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; background: #fff; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #d0d7de; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 label { display: block; margin: 10px 0 4px; }
 input, select, button { font: inherit; padding: 4px 8px; }
-fieldset { border: 1px solid #d0d7de; background: #fff; margin: 16px 0; }
+fieldset { border: 1px solid #d0d7de; background: #fff; margin: 16px 0; min-width: 0; }
 .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 12px 0; }
 .row label { margin: 0; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
@@ -171,10 +172,10 @@ ${option("", "Newest first", options.sort)}${option("due", "Due date, earliest f
 <div><button>Apply</button></div>
 </form>
 <p>${count} ${count === 1 ? "invoice" : "invoices"}</p>
-<table>
+<div class="scroll"><table>
 <thead><tr>${canEdit ? `<th><span class="visually-hidden">Select</span></th>` : ""}<th>Number</th><th>Customer</th><th>Issue date</th><th>Due date</th><th class="num">Total</th><th>Status</th></tr></thead>
 <tbody>${rows || `<tr><td colspan="${canEdit ? 7 : 6}">No invoices on this page.</td></tr>`}</tbody>
-</table>
+</table></div>
 ${
   canEdit
     ? `<div class="actions"><button type="button" id="bulk-paid">Mark selected as paid</button><span id="bulk-message" role="status"></span></div>
@@ -231,7 +232,7 @@ export function invoiceDetailPage(ctx: Ctx, invoice: Invoice & { lines: Line[] }
 <dt>Currency</dt><dd>${invoice.currency}</dd>
 <dt>Tax rate</dt><dd>${invoice.taxRate}%</dd>
 </dl>
-<table>
+<div class="scroll"><table>
 <thead><tr><th>Description</th><th class="num">Quantity</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
 <tbody>${lines}</tbody>
 <tfoot>
@@ -239,7 +240,7 @@ export function invoiceDetailPage(ctx: Ctx, invoice: Invoice & { lines: Line[] }
 <tr><td colspan="3">Tax (${invoice.taxRate}%)</td><td class="num">${money(invoice.tax, invoice.currency)}</td></tr>
 <tr><th colspan="3">Total</th><th class="num">${money(invoice.total, invoice.currency)}</th></tr>
 </tfoot>
-</table>
+</table></div>
 <script>
 const due = document.getElementById("due-date");
 due.textContent = new Date(due.dateTime).toLocaleDateString();
@@ -304,10 +305,10 @@ export function invoiceFormPage(ctx: Ctx, invoice: (Invoice & { lines: Line[] })
 </div>
 <fieldset>
 <legend>Line items</legend>
-<table>
+<div class="scroll"><table>
 <thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th></th></tr></thead>
 <tbody id="lines">${lines}</tbody>
-</table>
+</table></div>
 <p><button type="button" id="add-line">Add line</button></p>
 </fieldset>
 <p><button type="submit">${invoice ? "Save changes" : "Create invoice"}</button> <a href="${invoice ? `/invoices/${invoice.id}` : "/invoices"}">Cancel</a></p>
@@ -390,10 +391,10 @@ export function teamPage(ctx: Ctx, members: Member[], error: string) {
     ctx,
     `<h1>${esc(ctx.team.name)}</h1>
 <p>Your role: ${ctx.role}</p>
-<table>
+<div class="scroll"><table>
 <thead><tr><th>Name</th><th>Email</th><th>Role</th>${isOwner ? "<th></th>" : ""}</tr></thead>
 <tbody>${rows}</tbody>
-</table>
+</table></div>
 ${
   isOwner
     ? `<h2>Invite a member</h2>
