@@ -123,13 +123,6 @@ export async function loadLogins(file: string): Promise<Login[]> {
       for (const problem of storeProblems(entry.provider, entry.store, found, known)) problems.push(`${where}: ${problem}`);
       if (!known.some((other) => other.store === found.store)) known.push({ ...found, where: `logins[${index}]` });
     }
-    if (entry.provider === "codex" && entry.store !== undefined) {
-      if (entry.concurrency !== 1) {
-        problems.push(
-          `${where}: a codex store must have concurrency 1, because one auth.json copy serves one machine or one serialized job stream (https://learn.chatgpt.com/docs/auth/ci-cd-auth). Use a seat command to share a pool.`,
-        );
-      }
-    }
     logins.push({
       id: entry.id,
       provider: entry.provider,
@@ -385,13 +378,12 @@ export class Scheduler {
       else if (path !== null && !isDirectory(path)) refuse([`store ${path} is not an existing directory`]);
       else if (path !== null) {
         const found = resolveStore(login.provider, path);
-        const shares = login.provider !== "codex";
-        const known = [...this.slots.flatMap((other) => other.store ?? []), ...[...this.live].filter((other) => !shares || other.store !== found.store)];
+        const known = [...this.slots.flatMap((other) => other.store ?? []), ...[...this.live].filter((other) => other.store !== found.store)];
         const problems = storeProblems(login.provider, path, found, known);
         refuse(problems);
         if (problems.length === 0) {
           const mounted = mountedPath(login.provider, path);
-          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, shares ? login.concurrency : 1, keeper, unclaim);
+          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, login.concurrency, keeper, unclaim);
         }
       }
     } finally {

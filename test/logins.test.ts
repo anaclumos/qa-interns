@@ -139,7 +139,7 @@ describe("loadLogins", () => {
     const file = await writeLogins("logins.json", {
       logins: [
         { id: "claude-1", provider: "claude", store: claudeStore, concurrency: 2 },
-        { id: "codex-1", provider: "codex", store: codexStore, concurrency: 1 },
+        { id: "codex-1", provider: "codex", store: codexStore, concurrency: 3 },
         { id: "codex-pool", provider: "codex", seat: ["sh", "-c", "exec tokenmaxxing seat --codex \"$QA_INTERNS_LEASE_PID\""], concurrency: 2 },
         { id: "cursor-1", provider: "cursor", store: cursorStore, quota: ["sh", "-c", "exit 0"], model: "grok-4.7[context=256k,reasoning_effort=high,fast=true]" },
         { id: "grok-1", provider: "grok", store: grokStore },
@@ -147,7 +147,7 @@ describe("loadLogins", () => {
     });
     expect(await loadLogins(file)).toEqual([
       { id: "claude-1", provider: "claude", store: claudeStore, seat: null, quota: null, concurrency: 2, model: null },
-      { id: "codex-1", provider: "codex", store: codexStore, seat: null, quota: null, concurrency: 1, model: null },
+      { id: "codex-1", provider: "codex", store: codexStore, seat: null, quota: null, concurrency: 3, model: null },
       {
         id: "codex-pool",
         provider: "codex",
@@ -245,15 +245,9 @@ describe("loadLogins", () => {
     }
   });
 
-  test("rejects a codex store without auth.json or with concurrency above 1", async () => {
-    const message = await failure("codex.json", {
-      logins: [
-        { id: "codex-empty", provider: "codex", store: emptyStore },
-        { id: "codex-1", provider: "codex", store: codexStore, concurrency: 3 },
-      ],
-    });
+  test("rejects a codex store without auth.json", async () => {
+    const message = await failure("codex.json", { logins: [{ id: "codex-empty", provider: "codex", store: emptyStore }] });
     expect(message).toContain(`logins[0] "codex-empty": codex store ${emptyStore} has no auth.json`);
-    expect(message).toContain("logins[1] \"codex-1\": a codex store must have concurrency 1");
   });
 
   test("rejects a claude store without .credentials.json", async () => {
@@ -509,28 +503,7 @@ describe("Scheduler", () => {
     for (const lease of [retry, ...others]) lease?.release();
   });
 
-  test("a codex store that a live lease holds is released at once when a seat login returns it, until that lease ends", async () => {
-    await mkdir(join(dir, "same-store"));
-    await Bun.write(join(dir, "same-store", "auth.json"), "{}");
-    await Bun.write(
-      join(dir, "same-seat.sh"),
-      ["#!/bin/sh", "printf '%s\\n' \"$QA_INTERNS_LEASE_PID\" > \"$(dirname \"$0\")/seat-$QA_INTERNS_INTERN.pid\"", "echo \"$(dirname \"$0\")/same-store\"", ""].join("\n"),
-    );
-    const command = ["sh", join(dir, "same-seat.sh")];
-    const scheduler = new Scheduler([login("codex-pool-a", "codex", 2, command), login("codex-pool-b", "codex", 1, command)]);
-    const first = held(await scheduler.acquire("m1"));
-    expect(first.login.id).toBe("codex-pool-a");
-    expect(first.store).toBe(await realpath(join(dir, "same-store")));
-    expect(await scheduler.acquire("m2")).toBeNull();
-    expect(await ended(await leasePid("m2"))).toBe(true);
-    expect(alive(await leasePid("m1"))).toBe(true);
-    first.release();
-    const second = held(await scheduler.acquire("m3"));
-    expect(second.store).toBe(first.store);
-    second.release();
-  });
-
-  test("a claude or opencode store that live leases hold is granted again when a seat login returns it, up to the login's concurrency across runs", async () => {
+  test("a store that live leases hold is granted again when a seat login returns it, up to the login's concurrency across runs", async () => {
     const shared = join(dir, "shared-store");
     await mkdir(shared);
     await Bun.write(join(shared, ".credentials.json"), "{}");
@@ -539,7 +512,7 @@ describe("Scheduler", () => {
       join(dir, "shared-seat.sh"),
       ["#!/bin/sh", "printf '%s\\n' \"$QA_INTERNS_LEASE_PID\" > \"$(dirname \"$0\")/seat-$QA_INTERNS_INTERN.pid\"", "echo \"$(dirname \"$0\")/shared-store\"", ""].join("\n"),
     );
-    for (const provider of ["claude", "opencode"] as const) {
+    for (const provider of ["claude", "codex", "opencode"] as const) {
       const seat = login(`${provider}-pool`, provider, 3, ["sh", join(dir, "shared-seat.sh")]);
       const other = await holder([seat], 1);
       expect(other.count).toBe(1);
