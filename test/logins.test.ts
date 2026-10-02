@@ -559,7 +559,7 @@ describe("Scheduler", () => {
     const shared = join(dir, "shared-store");
     await mkdir(shared);
     await Bun.write(join(shared, ".credentials.json"), "{}");
-    await Bun.write(join(shared, "auth.json"), "{}");
+    await Bun.write(join(shared, "auth.json"), JSON.stringify({ "opencode-go": { type: "api", key: "go-key" } }));
     await Bun.write(
       join(dir, "shared-seat.sh"),
       ["#!/bin/sh", "printf '%s\\n' \"$QA_INTERNS_LEASE_PID\" > \"$(dirname \"$0\")/seat-$QA_INTERNS_INTERN.pid\"", "echo \"$(dirname \"$0\")/shared-store\"", ""].join("\n"),
@@ -589,7 +589,7 @@ describe("Scheduler", () => {
   test("leases of two providers never hold one mounted path at once, in one run or across runs", async () => {
     const both = join(dir, "both-store");
     await mkdir(both);
-    await Bun.write(join(both, "auth.json"), "{}");
+    await Bun.write(join(both, "auth.json"), JSON.stringify({ "opencode-go": { type: "api", key: "go-key" } }));
     const codex = login("codex-both", "codex", 1, ["echo", both]);
     const opencode = login("opencode-both", "opencode", 3, ["echo", both]);
 
