@@ -27,7 +27,7 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true };
+type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
@@ -507,7 +507,39 @@ USER qa
   );
 
   test(
-    "an intern whose agent stops when the quota command of its login exits 1 moves to the next login, and that login stays exhausted for the run",
+    "an intern whose agent stops without a tool call, as Cursor does at its plan limit, fails, and so does a run with no other intern",
+    async () => {
+      const lines: string[] = [];
+      const detail = 'stopped at minute 0 without a tool call: "\n\nUpgrade your plan to continue"';
+      const run = runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("upgrade", [{ id: "cursor-upgrade", provider: "cursor", upgrade: true }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      await expect(run).rejects.toThrow(`No testing intern completed: i1 failed: ${detail}`);
+      const runDir = lines[0];
+      if (runDir === undefined) throw new Error("runQa printed no run directory");
+      const state = await readState(runDir);
+      expect(state.phase).toBe("failed");
+      expect(intern(state, "i1")).toMatchObject({ login: "cursor-upgrade", status: "failed", findings: 0, detail });
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an intern whose agent stops at a plan limit moves to the next login when the quota command of its login exits 1, and that login stays exhausted for the run",
     async () => {
       const lines: string[] = [];
       const count = join(root, "quota-count");
@@ -520,7 +552,7 @@ USER qa
         minutes: 0.5,
         confirmMinutes: 0.5,
         loginsFile: await logins("quota", [
-          { id: "claude-quota", provider: "claude", quota, model: "fake-model-a" },
+          { id: "cursor-quota", provider: "cursor", quota, upgrade: true, model: "fake-model-a" },
           { id: "claude-next", provider: "claude", model: "fake-model-b" },
         ]),
         replay: null,
@@ -528,7 +560,7 @@ USER qa
         print: (line) => lines.push(line),
       });
 
-      expect(lines).toContain("i1 starting on claude-quota (claude)");
+      expect(lines).toContain("i1 starting on cursor-quota (cursor)");
       expect(lines).toContain("i1 starting on claude-next (claude)");
       const state = await readState(runDir);
       expect(state.phase).toBe("done");
@@ -536,22 +568,18 @@ USER qa
         login: "claude-next",
         model: "fake-model-b",
         status: "done",
-        findings: 2,
-        detail: 'stopped at minute 0: "Nothing more to test."; moved from claude-quota to claude-next after its quota command reported no quota; stopped at minute 0: "Nothing more to test."',
+        findings: 1,
+        detail: 'stopped at minute 0: "\n\nUpgrade your plan to continue"; moved from cursor-quota to claude-next after its quota command reported no quota; stopped at minute 0: "Nothing more to test."',
       });
       expect(state.interns.map((entry) => [entry.id, entry.login, entry.status])).toEqual([
         ["i1", "claude-next", "done"],
-        ["judge", "claude-next", "done"],
         ["c1", "claude-next", "done"],
       ]);
       expect(await Bun.file(count).text()).toBe("2\n");
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       const findings: Finding[] = report.groups[0].findings;
-      expect(findings.map((finding) => [finding.id, finding.environment.model])).toEqual([
-        ["i1/fake-home", "fake-model-a"],
-        ["i1/out-2/fake-home", "fake-model-b"],
-      ]);
+      expect(findings.map((finding) => [finding.id, finding.environment.provider, finding.environment.model])).toEqual([["i1/out-2/fake-home", "claude", "fake-model-b"]]);
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);

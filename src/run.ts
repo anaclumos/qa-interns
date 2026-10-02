@@ -390,10 +390,15 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
+    let toolCalls = 0;
     await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
+      toolCalls += turn.toolCalls;
       if (idle) {
-        await note(`stopped at minute ${Math.floor((Date.now() - start) / minute)}: "${turn.lastMessage}"`);
-        if (!(await hasQuota(login))) throw new NoQuota(`the quota command of login ${login.id} reported no quota`);
+        const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
+        const quota = await hasQuota(login);
+        if (quota && toolCalls === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
+        await note(`${stopped}: "${turn.lastMessage}"`);
+        if (!quota) throw new NoQuota(`the quota command of login ${login.id} reported no quota`);
         return null;
       }
       const { rejected } = await readFindings(ctx.runDir, intern.id, attempt, environment);
