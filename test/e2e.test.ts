@@ -459,10 +459,10 @@ USER qa
       expect(state.phase).toBe("done");
       const moved = intern(state, "i1");
       expect(moved).toMatchObject({ login: "claude-confirm-limit", model: "fake-model-b", status: "done", findings: 2 });
-      expect(moved.detail).toStartWith("moved from claude-charter-limit to claude-confirm-limit after a login failure (-32603: ");
+      expect(moved.detail).toStartWith(`moved from claude-charter-limit to claude-confirm-limit after a login failure (-32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"})`);
       const confirmer = intern(state, "c1");
       expect(confirmer).toMatchObject({ login: "claude-no-confirm", model: "fake-model-c", status: "done" });
-      expect(confirmer.detail).toStartWith("moved from claude-confirm-limit to claude-no-confirm after a login failure (-32603: ");
+      expect(confirmer.detail).toStartWith(`moved from claude-confirm-limit to claude-no-confirm after a login failure (-32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"})`);
       expect(confirmer.detail).toEndWith("; confirmation failed: no confirmation.json written");
 
       const transcript = (await Bun.file(join(runDir, "interns", "i1", "transcript.jsonl")).text())
