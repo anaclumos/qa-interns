@@ -243,22 +243,35 @@ describe("loadLogins", () => {
     }
   });
 
-  test("rejects a store mounted whole whose credential file is a symbolic link", async () => {
+  test("rejects a store whose path resolves through a symbolic link or whose credential file is a symbolic link", async () => {
     const linked = join(dir, "stores", "claude-linked");
     const inside = join(dir, "stores", "grok-linked");
+    const codex = join(dir, "stores", "codex-linked");
+    const grok = join(dir, "stores", "grok-link");
+    const other = join(dir, "host", "other-grok-home");
     await mkdir(linked, { recursive: true });
     await mkdir(inside, { recursive: true });
+    await mkdir(codex, { recursive: true });
+    await mkdir(other, { recursive: true });
     await symlink(join(claudeStore, ".credentials.json"), join(linked, ".credentials.json"));
     await Bun.write(join(inside, "real.json"), "{}");
     await symlink(join(inside, "real.json"), join(inside, "auth.json"));
+    await Bun.write(join(dir, "host", "unrelated-file"), "{}");
+    await symlink(join(dir, "host", "unrelated-file"), join(codex, "auth.json"));
+    await Bun.write(join(other, "auth.json"), "{}");
+    await symlink(other, grok);
     const message = await failure("linked-credential.json", {
       logins: [
         { id: "claude-linked", provider: "claude", store: linked },
         { id: "grok-linked", provider: "grok", store: inside },
+        { id: "codex-linked", provider: "codex", store: codex },
+        { id: "grok-link", provider: "grok", store: grok },
       ],
     });
     expect(message).toContain(`logins[0] "claude-linked": ${join(linked, ".credentials.json")} is a symbolic link`);
     expect(message).toContain(`logins[1] "grok-linked": ${join(inside, "auth.json")} is a symbolic link`);
+    expect(message).toContain(`logins[2] "codex-linked": ${join(codex, "auth.json")} is a symbolic link`);
+    expect(message).toContain(`logins[3] "grok-link": store ${grok} resolves through a symbolic link to ${other}`);
   });
 
   test("rejects a grok store without auth.json", async () => {
@@ -299,19 +312,6 @@ describe("loadLogins", () => {
       ],
     });
     expect(message).toContain(`logins[1] "codex-inner": store ${inner} contains or is inside the store of logins[0]`);
-  });
-
-  test("rejects two stores whose credential files are the same file", async () => {
-    const second = join(dir, "stores", "codex-linked");
-    await mkdir(second, { recursive: true });
-    await symlink(join(codexStore, "auth.json"), join(second, "auth.json"));
-    const message = await failure("shared-credential.json", {
-      logins: [
-        { id: "codex-1", provider: "codex", store: codexStore },
-        { id: "codex-2", provider: "codex", store: second },
-      ],
-    });
-    expect(message).toContain(`logins[1] "codex-2": ${join(second, "auth.json")} is the same file as the credential of logins[0]`);
   });
 
   test("rejects duplicate ids and reports every problem at once", async () => {
@@ -428,22 +428,6 @@ describe("Scheduler", () => {
     for (const lease of [retry, ...others]) lease?.release();
   });
 
-  test("a seat store reached through a symbolic link is the same store as its target once exhausted", async () => {
-    const shared = join(dir, "shared-seat");
-    await mkdir(join(dir, "links"), { recursive: true });
-    await mkdir(shared);
-    await Bun.write(join(shared, "auth.json"), "{}");
-    await symlink(shared, join(dir, "links", "k1"));
-    await symlink(shared, join(dir, "links", "k2"));
-    await Bun.write(join(dir, "linked-seat.sh"), ["#!/bin/sh", "echo \"$(dirname \"$0\")/links/$QA_INTERNS_INTERN\"", ""].join("\n"));
-    const scheduler = new Scheduler([login("codex-pool", "codex", 2, ["sh", join(dir, "linked-seat.sh")])]);
-    const first = held(await scheduler.acquire("k1", []));
-    expect(first.store).toBe(await realpath(shared));
-    scheduler.exhaust(first);
-    first.release();
-    expect(await scheduler.acquire("k2", [])).toBeNull();
-  });
-
   test("a store that a live lease holds is released at once when a seat login returns it, until that lease ends", async () => {
     await mkdir(join(dir, "same-store"));
     await Bun.write(join(dir, "same-store", "auth.json"), "{}");
@@ -483,16 +467,23 @@ describe("Scheduler", () => {
   test("a seat store that breaks a store rule counts as no store", async () => {
     const bare = join(dir, "seat-cases", "bare");
     const linked = join(dir, "seat-cases", "linked");
+    const real = join(dir, "seat-cases", "real");
     await mkdir(bare, { recursive: true });
     await mkdir(linked, { recursive: true });
-    await symlink(join(codexStore, "auth.json"), join(linked, "auth.json"));
+    await mkdir(real, { recursive: true });
+    await Bun.write(join(dir, "seat-cases", "unrelated-file"), "{}");
+    await symlink(join(dir, "seat-cases", "unrelated-file"), join(linked, "auth.json"));
+    await Bun.write(join(real, "auth.json"), "{}");
+    await symlink(real, join(dir, "seat-cases", "through"));
     await Bun.write(join(dir, "stores", "auth.json"), "{}");
+    const through = join(dir, "seat-cases", "through");
     const cases: [Login["provider"], string, string][] = [
       ["cursor", "/", "store / is the root of the file system"],
       ["codex", bare, `codex store ${bare} has no auth.json`],
       ["codex", codexStore, `duplicate store ${codexStore}, already used by login codex-1; one store serves one process at a time`],
       ["cursor", join(dir, "stores"), `store ${join(dir, "stores")} contains or is inside the store of login codex-1; a runner mounting one could read or change the other`],
-      ["codex", linked, `${join(linked, "auth.json")} is the same file as the credential of login codex-1; one credential serves one process at a time`],
+      ["codex", linked, `${join(linked, "auth.json")} is a symbolic link; a runner can place a link in its own store to choose what another run mounts, so the credential is a regular file in the store`],
+      ["cursor", through, `store ${through} resolves through a symbolic link to ${real}; a runner can place a link in its own store to choose what another run mounts`],
       ["codex", join(dir, "missing"), `store ${join(dir, "missing")} is not an existing directory`],
     ];
     for (const [provider, store, problem] of cases) {
@@ -514,26 +505,6 @@ describe("Scheduler", () => {
     const lease = held(await scheduler.acquire("v1", ["claude"]));
     expect(lease.store).toBe(join(pool, "v1"));
     lease.release();
-  });
-
-  test("two seat stores whose credential files are one file are not leased at once, and a usage limit on one exhausts both", async () => {
-    const real = join(dir, "one-credential", "auth.json");
-    await mkdir(join(dir, "one-credential"));
-    await Bun.write(real, "{}");
-    for (const intern of ["n1", "n2"]) {
-      await mkdir(join(dir, "linked-pool", intern), { recursive: true });
-      await symlink(real, join(dir, "linked-pool", intern, "auth.json"));
-    }
-    const scheduler = new Scheduler([login("codex-pool", "codex", 2, ["sh", "-c", `echo ${join(dir, "linked-pool")}/$QA_INTERNS_INTERN`])]);
-    const first = held(await scheduler.acquire("n1", []));
-    expect(first.store).toBe(join(dir, "linked-pool", "n1"));
-    expect(await scheduler.acquire("n2", [])).toBeNull();
-    first.release();
-    const second = held(await scheduler.acquire("n2", []));
-    expect(second.store).toBe(join(dir, "linked-pool", "n2"));
-    scheduler.exhaust(second);
-    second.release();
-    expect(await scheduler.acquire("n1", [])).toBeNull();
   });
 
   test("a store mounted whole stays locked when its agent replaces the credential file", async () => {

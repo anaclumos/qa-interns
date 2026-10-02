@@ -273,10 +273,10 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
       lease.release();
       const next = await acquire(ctx, id, avoid);
       if (next === null) {
-        await note(`login ${lease.login.id} failed with ${outcome.code}: ${outcome.message}`);
+        await note(`login ${lease.login.id} failed with ${message(outcome)}`);
         return null;
       }
-      await note(`moved from ${lease.login.id} to ${next.login.id} after a login failure (${outcome.code}: ${outcome.message})`);
+      await note(`moved from ${lease.login.id} to ${next.login.id} after a login failure (${message(outcome)})`);
       lease = next;
       await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, model: null });
     }
@@ -386,9 +386,13 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
+    let toolCalls = 0;
     await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
+      toolCalls += turn.toolCalls;
       if (idle) {
-        await note(`stopped at minute ${Math.floor((Date.now() - start) / minute)}: "${turn.lastMessage}"`);
+        const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
+        if (toolCalls === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
+        await note(`${stopped}: "${turn.lastMessage}"`);
         return null;
       }
       const { rejected } = await readFindings(ctx.runDir, intern.id, attempt, environment);

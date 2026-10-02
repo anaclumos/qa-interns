@@ -27,7 +27,7 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true };
+type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
@@ -459,10 +459,10 @@ USER qa
       expect(state.phase).toBe("done");
       const moved = intern(state, "i1");
       expect(moved).toMatchObject({ login: "claude-confirm-limit", model: "fake-model-b", status: "done", findings: 2 });
-      expect(moved.detail).toStartWith("moved from claude-charter-limit to claude-confirm-limit after a login failure (-32603: ");
+      expect(moved.detail).toStartWith(`moved from claude-charter-limit to claude-confirm-limit after a login failure (-32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"})`);
       const confirmer = intern(state, "c1");
       expect(confirmer).toMatchObject({ login: "claude-no-confirm", model: "fake-model-c", status: "done" });
-      expect(confirmer.detail).toStartWith("moved from claude-confirm-limit to claude-no-confirm after a login failure (-32603: ");
+      expect(confirmer.detail).toStartWith(`moved from claude-confirm-limit to claude-no-confirm after a login failure (-32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"})`);
       expect(confirmer.detail).toEndWith("; confirmation failed: no confirmation.json written");
 
       const transcript = (await Bun.file(join(runDir, "interns", "i1", "transcript.jsonl")).text())
@@ -498,6 +498,38 @@ USER qa
         [1, false, ["db", "qa-proxy", "qa-runner", "web"]],
         [2, false, ["db", "qa-proxy", "qa-runner", "web"]],
       ]);
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an intern whose agent stops without a tool call, as Cursor does at its plan limit, fails, and so does a run with no other intern",
+    async () => {
+      const lines: string[] = [];
+      const detail = 'stopped at minute 0 without a tool call: "\n\nUpgrade your plan to continue"';
+      const run = runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("upgrade", [{ id: "cursor-upgrade", provider: "cursor", upgrade: true }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      await expect(run).rejects.toThrow(`No testing intern completed: i1 failed: ${detail}`);
+      const runDir = lines[0];
+      if (runDir === undefined) throw new Error("runQa printed no run directory");
+      const state = await readState(runDir);
+      expect(state.phase).toBe("failed");
+      expect(intern(state, "i1")).toMatchObject({ login: "cursor-upgrade", status: "failed", findings: 0, detail });
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
