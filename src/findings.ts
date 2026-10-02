@@ -1,3 +1,4 @@
+import { RequestError } from "@agentclientprotocol/sdk";
 import { constants, existsSync } from "node:fs";
 import { link, lstat, mkdir, open, readdir, readlink, realpath, stat, unlink, type FileHandle } from "node:fs/promises";
 import path from "node:path";
@@ -26,6 +27,7 @@ export function errorCode(error: unknown): string | null {
 }
 
 export function message(error: unknown): string {
+  if (error instanceof RequestError) return `${error.code}: ${error.message}${error.data === undefined ? "" : `: ${JSON.stringify(error.data)}`}`;
   return error instanceof Error ? error.message : String(error);
 }
 
