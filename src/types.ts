@@ -4,11 +4,11 @@ import type { confirmationSchema } from "./findings.ts";
 import type { storedFindingSchema } from "./report.ts";
 import type { stateSchema } from "./state.ts";
 
-export const providerNames = ["claude", "codex", "cursor", "grok", "opencode-go"] as const;
+export const providerNames = ["claude", "codex", "cursor", "grok", "opencode"] as const;
 
 export type Provider = (typeof providerNames)[number];
 
-export type Login = { id: string; provider: Provider; store: string | null; seat: string[] | null; concurrency: number; model: string | null };
+export type Login = { id: string; provider: Provider; store: string | null; seat: string[] | null; quota: string[] | null; concurrency: number; model: string | null };
 
 export type Mount = { source: string; target: string; readOnly: boolean };
 

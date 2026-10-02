@@ -10,10 +10,14 @@ export type ProviderSpec = {
   files: GeneratedFile[];
   tmpfs: string[];
   egress: string[];
+  clientMeta: Record<string, unknown> | null;
   sessionMeta: Record<string, unknown> | null;
   modeId: string | null;
+  modelConfig(model: string): ConfigValue[];
   isLoginFailure(error: RequestError): boolean;
 };
+
+type ConfigValue = { configId: string; value: string };
 
 const authRequired = -32000;
 const rateLimited = -32003;
@@ -44,6 +48,26 @@ function storePath(store: string): string {
   return store;
 }
 
+function plainModel(model: string): ConfigValue[] {
+  return [{ configId: "model", value: model }];
+}
+
+function cursorModel(model: string): ConfigValue[] {
+  const open = model.indexOf("[");
+  if (open === -1) return plainModel(model);
+  if (!model.endsWith("]")) throw new Error(`Cursor model ${model} does not end with ]`);
+  const parameters = model
+    .slice(open + 1, -1)
+    .split(",")
+    .filter((entry) => entry !== "")
+    .map((entry) => {
+      const [configId, value, ...rest] = entry.split("=");
+      if (configId === undefined || configId === "" || value === undefined || rest.length > 0) throw new Error(`Cursor model ${model} has a parameter that is not name=value: ${entry}`);
+      return { configId, value };
+    });
+  return [...plainModel(model.slice(0, open)), ...parameters];
+}
+
 export const providers: Record<Provider, ProviderSpec> = {
   claude: {
     adapter: ["claude-agent-acp"],
@@ -58,8 +82,10 @@ export const providers: Record<Provider, ProviderSpec> = {
     files: [],
     tmpfs: ["/home/qa/.claude"],
     egress: ["api.anthropic.com", "platform.claude.com"],
+    clientMeta: null,
     sessionMeta: { claudeCode: { options: { strictMcpConfig: true } } },
     modeId: "bypassPermissions",
+    modelConfig: plainModel,
     isLoginFailure: (error) => error.code === authRequired || (error.code === internalError && claudeLoginData.safeParse(error.data).success),
   },
   codex: {
@@ -69,8 +95,10 @@ export const providers: Record<Provider, ProviderSpec> = {
     files: [{ target: "/home/qa/.codex/config.toml", content: codexConfig }],
     tmpfs: ["/home/qa/.codex"],
     egress: ["chatgpt.com", "auth.openai.com", "api.openai.com"],
+    clientMeta: null,
     sessionMeta: null,
     modeId: null,
+    modelConfig: plainModel,
     isLoginFailure: (error) => error.code === authRequired || (error.code === internalError && codexLoginData.safeParse(error.data).success),
   },
   cursor: {
@@ -80,8 +108,10 @@ export const providers: Record<Provider, ProviderSpec> = {
     files: [],
     tmpfs: ["/home/qa/.config"],
     egress: ["*.cursor.sh"],
+    clientMeta: { parameterizedModelPicker: true },
     sessionMeta: null,
     modeId: null,
+    modelConfig: cursorModel,
     isLoginFailure: (error) => error.code === authRequired,
   },
   grok: {
@@ -91,12 +121,14 @@ export const providers: Record<Provider, ProviderSpec> = {
     files: [],
     tmpfs: [],
     egress: ["cli-chat-proxy.grok.com", "auth.x.ai"],
+    clientMeta: null,
     sessionMeta: null,
     modeId: null,
+    modelConfig: plainModel,
     isLoginFailure: (error) =>
       error.code === authRequired || error.code === rateLimited || (error.code === internalError && grokLoginData.safeParse(error.data).success),
   },
-  "opencode-go": {
+  opencode: {
     adapter: ["opencode", "acp"],
     env: {
       XDG_DATA_HOME: "/home/qa/.local/share",
@@ -114,8 +146,10 @@ export const providers: Record<Provider, ProviderSpec> = {
     files: [],
     tmpfs: ["/home/qa/.local", "/home/qa/.local/share", "/home/qa/.local/share/opencode"],
     egress: ["opencode.ai"],
+    clientMeta: null,
     sessionMeta: null,
     modeId: null,
-    isLoginFailure: (error) => error.code === authRequired,
+    modelConfig: plainModel,
+    isLoginFailure: () => false,
   },
 };

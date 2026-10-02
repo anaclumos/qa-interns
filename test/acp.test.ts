@@ -281,6 +281,32 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     }
   });
 
+  test("a Cursor model with parameters in brackets asks for the parameterized model picker, then sets the model and each parameter", async () => {
+    const cursor = await openSession({
+      container: agent,
+      provider: { ...providers.cursor, adapter: ["node", "/opt/qa/fake-agent.mjs"] },
+      model: "fake-model-2[fast=false]",
+      transcript: path.join(internDir, "cursor-transcript.jsonl"),
+      adapterLog: path.join(internDir, "cursor-adapter.log"),
+    });
+    try {
+      expect(cursor.model).toBe("fake-model-2");
+      const sent = readFileSync(path.join(internDir, "cursor-transcript.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line): Line => JSON.parse(line))
+        .filter((line) => line.from === "client")
+        .map((line) => line.message);
+      expect(sent.find((message) => message.method === "initialize")?.params).toMatchObject({ clientCapabilities: { _meta: { parameterizedModelPicker: true } } });
+      expect(sent.filter((message) => message.method === "session/set_config_option").map((message) => message.params)).toEqual([
+        { sessionId: "fake-session-1", configId: "model", value: "fake-model-2" },
+        { sessionId: "fake-session-1", configId: "fast", value: "false" },
+      ]);
+    } finally {
+      await cursor.close();
+    }
+  });
+
   test("a login model the agent does not offer fails the session with the agent's error", async () => {
     let error: unknown;
     try {

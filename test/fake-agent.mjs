@@ -7,6 +7,7 @@ const sessionId = "fake-session-1";
 const pending = new Map();
 let nextId = 1;
 let cancelTurn = null;
+let chosenModel = null;
 
 const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
 
@@ -238,10 +239,15 @@ const handlers = {
     return { result: { sessionId, configOptions: [modelOption(login().model ?? "fake-model-1")] } };
   },
   "session/set_config_option": (params) => {
+    if (params.configId === "fast" && (params.value === "true" || params.value === "false")) {
+      const fast = { id: "fast", name: "Fast", category: "model_config", type: "select", currentValue: params.value, options: [{ value: "false", name: "false" }, { value: "true", name: "true" }] };
+      return { result: { configOptions: [modelOption(chosenModel), fast] } };
+    }
     const option = modelOption(params.value);
     if (params.configId !== "model" || !option.options.some((entry) => entry.value === params.value)) {
       return { error: { code: -32602, message: "Invalid params", data: { message: `Invalid model value: ${params.value}` } } };
     }
+    chosenModel = params.value;
     return { result: { configOptions: [option] } };
   },
   "session/set_mode": () => ({ result: {} }),
