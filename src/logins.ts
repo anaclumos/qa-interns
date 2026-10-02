@@ -27,13 +27,13 @@ const entrySchema = z.strictObject({
   model: z.string().min(1).optional(),
 });
 
-const noEntry = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG", "ELOOP"]);
+const unreachable = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG", "ELOOP", "EACCES"]);
 
 function stat(path: string): Stats | null {
   try {
     return statSync(path);
   } catch (error) {
-    if (noEntry.has(errorCode(error) ?? "")) return null;
+    if (unreachable.has(errorCode(error) ?? "")) return null;
     throw error;
   }
 }
