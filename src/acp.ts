@@ -201,7 +201,7 @@ export async function openSession(opts: {
   const setup = async () => {
     await connection.agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, _meta: opts.provider.clientMeta ?? undefined },
       clientInfo: { name: "qa-interns", version },
     });
     const started = await connection.agent
@@ -210,12 +210,10 @@ export async function openSession(opts: {
     if (opts.provider.modeId !== null) {
       await connection.agent.request(methods.agent.session.setMode, { sessionId: started.sessionId, modeId: opts.provider.modeId });
     }
-    if (opts.model === null) return { started, model: modelOf(started.newSessionResponse) };
-    const chosen = await connection.agent.request(methods.agent.session.setConfigOption, {
-      sessionId: started.sessionId,
-      configId: "model",
-      value: opts.model,
-    });
+    let chosen: NewSessionResponse | SetSessionConfigOptionResponse = started.newSessionResponse;
+    for (const { configId, value } of opts.model === null ? [] : opts.provider.modelConfig(opts.model)) {
+      chosen = await connection.agent.request(methods.agent.session.setConfigOption, { sessionId: started.sessionId, configId, value });
+    }
     return { started, model: modelOf(chosen) };
   };
 
