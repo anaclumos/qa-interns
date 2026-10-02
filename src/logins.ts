@@ -2,7 +2,7 @@ import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
 import { closeSync, lstatSync, mkdirSync, openSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { providers } from "./providers.ts";
 import { readJson, stateDir } from "./state.ts";
@@ -37,7 +37,7 @@ function rawId(value: unknown): string | null {
 
 type Store = { store: string; credential: string | null };
 
-type Held = Store & { where: string };
+type Held = { store: string; where: string };
 
 function credentialName(provider: Provider): string {
   return provider === "claude" ? ".credentials.json" : "auth.json";
@@ -55,10 +55,11 @@ function claudeConfigDirs(): string[] {
 function storeProblems(provider: Provider, path: string, found: Store, known: Held[]): string[] {
   const problems: string[] = [];
   if (found.store === "/") problems.push(`store ${path} is the root of the file system`);
-  let same = false;
+  if (found.store !== resolve(path)) {
+    problems.push(`store ${path} resolves through a symbolic link to ${found.store}; a runner can place a link in its own store to choose what another run mounts`);
+  }
   for (const other of known) {
     if (other.store === found.store) {
-      same = true;
       problems.push(`duplicate store ${path}, already used by ${other.where}; one store serves one process at a time`);
     } else if (found.store.startsWith(`${other.store}/`) || other.store.startsWith(`${found.store}/`)) {
       problems.push(`store ${path} contains or is inside the store of ${other.where}; a runner mounting one could read or change the other`);
@@ -66,12 +67,8 @@ function storeProblems(provider: Provider, path: string, found: Store, known: He
   }
   const name = credentialName(provider);
   if (found.credential === null) problems.push(`${provider} store ${path} has no ${name}`);
-  else if (!same) {
-    const first = known.find((other) => other.credential === found.credential);
-    if (first !== undefined) problems.push(`${join(path, name)} is the same file as the credential of ${first.where}; one credential serves one process at a time`);
-  }
-  if (found.credential !== null && mountedPath(provider, path) === found.store && lstatSync(join(path, name)).isSymbolicLink()) {
-    problems.push(`${join(path, name)} is a symbolic link; a runner mounts only the store, so the credential is a regular file in it`);
+  else if (lstatSync(join(path, name)).isSymbolicLink()) {
+    problems.push(`${join(path, name)} is a symbolic link; a runner can place a link in its own store to choose what another run mounts, so the credential is a regular file in the store`);
   }
   if (provider === "claude") {
     for (const config of claudeConfigDirs()) {
@@ -135,7 +132,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
 
 export type Lease = { login: Login; store: string; mounted: string; release(): void };
 
-type Grant = { store: string; credential: string; mounted: string; where: string };
+type Grant = { store: string; mounted: string; where: string };
 
 type Slot = { login: Login; active: number; exhausted: boolean; store: Grant | null };
 
@@ -246,7 +243,7 @@ export class Scheduler {
       if (login.store === null) return { login, active: 0, exhausted: false, store: null };
       const found = resolveStore(login.provider, login.store);
       if (found.credential === null) throw new Error(`${login.provider} store ${login.store} has no ${credentialName(login.provider)}`);
-      const store = { store: found.store, credential: found.credential, mounted: mountedPath(login.provider, login.store), where: `login ${login.id}` };
+      const store = { store: found.store, mounted: mountedPath(login.provider, login.store), where: `login ${login.id}` };
       return { login, active: 0, exhausted: false, store };
     });
   }
@@ -294,9 +291,9 @@ export class Scheduler {
       if (path !== null) {
         const found = resolveStore(login.provider, path);
         const known = [...this.slots.flatMap((other) => other.store ?? []), ...this.live];
-        if (found.credential !== null && storeProblems(login.provider, path, found, known).length === 0) {
+        if (storeProblems(login.provider, path, found, known).length === 0) {
           const mounted = mountedPath(login.provider, path);
-          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, credential: found.credential, mounted, where: `login ${login.id}` }, 1, keeper);
+          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, 1, keeper);
         }
       }
     } finally {
