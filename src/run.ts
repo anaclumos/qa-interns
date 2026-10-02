@@ -282,14 +282,11 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, work: 
       slot?.release();
       slot = undefined;
       lease.release();
+      await note(outcome instanceof RequestError ? `login ${lease.login.id} failed with ${message(outcome)}` : outcome.message);
+      await ctx.update(id, { status: "queued" });
       const next = await acquire(ctx, id);
-      const failure = outcome instanceof RequestError ? message(outcome) : null;
-      if (next === null) {
-        await note(failure === null ? outcome.message : `login ${lease.login.id} failed with ${failure}`);
-        return null;
-      }
-      const reason = failure === null ? "its quota command reported no quota" : `a login failure (${failure})`;
-      await note(`moved from ${lease.login.id} to ${next.login.id} after ${reason}`);
+      if (next === null) return null;
+      await note(`moved to ${next.login.id}`);
       lease = next;
       await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, model: null });
     }
@@ -399,13 +396,11 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
-    let toolCalls = 0;
     await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
-      toolCalls += turn.toolCalls;
       if (idle) {
         const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
         const quota = await hasQuota(login);
-        if (quota && toolCalls === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
+        if (quota && session.toolCalls() === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
         await note(`${stopped}: "${turn.lastMessage}"`);
         if (!quota) throw new NoQuota(`the quota command of login ${login.id} reported no quota`);
         return null;
@@ -413,6 +408,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
       const { rejected } = await readFindings(ctx.runDir, intern.id, attempt, environment);
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id, attempt));
     });
+    if (session.toolCalls() === 0) throw new Error(`made no tool call in its ${minutes} minutes`);
   });
   const results = await Promise.all(attempts.map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
   const findings = results.flatMap((result) => result.findings);
@@ -481,7 +477,7 @@ function internState(id: string, role: InternState["role"], charter: string, gro
 function progress(intern: InternState): string {
   if (intern.status === "starting" || intern.status === "testing") return `${intern.id} ${intern.status} on ${intern.login} (${intern.provider})`;
   if (intern.detail === null) return `${intern.id} ${intern.status}`;
-  return `${intern.id} ${intern.status}: ${oneLine(redact(intern.detail)).slice(0, 300)}`;
+  return `${intern.id} ${intern.status}: ${oneLine(redact(intern.detail)).slice(-300)}`;
 }
 
 function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {

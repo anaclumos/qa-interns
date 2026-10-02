@@ -214,8 +214,9 @@ const prompt = async (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit, upgrade } = login();
+  const { limit, upgrade, hang } = login();
   if (limit === true) return limited;
+  if (hang === true) return slowTurn();
   if (upgrade === true) {
     say("\n\nUpgrade your plan to continue");
     return endTurn;

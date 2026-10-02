@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
-import { closeSync, lstatSync, mkdirSync, openSync, realpathSync, statSync, type Stats } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
@@ -61,6 +61,19 @@ function resolveStore(provider: Provider, store: string): Store {
   return { store: realpathSync(store), credential: stat(credential)?.isFile() === true ? realpathSync(credential) : null };
 }
 
+const opencodeGoAuth = z.strictObject({ "opencode-go": z.object({ type: z.literal("api"), key: z.string().min(1) }) });
+
+function holdsOneOpencodeGoKey(file: string): boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
+  return opencodeGoAuth.safeParse(value).success;
+}
+
 function claudeConfigDirs(): string[] {
   return [...new Set([join(homedir(), ".claude"), process.env.CLAUDE_CONFIG_DIR ?? ""].filter(isDirectory).map((dir) => realpathSync(dir)))];
 }
@@ -82,6 +95,10 @@ function storeProblems(provider: Provider, path: string, found: Store, known: He
   if (found.credential === null) problems.push(`${provider} store ${path} has no ${name}`);
   else if (lstatSync(join(path, name)).isSymbolicLink()) {
     problems.push(`${join(path, name)} is a symbolic link; a runner can place a link in its own store to choose what another run mounts, so the credential is a regular file in the store`);
+  } else if (provider === "opencode" && !holdsOneOpencodeGoKey(found.credential)) {
+    problems.push(
+      `${join(path, name)} must hold one opencode-go API key and nothing else; a runner can read every credential in it, and OpenCode loads remote config, which can add MCP servers, for a wellknown entry`,
+    );
   }
   if (provider === "claude") {
     for (const config of claudeConfigDirs()) {

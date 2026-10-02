@@ -134,7 +134,13 @@ export const providers: Record<Provider, ProviderSpec> = {
       XDG_DATA_HOME: "/home/qa/.local/share",
       OPENCODE_DISABLE_MODELS_FETCH: "true",
       OPENCODE_DISABLE_PROJECT_CONFIG: "true",
-      OPENCODE_CONFIG_CONTENT: JSON.stringify({ enabled_providers: ["opencode-go"], permission: { websearch: "deny" } }),
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ enabled_providers: ["opencode-go"] }),
+      OPENCODE_PERMISSION: JSON.stringify({
+        "*": "deny",
+        ...Object.fromEntries(
+          ["bash", "read", "glob", "grep", "edit", "task", "webfetch", "todowrite", "invalid", "external_directory", "doom_loop"].map((name) => [name, "allow"]),
+        ),
+      }),
     },
     mounts: (store) => [{ source: path.join(storePath(store), "auth.json"), target: "/home/qa/.local/share/opencode/auth.json", readOnly: true }],
     files: [],
