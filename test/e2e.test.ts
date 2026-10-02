@@ -240,7 +240,7 @@ USER qa
       expect(services("judge")).toEqual(["qa-proxy", "qa-runner"]);
 
       const markdown = await Bun.file(join(runDir, "report.md")).text();
-      const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Seen once"));
+      const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Not confirmed"));
       expect(confirmed).toContain(`### ${title}`);
       expect(confirmed).toContain("- Reproductions: 3 (i1, i2, c1)");
       const usage = markdown.slice(markdown.indexOf("## Environments"));

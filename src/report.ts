@@ -92,6 +92,11 @@ function paths(list: string[]) {
   return list.length > 0 ? list.map((entry) => `- ${inline(entry)}`) : ["No evidence files."];
 }
 
+function wrongSteps(group: Group) {
+  const result = group.confirmation?.result ?? null;
+  return result !== null && result.steps && !result.task;
+}
+
 function verdict(result: Confirmation) {
   const shown = (value: boolean) => (value ? "showed" : "did not show");
   return `${confirms(result) ? "reproduced it" : "did not reproduce it"}: the steps ${shown(result.steps)} the failure, and the task done through the page's own controls ${shown(result.task)} it`;
@@ -277,8 +282,8 @@ function environmentSection(environments: EnvironmentStats[]) {
 export function renderReport(state: RunState, groups: Group[], rejected: Rejected[], egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown; tickets: Ticket[] } {
   const rows = groups.map((group) => ({ group, interns: reproductions(group) }));
   const connections = egressRows(egress);
-  const confirmed = rows.filter((row) => row.interns.length >= 2);
-  const seenOnce = rows.filter((row) => row.interns.length < 2);
+  const confirmed = rows.filter((row) => row.interns.length >= 2 && !wrongSteps(row.group));
+  const notConfirmed = rows.filter((row) => !confirmed.includes(row));
   const summary = {
     runId: state.runId,
     target: state.target,
@@ -289,7 +294,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
     interns: { testing: role(state, "intern"), confirming: role(state, "confirm"), judging: role(state, "judge") },
     providers: providersOf(state),
     confirmedGroups: confirmed.length,
-    seenOnceGroups: seenOnce.length,
+    notConfirmedGroups: notConfirmed.length,
     rejectedFiles: rejected.length,
   };
 
@@ -300,16 +305,16 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
     `- Interns: ${summary.interns.testing} testing, ${summary.interns.confirming} confirming, ${summary.interns.judging} judging`,
     `- Providers: ${summary.providers.length > 0 ? summary.providers.join(", ") : "none"}`,
     `- Confirmed groups: ${summary.confirmedGroups}`,
-    `- Groups seen once: ${summary.seenOnceGroups}`,
+    `- Groups not confirmed: ${summary.notConfirmedGroups}`,
     `- Rejected finding files: ${summary.rejectedFiles}`,
   ];
   if (state.error !== null) lines.push(`- Error: ${inline(state.error)}`);
   lines.push("", "## Confirmed", "");
-  if (confirmed.length === 0) lines.push("No finding was reproduced twice.", "");
+  if (confirmed.length === 0) lines.push("No finding was confirmed.", "");
   for (const row of confirmed) lines.push(...section(row.group, row.interns));
-  lines.push("## Seen once", "");
-  if (seenOnce.length === 0) lines.push("No finding was seen only once.", "");
-  for (const row of seenOnce) lines.push(...section(row.group, row.interns));
+  lines.push("## Not confirmed", "");
+  if (notConfirmed.length === 0) lines.push("Every finding was confirmed.", "");
+  for (const row of notConfirmed) lines.push(...section(row.group, row.interns));
   lines.push("## Rejected finding files", "");
   if (rejected.length === 0) lines.push("No finding file was rejected.");
   for (const entry of rejected) lines.push(`- ${inline(entry.file)}: ${inline(entry.reason)}`);
@@ -319,9 +324,9 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
     markdown: stripControl(`${lines.join("\n")}\n`),
     json: {
       run: summary,
-      groups: [...confirmed, ...seenOnce].map((row) => ({
+      groups: [...confirmed, ...notConfirmed].map((row) => ({
         id: row.group.id,
-        confirmed: row.interns.length >= 2,
+        confirmed: confirmed.includes(row),
         reproductions: row.interns,
         findings: row.group.findings,
         confirmation: row.group.confirmation,

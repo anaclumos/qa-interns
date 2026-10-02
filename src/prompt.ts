@@ -188,14 +188,14 @@ ${howToWork}
 
 Confirmation:
 - Your environment is freshly seeded. Follow the steps exactly, under the stated conditions. Try twice.
-- Then do the task that the finding says fails through the controls the page offers for it, under the same conditions. Try twice. When the steps are the only way to do the task, for example a request sent directly or another account's ID in a URL, the steps are the task.
+- Then do the same task again through the controls the page offers for it, under the same conditions. Where a step names a control, such as a button, a link, a field, or a square, use the one the page shows for that purpose. Keep every action, value, and condition that the finding names as part of the failure, such as a repeated click, a value typed into a field, Back, a second tab, or the keyboard. Try twice. When the steps are the only way to do the task, for example a request sent directly or another account's ID in a URL, the steps are the task.
 - Collect evidence under \`/qa/out/evidence/\`.
 - Then write \`/qa/out/confirmation.json\` with these fields and no others:
 
 { "steps": true | false, "task": true | false, "observed": "what happened, quoted from the page, the console, or the response", "evidence": ["paths under /qa/out of screenshots, recordings, HAR files, console logs"] }
 
 - \`steps\` is true when an attempt that follows the steps shows the failure the finding describes, and false when neither attempt does.
-- \`task\` is true when an attempt at the task through the page's controls shows the same failure, and false when neither attempt does.
+- \`task\` is true when an attempt at the task through the page's controls shows the same failure, and false when neither attempt does. When the steps are the task, \`task\` has the value of \`steps\`.
 - \`observed\` states what your attempts showed, for the steps and for the task.
 - Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.
 - The session ends when the time box ends. Write the file before then.`;

@@ -143,14 +143,14 @@ describe("reproductions", () => {
 describe("renderReport", () => {
   const { markdown, json } = renderReport(state, [exportTotal, overlap, negative], rejected, egress, environments);
 
-  test("orders the sections: confirmed, seen once, rejected files, interns, egress connections, environments", () => {
+  test("orders the sections: confirmed, not confirmed, rejected files, interns, egress connections, environments", () => {
     const headings = markdown.split("\n").filter((line) => line.startsWith("## "));
-    expect(headings).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns", "## Egress connections", "## Environments"]);
+    expect(headings).toEqual(["## Confirmed", "## Not confirmed", "## Rejected finding files", "## Interns", "## Egress connections", "## Environments"]);
     const at = (text: string) => markdown.indexOf(text);
     expect(at("## Confirmed")).toBeLessThan(at(`### ${overlap.findings[0]!.title}`));
-    expect(at(`### ${overlap.findings[0]!.title}`)).toBeLessThan(at("## Seen once"));
-    expect(at("## Seen once")).toBeLessThan(at(`### ${exportTotal.findings[0]!.title}`));
-    expect(at("## Seen once")).toBeLessThan(at(`### ${negative.findings[0]!.title}`));
+    expect(at(`### ${overlap.findings[0]!.title}`)).toBeLessThan(at("## Not confirmed"));
+    expect(at("## Not confirmed")).toBeLessThan(at(`### ${exportTotal.findings[0]!.title}`));
+    expect(at("## Not confirmed")).toBeLessThan(at(`### ${negative.findings[0]!.title}`));
     expect(at(`### ${negative.findings[0]!.title}`)).toBeLessThan(at("## Rejected finding files"));
     expect(at("## Rejected finding files")).toBeLessThan(at(rejected[0]!.file));
     expect(at(rejected[0]!.file)).toBeLessThan(at("## Interns"));
@@ -188,12 +188,24 @@ describe("renderReport", () => {
   });
 
   test("a confirmed group lists its reproduction count and interns", () => {
-    const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Seen once"));
+    const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Not confirmed"));
     expect(confirmed).toContain("3 (i1, i2, c1)");
     expect(confirmed).toContain("i2/page-two-repeats");
     expect(confirmed).toContain("> It is also the last row of page 1.");
     expect(confirmed).toContain("interns/i1/out/evidence/pagination-overlap.png");
     expect(confirmed).toContain("1. Sign in as owner@acme.test with the password acme-owner-pass.");
+  });
+
+  test("a group that two testing interns reported is not confirmed when its confirmation shows the failure with the steps but not with the page's own task", () => {
+    const wrongSteps: Group = { ...overlap, confirmation: { ...overlap.confirmation!, result: { ...overlap.confirmation!.result!, task: false } } };
+    const { markdown: text, json: data, tickets } = renderReport(state, [wrongSteps], [], none, []);
+    expect(reproductions(wrongSteps)).toEqual(["i1", "i2"]);
+    expect((data as { groups: { id: string; confirmed: boolean }[] }).groups).toMatchObject([{ id: "g1", confirmed: false }]);
+    expect(tickets).toEqual([]);
+    const notConfirmed = text.slice(text.indexOf("## Not confirmed"), text.indexOf("## Rejected finding files"));
+    expect(notConfirmed).toContain("- Reproductions: 2 (i1, i2)");
+    expect(notConfirmed).toContain("Confirmation: c1 (codex) did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
+    expect(text).toContain("- Confirmed groups: 0\n- Groups not confirmed: 1\n");
   });
 
   test("the intern table has one row per intern and escapes pipes in cells", () => {
@@ -219,8 +231,8 @@ describe("renderReport", () => {
   });
 
   test("the JSON form carries the same groups, rejected files, interns, and environments", () => {
-    const data = json as { run: { confirmedGroups: number; seenOnceGroups: number; rejectedFiles: number; providers: string[] }; groups: { id: string; confirmed: boolean; reproductions: string[] }[]; rejected: unknown; interns: unknown; environments: unknown };
-    expect(data.run).toMatchObject({ confirmedGroups: 1, seenOnceGroups: 2, rejectedFiles: 1, providers: ["claude", "codex"] });
+    const data = json as { run: { confirmedGroups: number; notConfirmedGroups: number; rejectedFiles: number; providers: string[] }; groups: { id: string; confirmed: boolean; reproductions: string[] }[]; rejected: unknown; interns: unknown; environments: unknown };
+    expect(data.run).toMatchObject({ confirmedGroups: 1, notConfirmedGroups: 2, rejectedFiles: 1, providers: ["claude", "codex"] });
     expect(data.groups.map((group) => [group.id, group.confirmed, group.reproductions])).toEqual([
       ["g1", true, ["i1", "i2", "c1"]],
       ["g2", false, ["i3"]],
@@ -247,7 +259,7 @@ describe("renderReport", () => {
     expect(text).toContain("Confirmation: c1 (codex) failed: adapter said no\n");
     expect(text).toContain("- interns/i2/out/findings/xy.json: bad input\n");
     expect(text).toContain("| a\\[31m.example | denied |  | 1 | i1 |\n");
-    expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns", "## Egress connections", "## Environments"]);
+    expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Not confirmed", "## Rejected finding files", "## Interns", "## Egress connections", "## Environments"]);
   });
 
   test("agent text cannot add a heading or inline HTML", () => {
@@ -270,7 +282,7 @@ describe("renderReport", () => {
   test("a run with nothing to report still has a line in every section", () => {
     const empty = renderReport({ ...state, interns: [] }, [], [], none, []).markdown;
     const lines = empty.split("\n");
-    const headings = ["## Confirmed", "## Seen once", "## Rejected finding files", "## Interns", "## Egress connections", "## Environments"];
+    const headings = ["## Confirmed", "## Not confirmed", "## Rejected finding files", "## Interns", "## Egress connections", "## Environments"];
     for (const heading of headings) {
       const start = lines.indexOf(heading);
       const next = lines.findIndex((line, index) => index > start && line.startsWith("## "));
