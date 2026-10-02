@@ -11,7 +11,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 - Bun 1.4 or later, Git, and `flock` and `findmnt` from util-linux.
 - `XDG_RUNTIME_DIR` set to a directory that only you can use, as a systemd login session sets it. QA Interns keeps the locks of its network blocks there.
 - At least one agent login: Claude Code, Codex, Cursor, Grok, or OpenCode Go (see [Logins](#logins)).
-- Memory for the environments you run at once. QA Interns does not check free memory before it starts an environment. An environment caps its runner at 2 GiB, its proxy at 128 MiB, its relay at 128 MiB when the target lists `egress` hosts, and each container of a service at the service's `mem_limit`, or 1 GiB when the service sets none.
+- Memory for the environments you run at once. QA Interns does not check free memory before it starts an environment. An environment caps its runner at 4 GiB, its proxy at 128 MiB, its relay at 128 MiB when the target lists `egress` hosts, and each container of a service at the service's `mem_limit`, or 1 GiB when the service sets none. Docker also lets each of these containers use as much swap as its memory cap.
 
 ## Install
 
