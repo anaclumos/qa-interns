@@ -262,8 +262,9 @@ function claimed(key: string): boolean {
   });
 }
 
-function slotLock(dir: string, mounted: string, slots: number): number | null {
-  for (const test of [lockFile(dir, mounted, "under"), ...ancestors(mounted).map((path) => lockFile(dir, path, "at"))]) {
+function slotLock(dir: string, mounted: string, provider: Provider, slots: number): number | null {
+  const others = providerNames.filter((other) => other !== provider).map((other) => lockFile(dir, mounted, other));
+  for (const test of [lockFile(dir, mounted, "under"), ...ancestors(mounted).map((path) => lockFile(dir, path, "at")), ...others]) {
     const fd = flock(test, "--exclusive", "--nonblock");
     if (fd === null) return null;
     closeSync(fd);
@@ -275,26 +276,28 @@ function slotLock(dir: string, mounted: string, slots: number): number | null {
   return null;
 }
 
-function blocked(mounted: string, slots: number): boolean {
+function blocked(mounted: string, provider: Provider, slots: number): boolean {
   const dir = locksDir();
   return exclusive(dir, () => {
-    const fd = slotLock(dir, mounted, slots);
+    const fd = slotLock(dir, mounted, provider, slots);
     if (fd !== null) closeSync(fd);
     return fd === null;
   });
 }
 
-function lock(mounted: string, slots: number): (() => void) | null {
+function lock(mounted: string, provider: Provider, slots: number): (() => void) | null {
   const dir = locksDir();
   return exclusive(dir, () => {
-    const fd = slotLock(dir, mounted, slots);
+    const fd = slotLock(dir, mounted, provider, slots);
     if (fd === null) return null;
     const held = [fd];
     const release = () => {
       for (const each of held) closeSync(each);
     };
     try {
-      for (const share of [lockFile(dir, mounted, "at"), ...ancestors(mounted).map((path) => lockFile(dir, path, "under"))]) held.push(take(dir, share, "--shared", "--nonblock"));
+      for (const share of [lockFile(dir, mounted, "at"), lockFile(dir, mounted, provider), ...ancestors(mounted).map((path) => lockFile(dir, path, "under"))]) {
+        held.push(take(dir, share, "--shared", "--nonblock"));
+      }
     } catch (error) {
       release();
       throw error;
@@ -306,7 +309,7 @@ function lock(mounted: string, slots: number): (() => void) | null {
 export class Scheduler {
   private readonly slots: Slot[];
   private readonly exhaustedMounts = new Set<string>();
-  private readonly live = new Set<Held>();
+  private readonly live = new Set<Held & { login: Login }>();
   private readonly refused = new Map<string, string[]>();
 
   constructor(logins: Login[]) {
@@ -323,7 +326,7 @@ export class Scheduler {
   }
 
   leased(): boolean {
-    return this.slots.some((slot) => !slot.exhausted && (slot.store === null ? claimed(JSON.stringify(slot.login.seat)) : blocked(slot.store.mounted, slot.login.concurrency)));
+    return this.slots.some((slot) => !slot.exhausted && (slot.store === null ? claimed(JSON.stringify(slot.login.seat)) : blocked(slot.store.mounted, slot.login.provider, slot.login.concurrency)));
   }
 
   capacity(): number {
@@ -386,7 +389,7 @@ export class Scheduler {
       else if (path !== null) {
         const found = resolveStore(login.provider, path);
         const shares = login.provider !== "codex";
-        const known = [...this.slots.flatMap((other) => other.store ?? []), ...[...this.live].filter((other) => !shares || other.store !== found.store)];
+        const known = [...this.slots.flatMap((other) => other.store ?? []), ...[...this.live].filter((other) => !shares || other.login !== login || other.store !== found.store)];
         const problems = storeProblems(login.provider, path, found, known);
         refuse(problems);
         if (problems.length === 0) {
@@ -401,7 +404,7 @@ export class Scheduler {
   }
 
   private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null, unclaim: () => void): Lease | null {
-    const unlock = lock(grant.mounted, slots);
+    const unlock = lock(grant.mounted, slot.login.provider, slots);
     if (unlock === null) return null;
     try {
       const source = mountSource(slot.login.provider, grant.store);
@@ -413,7 +416,7 @@ export class Scheduler {
       unlock();
       throw error;
     }
-    const entry = { ...grant };
+    const entry = { ...grant, login: slot.login };
     this.live.add(entry);
     let released = false;
     return {

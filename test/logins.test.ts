@@ -561,6 +561,38 @@ describe("Scheduler", () => {
     }
   });
 
+  test("leases of two providers never hold one mounted path at once, in one run or across runs", async () => {
+    const both = join(dir, "both-store");
+    await mkdir(both);
+    await Bun.write(join(both, "auth.json"), "{}");
+    const codex = login("codex-both", "codex", 1, ["echo", both]);
+    const opencode = login("opencode-both", "opencode", 3, ["echo", both]);
+
+    const run = new Scheduler([codex, opencode]);
+    const first = held(await run.acquire("b1"));
+    expect(first.login.id).toBe("codex-both");
+    expect(await run.acquire("b2")).toBeNull();
+    expect(run.refusals("b2")).toEqual([`seat store of login opencode-both: duplicate store ${both}, already used by login codex-both; one store serves one process at a time`]);
+    first.release();
+
+    const own = held(await new Scheduler([opencode]).acquire("b3"));
+    const other = await holder([opencode], 1);
+    expect(other.count).toBe(1);
+    own.release();
+    expect(await new Scheduler([codex]).acquire("b4")).toBeNull();
+    other.child.kill("SIGKILL");
+    await other.child.exited;
+
+    const lone = await holder([codex], 1);
+    expect(lone.count).toBe(1);
+    expect(await new Scheduler([opencode]).acquire("b5")).toBeNull();
+    lone.child.kill("SIGKILL");
+    await lone.child.exited;
+    const last = held(await new Scheduler([opencode]).acquire("b6"));
+    expect(last.store).toBe(await realpath(both));
+    last.release();
+  });
+
   test("a failing seat command or a relative path moves on to the next login", async () => {
     const scheduler = new Scheduler([
       login("codex-pool", "codex", 4, ["sh", join(dir, "no-seat.sh")]),
