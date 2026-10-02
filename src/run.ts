@@ -466,7 +466,7 @@ function internState(id: string, role: InternState["role"], charter: string, gro
 function progress(intern: InternState): string {
   if (intern.status === "starting" || intern.status === "testing") return `${intern.id} ${intern.status} on ${intern.login} (${intern.provider})`;
   if (intern.detail === null) return `${intern.id} ${intern.status}`;
-  return `${intern.id} ${intern.status}: ${oneLine(redact(intern.detail)).slice(0, 300)}`;
+  return `${intern.id} ${intern.status}: ${oneLine(redact(intern.detail)).slice(-300)}`;
 }
 
 function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
