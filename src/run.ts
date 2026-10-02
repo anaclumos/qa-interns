@@ -191,7 +191,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
       image: ctx.runnerImage,
       out: join(ctx.runDir, outDir(name, attempt)),
       env: { ...runnerEnv(target === null ? {} : target.settings.urls), ...provider.env },
-      mounts: provider.mounts(lease.store).map((mount) => ({ ...mount, source: lease.mounted })),
+      mounts: provider.mounts(lease.store),
       files: provider.files,
       tmpfs: provider.tmpfs,
     },
@@ -273,10 +273,10 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
       lease.release();
       const next = await acquire(ctx, id, avoid);
       if (next === null) {
-        await note(`login ${lease.login.id} failed with ${outcome.code}: ${outcome.message}`);
+        await note(`login ${lease.login.id} failed with ${message(outcome)}`);
         return null;
       }
-      await note(`moved from ${lease.login.id} to ${next.login.id} after a login failure (${outcome.code}: ${outcome.message})`);
+      await note(`moved from ${lease.login.id} to ${next.login.id} after a login failure (${message(outcome)})`);
       lease = next;
       await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, model: null });
     }
