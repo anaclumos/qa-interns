@@ -123,11 +123,10 @@ ${error ? `<p class="error" role="alert">${esc(error)}</p>` : ""}
   );
 }
 
-type ListOptions = { q: string; status: string; sort: string; page: number };
+type ListOptions = { q: string; status: string; sort: string; page: number; pages: number };
 
 export function invoiceListPage(ctx: Ctx, invoices: Invoice[], count: number, options: ListOptions) {
   const canEdit = ctx.role !== "viewer";
-  const pages = Math.max(1, Math.ceil(count / 10));
   const link = (page: number) => {
     const params = new URLSearchParams();
     if (options.q) params.set("q", options.q);
@@ -203,8 +202,8 @@ document.getElementById("bulk-paid").addEventListener("click", async () => {
 }
 <nav aria-label="Pagination" class="actions">
 ${options.page > 1 ? `<a href="${esc(link(options.page - 1))}">Previous</a>` : ""}
-<span>Page ${options.page} of ${pages}</span>
-${options.page < pages ? `<a href="${esc(link(options.page + 1))}">Next</a>` : ""}
+<span>Page ${options.page} of ${options.pages}</span>
+${options.page < options.pages ? `<a href="${esc(link(options.page + 1))}">Next</a>` : ""}
 </nav>`,
   );
 }
