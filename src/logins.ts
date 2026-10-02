@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
-import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
@@ -27,8 +27,19 @@ const entrySchema = z.strictObject({
   model: z.string().min(1).optional(),
 });
 
+const unreachable = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG", "ELOOP", "EACCES"]);
+
+function stat(path: string): Stats | null {
+  try {
+    return statSync(path);
+  } catch (error) {
+    if (unreachable.has(errorCode(error) ?? "")) return null;
+    throw error;
+  }
+}
+
 function isDirectory(path: string): boolean {
-  return statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+  return stat(path)?.isDirectory() === true;
 }
 
 function rawId(value: unknown): string | null {
@@ -45,7 +56,7 @@ function credentialName(provider: Provider): string {
 
 function resolveStore(provider: Provider, store: string): Store {
   const credential = join(store, credentialName(provider));
-  return { store: realpathSync(store), credential: statSync(credential, { throwIfNoEntry: false })?.isFile() === true ? realpathSync(credential) : null };
+  return { store: realpathSync(store), credential: stat(credential)?.isFile() === true ? realpathSync(credential) : null };
 }
 
 const opencodeGoAuth = z.strictObject({ "opencode-go": z.object({ type: z.literal("api"), key: z.string().min(1) }) });
