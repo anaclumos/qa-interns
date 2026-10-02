@@ -197,16 +197,29 @@ describe("loadLogins", () => {
   });
 
   test("rejects a relative store and a store that is not a directory", async () => {
+    const loop = join(dir, "store-loop");
+    await symlink(loop, loop);
+    const unreachable = [join(claudeStore, ".credentials.json", "store"), join(dir, "a".repeat(256)), loop];
     const message = await failure("stores.json", {
       logins: [
         { id: "claude-1", provider: "claude", store: "stores/claude-1" },
         { id: "claude-2", provider: "claude", store: join(dir, "stores", "missing") },
         { id: "claude-3", provider: "claude", store: join(claudeStore, ".credentials.json") },
+        ...unreachable.map((store, index) => ({ id: `claude-${index + 4}`, provider: "claude", store })),
       ],
     });
     expect(message).toContain("logins[0] \"claude-1\": store: \"stores/claude-1\" is not an absolute path");
     expect(message).toContain(`logins[1] "claude-2": store: "${join(dir, "stores", "missing")}" is not an existing directory`);
     expect(message).toContain(`logins[2] "claude-3": store: "${join(claudeStore, ".credentials.json")}" is not an existing directory`);
+    for (const [index, store] of unreachable.entries()) expect(message).toContain(`logins[${index + 3}] "claude-${index + 4}": store: "${store}" is not an existing directory`);
+  });
+
+  test("rejects a store whose credential file is a symbolic link loop", async () => {
+    const looped = join(dir, "codex-looped");
+    await mkdir(looped, { recursive: true });
+    await symlink(join(looped, "auth.json"), join(looped, "auth.json"));
+    const message = await failure("looped-credential.json", { logins: [{ id: "codex-looped", provider: "codex", store: looped }] });
+    expect(message).toContain(`logins[0] "codex-looped": codex store ${looped} has no auth.json`);
   });
 
   test("rejects a codex store without auth.json or with concurrency above 1", async () => {
@@ -492,6 +505,7 @@ describe("Scheduler", () => {
       ["codex", codexStore],
       ["cursor", join(dir, "stores")],
       ["codex", linked],
+      ["codex", join(codexStore, "auth.json", "store")],
     ];
     for (const [provider, store] of cases) {
       const scheduler = new Scheduler([login("seat-pool", provider, 1, ["echo", store]), login("codex-1", "codex", 1)]);
