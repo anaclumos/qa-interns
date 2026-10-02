@@ -509,7 +509,7 @@ describe("Scheduler", () => {
     for (const lease of [retry, ...others]) lease?.release();
   });
 
-  test("a store that a live lease holds is released at once when a seat login returns it, until that lease ends", async () => {
+  test("a codex store that a live lease holds is released at once when a seat login returns it, until that lease ends", async () => {
     await mkdir(join(dir, "same-store"));
     await Bun.write(join(dir, "same-store", "auth.json"), "{}");
     await Bun.write(
@@ -528,6 +528,37 @@ describe("Scheduler", () => {
     const second = held(await scheduler.acquire("m3"));
     expect(second.store).toBe(first.store);
     second.release();
+  });
+
+  test("a claude or opencode store that live leases hold is granted again when a seat login returns it, up to the login's concurrency across runs", async () => {
+    const shared = join(dir, "shared-store");
+    await mkdir(shared);
+    await Bun.write(join(shared, ".credentials.json"), "{}");
+    await Bun.write(join(shared, "auth.json"), "{}");
+    await Bun.write(
+      join(dir, "shared-seat.sh"),
+      ["#!/bin/sh", "printf '%s\\n' \"$QA_INTERNS_LEASE_PID\" > \"$(dirname \"$0\")/seat-$QA_INTERNS_INTERN.pid\"", "echo \"$(dirname \"$0\")/shared-store\"", ""].join("\n"),
+    );
+    for (const provider of ["claude", "opencode"] as const) {
+      const seat = login(`${provider}-pool`, provider, 3, ["sh", join(dir, "shared-seat.sh")]);
+      const other = await holder([seat], 1);
+      expect(other.count).toBe(1);
+      const scheduler = new Scheduler([seat]);
+      const one = held(await scheduler.acquire(`${provider}-1`));
+      const two = held(await scheduler.acquire(`${provider}-2`));
+      expect([one.store, two.store]).toEqual([await realpath(shared), await realpath(shared)]);
+      const pids = [await leasePid("h0"), await leasePid(`${provider}-1`), await leasePid(`${provider}-2`)];
+      expect(new Set(pids).size).toBe(3);
+      expect(pids.every(alive)).toBe(true);
+      expect(await scheduler.acquire(`${provider}-3`)).toBeNull();
+      expect(scheduler.refusals(`${provider}-3`)).toEqual([]);
+      expect(await ended(await leasePid(`${provider}-3`))).toBe(true);
+      other.child.kill("SIGKILL");
+      await other.child.exited;
+      const three = held(await scheduler.acquire(`${provider}-4`));
+      expect(three.store).toBe(one.store);
+      releaseAll([one, two, three]);
+    }
   });
 
   test("a failing seat command or a relative path moves on to the next login", async () => {
@@ -566,6 +597,7 @@ describe("Scheduler", () => {
       ["cursor", "/", "store / is the root of the file system"],
       ["codex", bare, `codex store ${bare} has no auth.json`],
       ["codex", codexStore, `duplicate store ${codexStore}, already used by login codex-1; one store serves one process at a time`],
+      ["opencode", codexStore, `duplicate store ${codexStore}, already used by login codex-1; one store serves one process at a time`],
       ["cursor", join(dir, "stores"), `store ${join(dir, "stores")} contains or is inside the store of login codex-1; a runner mounting one could read or change the other`],
       ["codex", linked, `${join(linked, "auth.json")} is a symbolic link; a runner can place a link in its own store to choose what another run mounts, so the credential is a regular file in the store`],
       ["cursor", through, `store ${through} resolves through a symbolic link to ${real}; a runner can place a link in its own store to choose what another run mounts`],

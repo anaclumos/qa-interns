@@ -385,12 +385,13 @@ export class Scheduler {
       else if (path !== null && !isDirectory(path)) refuse([`store ${path} is not an existing directory`]);
       else if (path !== null) {
         const found = resolveStore(login.provider, path);
-        const known = [...this.slots.flatMap((other) => other.store ?? []), ...this.live];
+        const shares = login.provider !== "codex";
+        const known = [...this.slots.flatMap((other) => other.store ?? []), ...[...this.live].filter((other) => !shares || other.store !== found.store)];
         const problems = storeProblems(login.provider, path, found, known);
         refuse(problems);
         if (problems.length === 0) {
           const mounted = mountedPath(login.provider, path);
-          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, 1, keeper, unclaim);
+          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, shares ? login.concurrency : 1, keeper, unclaim);
         }
       }
     } finally {
