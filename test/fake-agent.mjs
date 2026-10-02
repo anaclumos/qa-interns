@@ -199,8 +199,12 @@ const prompt = async (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit } = login();
+  const { limit, upgrade } = login();
   if (limit === true) return limited;
+  if (upgrade === true) {
+    say("\n\nUpgrade your plan to continue");
+    return endTurn;
+  }
   if (text.includes("/qa/out/groups.json")) return groupsTurn(text);
   if (text.includes("/qa/out/confirmation.json")) {
     const result = confirmationTurn();
