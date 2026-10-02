@@ -244,7 +244,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
       security_opt: ["no-new-privileges:true"],
       mem_limit: "2147483648",
       cpus: 2,
-      pids_limit: 1024,
+      pids_limit: 4096,
       ulimits: { fsize: 1073741824 },
       tmpfs: [
         "/tmp:rw,nosuid,nodev,size=1g",
