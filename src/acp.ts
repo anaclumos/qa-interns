@@ -11,6 +11,7 @@ import {
 import { appendFileSync, statSync } from "node:fs";
 import { z } from "zod";
 import { version } from "../package.json";
+import { oneLine, stripControl } from "./findings.ts";
 import type { ProviderSpec } from "./providers.ts";
 import { longestSecret, redact, redactAcross } from "./secrets.ts";
 
@@ -26,6 +27,8 @@ const chunkSchema = z.looseObject({
     update: z.looseObject({ sessionUpdate: z.enum(["agent_message_chunk", "agent_thought_chunk"]), content: z.looseObject({ type: z.literal("text"), text: z.string() }) }),
   }),
 });
+
+console.error = (...data: unknown[]) => process.stderr.write(`${oneLine(stripControl(redact(data.filter((item) => typeof item !== "object").join(" "))))}\n`);
 
 export type Session = {
   model: string | null;
