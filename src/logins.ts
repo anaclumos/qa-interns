@@ -153,11 +153,15 @@ type Grant = { store: string; mounted: string; where: string };
 
 type Slot = { login: Login; active: number; exhausted: boolean; store: Grant | null };
 
-function mountedPath(provider: Provider, store: string): string {
+function mountSource(provider: Provider, store: string): string {
   const mounts = providers[provider].mounts(store);
   const [mount] = mounts;
   if (mount === undefined || mounts.length > 1) throw new Error(`A lease locks one mount source, but a ${provider} store mounts ${mounts.length}`);
-  return realpathSync(mount.source);
+  return mount.source;
+}
+
+function mountedPath(provider: Provider, store: string): string {
+  return realpathSync(mountSource(provider, store));
 }
 
 const lockHeld = 75;
@@ -186,7 +190,7 @@ async function seatStore(command: string[], leasePid: number, intern: string): P
     .map((line) => line.trim())
     .filter((line) => line !== "")
     .at(-1);
-  return exitCode === 0 && store !== undefined && isAbsolute(store) && isDirectory(store) ? store : null;
+  return exitCode === 0 && store !== undefined ? store : null;
 }
 
 export function flock(file: string, ...options: string[]): number | null {
@@ -254,13 +258,17 @@ export class Scheduler {
   private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0, grok: 0, "opencode-go": 0 };
   private readonly exhaustedMounts = new Set<string>();
   private readonly live = new Set<Held>();
+  private readonly refused = new Map<string, string[]>();
 
   constructor(logins: Login[]) {
+    const known: Held[] = [];
     this.slots = logins.map((login) => {
       if (login.store === null) return { login, active: 0, exhausted: false, store: null };
       const found = resolveStore(login.provider, login.store);
-      if (found.credential === null) throw new Error(`${login.provider} store ${login.store} has no ${credentialName(login.provider)}`);
+      const problems = storeProblems(login.provider, login.store, found, known);
+      if (problems.length > 0) throw new Error(`login ${login.id}: ${problems.join("; ")}`);
       const store = { store: found.store, mounted: mountedPath(login.provider, login.store), where: `login ${login.id}` };
+      known.push(store);
       return { login, active: 0, exhausted: false, store };
     });
   }
@@ -275,6 +283,8 @@ export class Scheduler {
 
   async acquire(intern: string, avoid: Provider[]): Promise<Lease | null> {
     const tried = new Set<Slot>();
+    const refused: string[] = [];
+    this.refused.set(intern, refused);
     while (true) {
       const slot = this.next(avoid, tried);
       if (slot === undefined) return null;
@@ -282,7 +292,7 @@ export class Scheduler {
       slot.active += 1;
       let lease: Lease | null = null;
       try {
-        lease = await this.lease(slot, intern);
+        lease = await this.lease(slot, intern, refused);
       } finally {
         if (lease === null) slot.active -= 1;
       }
@@ -297,18 +307,27 @@ export class Scheduler {
     else slot.exhausted = true;
   }
 
-  private async lease(slot: Slot, intern: string): Promise<Lease | null> {
+  refusals(intern: string): string[] {
+    return this.refused.get(intern) ?? [];
+  }
+
+  private async lease(slot: Slot, intern: string, refused: string[]): Promise<Lease | null> {
     const { login } = slot;
     if (slot.store !== null) return this.grant(slot, slot.store, login.concurrency, null);
     if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
     const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
+    const refuse = (problems: string[]) => refused.push(...problems.map((problem) => `seat store of login ${login.id}: ${problem}`));
     let lease: Lease | null = null;
     try {
       const path = await seatStore(login.seat, keeper.pid, intern);
-      if (path !== null) {
+      if (path !== null && !isAbsolute(path)) refuse(["the last line its command printed is not an absolute path"]);
+      else if (path !== null && !isDirectory(path)) refuse([`store ${path} is not an existing directory`]);
+      else if (path !== null) {
         const found = resolveStore(login.provider, path);
         const known = [...this.slots.flatMap((other) => other.store ?? []), ...this.live];
-        if (storeProblems(login.provider, path, found, known).length === 0) {
+        const problems = storeProblems(login.provider, path, found, known);
+        refuse(problems);
+        if (problems.length === 0) {
           const mounted = mountedPath(login.provider, path);
           if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, 1, keeper);
         }
@@ -322,6 +341,16 @@ export class Scheduler {
   private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null): Lease | null {
     const unlock = lock(grant.mounted, slots);
     if (unlock === null) return null;
+    try {
+      const source = mountSource(slot.login.provider, grant.store);
+      const resolved = realpathSync(source);
+      if (source !== grant.mounted || resolved !== source) {
+        throw new Error(`${grant.where}: store ${grant.store} changed after its check; ${source} resolves to ${resolved}, not ${grant.mounted}`);
+      }
+    } catch (error) {
+      unlock();
+      throw error;
+    }
     this.used[slot.login.provider] += 1;
     const entry = { ...grant };
     this.live.add(entry);
