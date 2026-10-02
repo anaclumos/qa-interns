@@ -282,14 +282,11 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, work: 
       slot?.release();
       slot = undefined;
       lease.release();
+      await note(outcome instanceof RequestError ? `login ${lease.login.id} failed with ${message(outcome)}` : outcome.message);
+      await ctx.update(id, { status: "queued" });
       const next = await acquire(ctx, id);
-      const failure = outcome instanceof RequestError ? message(outcome) : null;
-      if (next === null) {
-        await note(failure === null ? outcome.message : `login ${lease.login.id} failed with ${failure}`);
-        return null;
-      }
-      const reason = failure === null ? "its quota command reported no quota" : `a login failure (${failure})`;
-      await note(`moved from ${lease.login.id} to ${next.login.id} after ${reason}`);
+      if (next === null) return null;
+      await note(`moved to ${next.login.id}`);
       lease = next;
       await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, model: null });
     }
@@ -481,7 +478,7 @@ function internState(id: string, role: InternState["role"], charter: string, gro
 function progress(intern: InternState): string {
   if (intern.status === "starting" || intern.status === "testing") return `${intern.id} ${intern.status} on ${intern.login} (${intern.provider})`;
   if (intern.detail === null) return `${intern.id} ${intern.status}`;
-  return `${intern.id} ${intern.status}: ${oneLine(redact(intern.detail)).slice(0, 300)}`;
+  return `${intern.id} ${intern.status}: ${oneLine(redact(intern.detail)).slice(-300)}`;
 }
 
 function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
