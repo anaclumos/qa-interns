@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -27,7 +27,7 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true };
+type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; stray?: true };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
@@ -741,18 +741,25 @@ USER qa
       await execute([...git, "commit", "-q", "-m", "Ledger with secrets"]);
       const token = `tok_${crypto.randomUUID()}`;
       const passwords = ["acme-owner-pass", "acme-editor-pass", "acme-viewer-pass", "globex-owner-pass"];
-      const loginsFile = await logins("secret", [{ id: "claude-1", provider: "claude" }]);
+      const loginsFile = await logins("secret", [{ id: "claude-1", provider: "claude", stray: true }]);
 
       const lines: string[] = [];
       const previous = process.env.QA_SECRET_TOKEN;
       process.env.QA_SECRET_TOKEN = token;
+      const stderr = spyOn(process.stderr, "write");
       let runDir: string;
+      let printed: string;
       try {
         runDir = await runQa({ dir: secret, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
       } finally {
+        printed = stderr.mock.calls.map(([chunk]) => String(chunk)).join("");
+        stderr.mockRestore();
         if (previous === undefined) delete process.env.QA_SECRET_TOKEN;
         else process.env.QA_SECRET_TOKEN = previous;
       }
+      expect(printed).toContain("Got response to unknown request [redacted]\n");
+      expect(printed).toContain("Invalid message\n");
+      expect(passwords.filter((value) => printed.includes(value))).toEqual([]);
 
       const state = await readState(runDir);
       expect(state.phase).toBe("done");
