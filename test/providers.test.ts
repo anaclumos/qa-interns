@@ -2,7 +2,7 @@ import { RequestError } from "@agentclientprotocol/sdk";
 import { describe, expect, test } from "bun:test";
 import path from "node:path";
 import { providers } from "../src/providers.ts";
-import type { Provider } from "../src/types.ts";
+import { providerNames, type Provider } from "../src/types.ts";
 
 const authRequired = new RequestError(-32000, "Authentication required", undefined);
 const cursorAuthRequired = new RequestError(-32000, "Authentication required", {
@@ -44,6 +44,12 @@ const grokRefreshFailed = new RequestError(
   "Unauthorized (401) from https://cli-chat-proxy.grok.com/v1/responses: authentication_error: token expired\n\n  Model:     grok-4.6\n  Auth:      ApiKey\n  Version:   1.0.41\n  Available: grok-4.6, grok-4.5",
 );
 
+const opencodeApiError = new RequestError(-32603, "Internal error: Invalid API key.", { service: "session", errorName: "APIError" });
+const opencodeUnknownModel = new RequestError(-32602, "Invalid params: model not found: opencode-go/glm-5.3-flash", {
+  providerId: "opencode-go",
+  modelId: "opencode-go/glm-5.3-flash",
+});
+
 const cases: [Provider, string, RequestError, boolean][] = [
   ["claude", "authentication required", authRequired, true],
   ["claude", "rate limit", claudeRateLimit, true],
@@ -75,6 +81,9 @@ const cases: [Provider, string, RequestError, boolean][] = [
   ["grok", "the codex usage limit shape", codexUsageLimit, false],
   ["claude", "the grok rate limit shape", grokRateLimit, false],
   ["codex", "the grok no credits shape", grokNoCredits, false],
+  ["opencode", "a rejected key", opencodeApiError, false],
+  ["opencode", "an unknown model", opencodeUnknownModel, false],
+  ["opencode", "authentication required", authRequired, false],
 ];
 
 describe("isLoginFailure", () => {
@@ -108,12 +117,18 @@ describe("mounts", () => {
     expect(providers.grok.env.GROK_AUTH_PATH).toBe(path.join(mounts[0]?.target ?? "", "auth.json"));
   });
 
-  test.each(["claude", "codex", "cursor", "grok"] as const)("%s rejects a relative store", (provider) => {
+  test("opencode mounts only auth.json from the store, read-only, into its data directory", () => {
+    const mounts = providers.opencode.mounts("/srv/qa-logins/opencode-1");
+    expect(mounts).toEqual([{ source: "/srv/qa-logins/opencode-1/auth.json", target: "/home/qa/.local/share/opencode/auth.json", readOnly: true }]);
+    expect(path.join(providers.opencode.env.XDG_DATA_HOME ?? "", "opencode", "auth.json")).toBe(mounts[0]?.target ?? "");
+  });
+
+  test.each([...providerNames])("%s rejects a relative store", (provider) => {
     expect(() => providers[provider].mounts("logins/one")).toThrow('login store must be an absolute path, got "logins/one"');
   });
 
   test("the provider env points at or into every mount target", () => {
-    for (const provider of ["claude", "codex", "cursor", "grok"] as const) {
+    for (const provider of providerNames) {
       const spec = providers[provider];
       const roots = Object.values(spec.env).filter((value) => value.startsWith("/"));
       for (const mount of [...spec.mounts("/srv/qa-logins/x"), ...spec.files]) {
@@ -121,5 +136,28 @@ describe("mounts", () => {
         expect(roots.some(related)).toBe(true);
       }
     }
+  });
+});
+
+describe("modelConfig", () => {
+  test("a Cursor model with parameters in brackets sets the model name, then each parameter", () => {
+    expect(providers.cursor.modelConfig("grok-4.7[context=256k,reasoning_effort=high,fast=false]")).toEqual([
+      { configId: "model", value: "grok-4.7" },
+      { configId: "context", value: "256k" },
+      { configId: "reasoning_effort", value: "high" },
+      { configId: "fast", value: "false" },
+    ]);
+    expect(providers.cursor.modelConfig("default[]")).toEqual([{ configId: "model", value: "default" }]);
+    expect(providers.cursor.modelConfig("grok-4.7")).toEqual([{ configId: "model", value: "grok-4.7" }]);
+  });
+
+  test("a Cursor model with a malformed parameter list throws", () => {
+    expect(() => providers.cursor.modelConfig("grok-4.7[fast=false")).toThrow("Cursor model grok-4.7[fast=false does not end with ]");
+    expect(() => providers.cursor.modelConfig("grok-4.7[fast]")).toThrow("Cursor model grok-4.7[fast] has a parameter that is not name=value: fast");
+    expect(() => providers.cursor.modelConfig("grok-4.7[=false]")).toThrow("has a parameter that is not name=value: =false");
+  });
+
+  test.each(["claude", "codex", "grok", "opencode"] as const)("%s sets the model config option to the whole value", (provider) => {
+    expect(providers[provider].modelConfig("model[a=b]")).toEqual([{ configId: "model", value: "model[a=b]" }]);
   });
 });

@@ -175,9 +175,10 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     expect(readFileSync(path.join(out, finding.evidence[0]), "utf8")).toBe(page);
   });
 
-  test("a continue prompt makes no tool call", async () => {
+  test("a continue prompt makes no tool call, and the session keeps the count of every turn", async () => {
     const result = await session.prompt("You have 12 minutes left. Keep testing your charter. No finding files were rejected so far.");
     expect(result).toEqual({ stopReason: "end_turn", toolCalls: 0, lastMessage: "Nothing more to test." });
+    expect(session.toolCalls()).toBe(1);
   });
 
   test("a usage limit rejects the prompt with a RequestError that Claude counts as a login failure", async () => {
@@ -277,6 +278,32 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
       expect(set?.message.params).toEqual({ sessionId: "fake-session-1", configId: "model", value: "fake-model-2" });
     } finally {
       await chosen.close();
+    }
+  });
+
+  test("a Cursor model with parameters in brackets asks for the parameterized model picker, then sets the model and each parameter", async () => {
+    const cursor = await openSession({
+      container: agent,
+      provider: { ...providers.cursor, adapter: ["node", "/opt/qa/fake-agent.mjs"] },
+      model: "fake-model-2[fast=false]",
+      transcript: path.join(internDir, "cursor-transcript.jsonl"),
+      adapterLog: path.join(internDir, "cursor-adapter.log"),
+    });
+    try {
+      expect(cursor.model).toBe("fake-model-2");
+      const sent = readFileSync(path.join(internDir, "cursor-transcript.jsonl"), "utf8")
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line): Line => JSON.parse(line))
+        .filter((line) => line.from === "client")
+        .map((line) => line.message);
+      expect(sent.find((message) => message.method === "initialize")?.params).toMatchObject({ clientCapabilities: { _meta: { parameterizedModelPicker: true } } });
+      expect(sent.filter((message) => message.method === "session/set_config_option").map((message) => message.params)).toEqual([
+        { sessionId: "fake-session-1", configId: "model", value: "fake-model-2" },
+        { sessionId: "fake-session-1", configId: "fast", value: "false" },
+      ]);
+    } finally {
+      await cursor.close();
     }
   });
 

@@ -14,6 +14,7 @@ const agents = [
   ["codex-acp", "--version"],
   ["cursor-agent", "--version"],
   ["grok", "--version"],
+  ["opencode", "--version"],
   ["agent-browser", "--version"],
 ];
 

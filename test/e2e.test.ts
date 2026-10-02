@@ -27,15 +27,15 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; stray?: true };
+type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
-  for (const { id: login, provider, ...credentials } of entries) {
+  for (const { id: login, provider, quota, ...credentials } of entries) {
     const store = join(root, "stores", name, login);
     await mkdir(store, { recursive: true });
     await Bun.write(join(store, provider === "claude" ? ".credentials.json" : "auth.json"), JSON.stringify(credentials));
-    list.push({ id: login, provider, store });
+    list.push({ id: login, provider, store, quota });
   }
   const file = join(root, `${name}-logins.json`);
   await Bun.write(file, JSON.stringify({ logins: list }));
@@ -182,6 +182,7 @@ USER qa
       const state = await readState(runDir);
       expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger" }, options: { interns: 2 } });
       expect(state.options.concurrency).toBeGreaterThanOrEqual(1);
+      expect(state.options.confirmConcurrency).toBe(1);
       expect(state.interns.map((entry) => [entry.id, entry.role, entry.status, entry.findings, entry.model])).toEqual([
         ["i1", "intern", "done", 1, "fake-model-1"],
         ["i2", "intern", "done", 1, "fake-model-1"],
@@ -209,7 +210,7 @@ USER qa
         reproductions: ["i1", "i2", "c1"],
         confirmation: {
           intern: "c1",
-          provider: "cursor",
+          provider: "grok",
           result: { reproduced: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
           error: null,
         },
@@ -258,6 +259,39 @@ USER qa
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "the confirming phase runs one confirmation per group at once, more than the run has testing interns",
+    async () => {
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("wide", [
+          { id: "claude-wide-1", provider: "claude", second: true },
+          { id: "claude-wide-2", provider: "claude", second: true },
+        ]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null, options: { interns: 1, concurrency: 1, confirmConcurrency: 2 } });
+      const confirmations = state.interns.filter((entry) => entry.role === "confirm");
+      expect(confirmations.map((entry) => [entry.id, entry.status, entry.detail])).toEqual([
+        ["c1", "done", "reproduced"],
+        ["c2", "done", "reproduced"],
+      ]);
+      const starts = confirmations.map((entry) => Date.parse(entry.startedAt ?? ""));
+      const ends = confirmations.map((entry) => Date.parse(entry.endedAt ?? ""));
+      expect(Math.max(...starts)).toBeLessThan(Math.min(...ends));
     },
     timeout,
   );
@@ -353,7 +387,7 @@ USER qa
       expect(lines[0]).toBe(runDir);
       expect(lines.filter((line) => line.startsWith("phase "))).toEqual(["phase preparing", "phase building", "phase confirming", "phase reporting"]);
       const state = await readState(runDir);
-      expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger", commit: next }, options: { interns: 0, minutes: 0, confirmMinutes: 0.5 } });
+      expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger", commit: next }, options: { interns: 0, minutes: 0, confirmMinutes: 0.5, concurrency: 0, confirmConcurrency: 1 } });
       expect(state.interns.map((entry) => [entry.id, entry.role, entry.group, entry.charter, entry.status, entry.detail])).toEqual([["c1", "confirm", "g1", title, "done", "reproduced"]]);
       const prompts = (await Bun.file(join(runDir, "interns", "c1", "transcript.jsonl")).text())
         .split("\n")
@@ -452,6 +486,9 @@ USER qa
 
       expect(lines).toContain("i1 starting on claude-charter-limit (claude)");
       expect(lines).toContain("i1 starting on claude-confirm-limit (claude)");
+      const queued = lines.indexOf(`i1 queued: login claude-charter-limit failed with -32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"}`);
+      expect(queued).toBeGreaterThan(lines.indexOf("i1 starting on claude-charter-limit (claude)"));
+      expect(queued).toBeLessThan(lines.indexOf("i1 starting on claude-confirm-limit (claude)"));
       expect(internalSubnet(runDir, "i1")).not.toBe(first);
       expect(lines).toContain("c1 starting on claude-confirm-limit (claude)");
       expect(lines).toContain("c1 starting on claude-no-confirm (claude)");
@@ -530,6 +567,88 @@ USER qa
       const state = await readState(runDir);
       expect(state.phase).toBe("failed");
       expect(intern(state, "i1")).toMatchObject({ login: "cursor-upgrade", status: "failed", findings: 0, detail });
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an intern whose agent stops at a plan limit moves to the next login when the quota command of its login exits 1, and that login stays exhausted for the run",
+    async () => {
+      const lines: string[] = [];
+      const count = join(root, "quota-count");
+      const quota = ["sh", "-c", `n=$(cat '${count}' 2>/dev/null || echo 0); echo $((n + 1)) > '${count}'; [ "$n" -eq 0 ]`];
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("quota", [
+          { id: "cursor-quota", provider: "cursor", quota, upgrade: true, model: "fake-model-a" },
+          { id: "claude-next", provider: "claude", model: "fake-model-b" },
+        ]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      expect(lines).toContain("i1 starting on cursor-quota (cursor)");
+      expect(lines).toContain("i1 starting on claude-next (claude)");
+      const state = await readState(runDir);
+      expect(state.phase).toBe("done");
+      expect(intern(state, "i1")).toMatchObject({
+        login: "claude-next",
+        model: "fake-model-b",
+        status: "done",
+        findings: 1,
+        detail: 'stopped at minute 0: "\n\nUpgrade your plan to continue"; the quota command of login cursor-quota reported no quota; moved to claude-next; stopped at minute 0: "Nothing more to test."',
+      });
+      expect(state.interns.map((entry) => [entry.id, entry.login, entry.status])).toEqual([
+        ["i1", "claude-next", "done"],
+        ["c1", "claude-next", "done"],
+      ]);
+      expect(await Bun.file(count).text()).toBe("2\n");
+
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      const findings: Finding[] = report.groups[0].findings;
+      expect(findings.map((finding) => [finding.id, finding.environment.provider, finding.environment.model])).toEqual([["i1/out-2/fake-home", "claude", "fake-model-b"]]);
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an intern whose turn makes no tool call before its time box ends, as OpenCode does at an OpenCode Go usage limit, fails, and so does a run with no other intern",
+    async () => {
+      const lines: string[] = [];
+      const detail = "made no tool call in its 0.5 minutes";
+      const run = runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("hang", [{ id: "grok-hang", provider: "grok", hang: true }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      await expect(run).rejects.toThrow(`No testing intern completed: i1 failed: ${detail}`);
+      const runDir = lines[0];
+      if (runDir === undefined) throw new Error("runQa printed no run directory");
+      const state = await readState(runDir);
+      expect(state.phase).toBe("failed");
+      expect(intern(state, "i1")).toMatchObject({ login: "grok-hang", status: "failed", findings: 0, detail });
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
@@ -658,6 +777,50 @@ USER qa
       }
       expect(await leftovers(runId)).toEqual([]);
       expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
+    },
+    timeout,
+  );
+
+  test(
+    "ask waits for a login that another process holds and runs once that process ends, and fails at once when no process holds a login",
+    async () => {
+      const runId = newRunId();
+      const options = await askOptions(runId, "score");
+      const script = join(root, "holder.ts");
+      await Bun.write(
+        script,
+        [
+          `import { loadLogins, Scheduler } from ${JSON.stringify(join(import.meta.dir, "..", "src", "logins.ts"))};`,
+          "const lease = await new Scheduler(await loadLogins(process.argv[2])).acquire(\"h1\");",
+          "console.log(lease === null ? \"none\" : \"held\");",
+          "for await (const _ of Bun.stdin.stream()) {}",
+          "",
+        ].join("\n"),
+      );
+      const holder = Bun.spawn([process.execPath, script, options.loginsFile], { env: { ...process.env }, stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+      try {
+        const { value } = await holder.stdout.getReader().read();
+        expect(new TextDecoder().decode(value).trim()).toBe("held");
+        let settled = false;
+        const answer = ask(options).finally(() => {
+          settled = true;
+        });
+        await Bun.sleep(3_000);
+        expect(settled).toBe(false);
+        holder.stdin.end();
+        await holder.exited;
+        expect(await answer).toEqual({ groups: [] });
+      } finally {
+        holder.kill("SIGKILL");
+        await holder.exited;
+      }
+      expect(await leftovers(runId)).toEqual([]);
+
+      const seatless = await askOptions(newRunId(), "score");
+      const file = join(root, `seatless-${runId}-logins.json`);
+      await Bun.write(file, JSON.stringify({ logins: [{ id: "claude-seatless", provider: "claude", seat: ["false"] }] }));
+      await expect(ask({ ...seatless, loginsFile: file })).rejects.toThrow("No login has spare capacity for score");
+      expect(await leftovers(seatless.runId)).toEqual([]);
     },
     timeout,
   );

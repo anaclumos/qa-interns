@@ -1,13 +1,14 @@
 import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
-import { closeSync, lstatSync, mkdirSync, openSync, realpathSync, statSync } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { providers } from "./providers.ts";
 import { readJson, stateDir } from "./state.ts";
 import { errorCode } from "./findings.ts";
-import { trackGroup } from "./target.ts";
+import { redact } from "./secrets.ts";
+import { capture, trackGroup } from "./target.ts";
 import { providerNames, type Login, type Provider } from "./types.ts";
 
 export const defaultLoginsPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "qa-interns", "logins.json");
@@ -23,12 +24,24 @@ const entrySchema = z.strictObject({
     .refine(isDirectory, { error: (issue) => `${JSON.stringify(issue.input)} is not an existing directory` })
     .optional(),
   seat: z.array(z.string().min(1)).min(1).optional(),
+  quota: z.array(z.string().min(1)).min(1).optional(),
   concurrency: z.int().positive().default(1),
   model: z.string().min(1).optional(),
 });
 
+const unreachable = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG", "ELOOP", "EACCES"]);
+
+function stat(path: string): Stats | null {
+  try {
+    return statSync(path);
+  } catch (error) {
+    if (unreachable.has(errorCode(error) ?? "")) return null;
+    throw error;
+  }
+}
+
 function isDirectory(path: string): boolean {
-  return statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
+  return stat(path)?.isDirectory() === true;
 }
 
 function rawId(value: unknown): string | null {
@@ -45,7 +58,20 @@ function credentialName(provider: Provider): string {
 
 function resolveStore(provider: Provider, store: string): Store {
   const credential = join(store, credentialName(provider));
-  return { store: realpathSync(store), credential: statSync(credential, { throwIfNoEntry: false })?.isFile() === true ? realpathSync(credential) : null };
+  return { store: realpathSync(store), credential: stat(credential)?.isFile() === true ? realpathSync(credential) : null };
+}
+
+const opencodeGoAuth = z.strictObject({ "opencode-go": z.object({ type: z.literal("api"), key: z.string().min(1) }) });
+
+function holdsOneOpencodeGoKey(file: string): boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
+  return opencodeGoAuth.safeParse(value).success;
 }
 
 function claudeConfigDirs(): string[] {
@@ -69,6 +95,10 @@ function storeProblems(provider: Provider, path: string, found: Store, known: He
   if (found.credential === null) problems.push(`${provider} store ${path} has no ${name}`);
   else if (lstatSync(join(path, name)).isSymbolicLink()) {
     problems.push(`${join(path, name)} is a symbolic link; a runner can place a link in its own store to choose what another run mounts, so the credential is a regular file in the store`);
+  } else if (provider === "opencode" && !holdsOneOpencodeGoKey(found.credential)) {
+    problems.push(
+      `${join(path, name)} must hold one opencode-go API key and nothing else; a runner can read every credential in it, and OpenCode loads remote config, which can add MCP servers, for a wellknown entry`,
+    );
   }
   if (provider === "claude") {
     for (const config of claudeConfigDirs()) {
@@ -122,6 +152,7 @@ export async function loadLogins(file: string): Promise<Login[]> {
       provider: entry.provider,
       store: entry.store ?? null,
       seat: entry.seat ?? null,
+      quota: entry.quota ?? null,
       concurrency: entry.concurrency,
       model: entry.model ?? null,
     });
@@ -148,6 +179,14 @@ function mountedPath(provider: Provider, store: string): string {
 }
 
 const lockHeld = 75;
+const quotaMs = 60_000;
+
+export async function hasQuota(login: Login): Promise<boolean> {
+  if (login.quota === null) return true;
+  const { code, stderr } = await capture(login.quota, { timeout: quotaMs });
+  if (code === 0 || code === 1) return code === 0;
+  throw new Error(`The quota command of login ${login.id} exited with ${code}: ${redact(stderr).trim().slice(-2000)}`);
+}
 
 async function seatStore(command: string[], leasePid: number, intern: string): Promise<string | null> {
   const child = trackGroup(Bun.spawn(command, {
@@ -200,45 +239,89 @@ function ancestors(path: string): string[] {
   return found;
 }
 
-function lock(mounted: string, slots: number): (() => void) | null {
+function locksDir(): string {
   const dir = join(stateDir(), "locks");
   mkdirSync(dir, { recursive: true });
-  const file = (path: string, kind: string) => join(dir, `${createHash("sha256").update(path).digest("hex")}-${kind}.lock`);
-  const take = (lockFile: string, ...options: string[]) => {
-    const fd = flock(lockFile, ...options);
-    if (fd === null) throw new Error(`${lockFile} is locked by a process that does not hold ${join(dir, "acquire.lock")}`);
-    return fd;
-  };
-  const above = ancestors(mounted);
-  const held: number[] = [];
-  const release = () => {
-    for (const fd of held) closeSync(fd);
-  };
-  const mutex = take(join(dir, "acquire.lock"), "--exclusive");
+  return dir;
+}
+
+function lockFile(dir: string, path: string, kind: string): string {
+  return join(dir, `${createHash("sha256").update(path).digest("hex")}-${kind}.lock`);
+}
+
+function take(dir: string, file: string, ...options: string[]): number {
+  const fd = flock(file, ...options);
+  if (fd === null) throw new Error(`${file} is locked by a process that does not hold ${join(dir, "acquire.lock")}`);
+  return fd;
+}
+
+function exclusive<T>(dir: string, body: () => T): T {
+  const mutex = take(dir, join(dir, "acquire.lock"), "--exclusive");
   try {
-    for (const test of [file(mounted, "under"), ...above.map((path) => file(path, "at"))]) {
-      const fd = flock(test, "--exclusive", "--nonblock");
-      if (fd === null) return null;
-      closeSync(fd);
-    }
-    for (let slot = 0; slot < slots && held.length === 0; slot++) {
-      const fd = flock(file(mounted, String(slot)), "--exclusive", "--nonblock");
-      if (fd !== null) held.push(fd);
-    }
-    if (held.length === 0) return null;
-    for (const share of [file(mounted, "at"), ...above.map((path) => file(path, "under"))]) held.push(take(share, "--shared", "--nonblock"));
-  } catch (error) {
-    release();
-    throw error;
+    return body();
   } finally {
     closeSync(mutex);
   }
-  return release;
+}
+
+function claim(key: string): () => void {
+  const dir = locksDir();
+  const fd = exclusive(dir, () => take(dir, lockFile(dir, key, "leased"), "--shared", "--nonblock"));
+  return () => closeSync(fd);
+}
+
+function claimed(key: string): boolean {
+  const dir = locksDir();
+  return exclusive(dir, () => {
+    const fd = flock(lockFile(dir, key, "leased"), "--exclusive", "--nonblock");
+    if (fd !== null) closeSync(fd);
+    return fd === null;
+  });
+}
+
+function slotLock(dir: string, mounted: string, slots: number): number | null {
+  for (const test of [lockFile(dir, mounted, "under"), ...ancestors(mounted).map((path) => lockFile(dir, path, "at"))]) {
+    const fd = flock(test, "--exclusive", "--nonblock");
+    if (fd === null) return null;
+    closeSync(fd);
+  }
+  for (let slot = 0; slot < slots; slot++) {
+    const fd = flock(lockFile(dir, mounted, String(slot)), "--exclusive", "--nonblock");
+    if (fd !== null) return fd;
+  }
+  return null;
+}
+
+function blocked(mounted: string, slots: number): boolean {
+  const dir = locksDir();
+  return exclusive(dir, () => {
+    const fd = slotLock(dir, mounted, slots);
+    if (fd !== null) closeSync(fd);
+    return fd === null;
+  });
+}
+
+function lock(mounted: string, slots: number): (() => void) | null {
+  const dir = locksDir();
+  return exclusive(dir, () => {
+    const fd = slotLock(dir, mounted, slots);
+    if (fd === null) return null;
+    const held = [fd];
+    const release = () => {
+      for (const each of held) closeSync(each);
+    };
+    try {
+      for (const share of [lockFile(dir, mounted, "at"), ...ancestors(mounted).map((path) => lockFile(dir, path, "under"))]) held.push(take(dir, share, "--shared", "--nonblock"));
+    } catch (error) {
+      release();
+      throw error;
+    }
+    return release;
+  });
 }
 
 export class Scheduler {
   private readonly slots: Slot[];
-  private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0, grok: 0 };
   private readonly exhaustedMounts = new Set<string>();
   private readonly live = new Set<Held>();
   private readonly refused = new Map<string, string[]>();
@@ -256,6 +339,10 @@ export class Scheduler {
     });
   }
 
+  leased(): boolean {
+    return this.slots.some((slot) => !slot.exhausted && (slot.store === null ? claimed(JSON.stringify(slot.login.seat)) : blocked(slot.store.mounted, slot.login.concurrency)));
+  }
+
   capacity(): number {
     return this.slots.filter((slot) => !slot.exhausted).reduce((sum, slot) => sum + slot.login.concurrency, 0);
   }
@@ -264,20 +351,24 @@ export class Scheduler {
     return [...new Set(this.slots.filter((slot) => !slot.exhausted).map((slot) => slot.login.provider))];
   }
 
-  async acquire(intern: string, avoid: Provider[]): Promise<Lease | null> {
+  async acquire(intern: string): Promise<Lease | null> {
     const tried = new Set<Slot>();
     const refused: string[] = [];
     this.refused.set(intern, refused);
     while (true) {
-      const slot = this.next(avoid, tried);
+      const slot = this.next(tried);
       if (slot === undefined) return null;
       tried.add(slot);
+      const unclaim = slot.store === null ? claim(JSON.stringify(slot.login.seat)) : () => {};
       slot.active += 1;
       let lease: Lease | null = null;
       try {
-        lease = await this.lease(slot, intern, refused);
+        lease = await this.lease(slot, intern, refused, unclaim);
       } finally {
-        if (lease === null) slot.active -= 1;
+        if (lease === null) {
+          slot.active -= 1;
+          unclaim();
+        }
       }
       if (lease !== null) return lease;
     }
@@ -294,9 +385,13 @@ export class Scheduler {
     return this.refused.get(intern) ?? [];
   }
 
-  private async lease(slot: Slot, intern: string, refused: string[]): Promise<Lease | null> {
+  private async lease(slot: Slot, intern: string, refused: string[], unclaim: () => void): Promise<Lease | null> {
     const { login } = slot;
-    if (slot.store !== null) return this.grant(slot, slot.store, login.concurrency, null);
+    if (!(await hasQuota(login))) {
+      slot.exhausted = true;
+      return null;
+    }
+    if (slot.store !== null) return this.grant(slot, slot.store, login.concurrency, null, unclaim);
     if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
     const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
     const refuse = (problems: string[]) => refused.push(...problems.map((problem) => `seat store of login ${login.id}: ${problem}`));
@@ -312,7 +407,7 @@ export class Scheduler {
         refuse(problems);
         if (problems.length === 0) {
           const mounted = mountedPath(login.provider, path);
-          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, 1, keeper);
+          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, 1, keeper, unclaim);
         }
       }
     } finally {
@@ -321,7 +416,7 @@ export class Scheduler {
     return lease;
   }
 
-  private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null): Lease | null {
+  private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null, unclaim: () => void): Lease | null {
     const unlock = lock(grant.mounted, slots);
     if (unlock === null) return null;
     try {
@@ -334,7 +429,6 @@ export class Scheduler {
       unlock();
       throw error;
     }
-    this.used[slot.login.provider] += 1;
     const entry = { ...grant };
     this.live.add(entry);
     let released = false;
@@ -349,19 +443,12 @@ export class Scheduler {
         this.live.delete(entry);
         keeper?.kill();
         unlock();
+        unclaim();
       },
     };
   }
 
-  private next(avoid: Provider[], tried: Set<Slot>): Slot | undefined {
-    const spare = (slot: Slot) => slot.login.concurrency - slot.active;
-    return this.slots
-      .filter((slot) => !slot.exhausted && !tried.has(slot) && spare(slot) > 0)
-      .sort(
-        (a, b) =>
-          Number(avoid.includes(a.login.provider)) - Number(avoid.includes(b.login.provider)) ||
-          this.used[a.login.provider] - this.used[b.login.provider] ||
-          spare(b) - spare(a),
-      )[0];
+  private next(tried: Set<Slot>): Slot | undefined {
+    return this.slots.find((slot) => !slot.exhausted && !tried.has(slot) && slot.active < slot.login.concurrency);
   }
 }

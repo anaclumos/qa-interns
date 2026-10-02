@@ -29,7 +29,9 @@ Commands:
       Run interns against the target at the commit, or with --dirty against a
       copy of its working tree: the tracked files as they are and the untracked
       files that Git does not ignore. Defaults: HEAD, 4 interns, 30 minutes
-      each, 10 minutes per confirmation. Prints the run directory first.
+      each, 10 minutes per confirmation. The testing interns run at once, then
+      one confirming intern per group of findings, all at once, as far as login
+      capacity and free network slots allow. Prints the run directory first.
       With --on-end, run the shell command when the run ends, done, failed, or
       interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
   replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]

@@ -7,6 +7,7 @@ const sessionId = "fake-session-1";
 const pending = new Map();
 let nextId = 1;
 let cancelTurn = null;
+let chosenModel = null;
 
 const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
 
@@ -148,6 +149,16 @@ const charterTurn = async (text) => {
     observed: "The home page body contains the fake defect marker.",
     evidence: ["evidence/page.html"],
   });
+  if (login().second === true) {
+    writeJson("/qa/out/findings/fake-second.json", {
+      title: "Home page shows a second fake defect",
+      kind: "error",
+      conditions: { account: "no account, signed out", data: "freshly seeded data", viewport: "1280x800", browser: "fresh profile", network: "normal" },
+      steps: [`Open ${url}`],
+      observed: "The home page body contains a second fake defect marker.",
+      evidence: ["evidence/page.html"],
+    });
+  }
   const cut = Math.floor((account?.password.length ?? 0) / 2);
   if (account !== undefined) say(`Signed in as ${account.email} with ${account.password.slice(0, cut)}`);
   update({ sessionUpdate: "tool_call_update", toolCallId: "call-1", status: "completed" });
@@ -203,8 +214,9 @@ const prompt = async (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit, upgrade } = login();
+  const { limit, upgrade, hang } = login();
   if (limit === true) return limited;
+  if (hang === true) return slowTurn();
   if (upgrade === true) {
     say("\n\nUpgrade your plan to continue");
     return endTurn;
@@ -237,10 +249,15 @@ const handlers = {
     return { result: { sessionId, configOptions: [modelOption(login().model ?? "fake-model-1")] } };
   },
   "session/set_config_option": (params) => {
+    if (params.configId === "fast" && (params.value === "true" || params.value === "false")) {
+      const fast = { id: "fast", name: "Fast", category: "model_config", type: "select", currentValue: params.value, options: [{ value: "false", name: "false" }, { value: "true", name: "true" }] };
+      return { result: { configOptions: [modelOption(chosenModel), fast] } };
+    }
     const option = modelOption(params.value);
     if (params.configId !== "model" || !option.options.some((entry) => entry.value === params.value)) {
       return { error: { code: -32602, message: "Invalid params", data: { message: `Invalid model value: ${params.value}` } } };
     }
+    chosenModel = params.value;
     return { result: { configOptions: [option] } };
   },
   "session/set_mode": () => ({ result: {} }),

@@ -23,14 +23,14 @@ import {
   type HeldSlot,
 } from "./environment.ts";
 import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
-import { loadLogins, Scheduler, type Lease } from "./logins.ts";
+import { hasQuota, loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
 import { lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
-import type { Confirmation, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
+import type { Confirmation, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Login, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
   dir: string;
@@ -67,8 +67,10 @@ export type AskOptions = {
 type Turn = Awaited<ReturnType<Session["prompt"]>>;
 type Limit = <T>(task: () => Promise<T>) => Promise<T>;
 type Note = (text: string) => Promise<void>;
-type Work<T> = (session: Session, attempt: number, env: Environment, provider: Provider, note: Note) => Promise<T>;
+type Work<T> = (session: Session, attempt: number, env: Environment, login: Login, note: Note) => Promise<T>;
 type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "failed"; error: unknown };
+
+class NoQuota extends Error {}
 
 type Context = {
   runId: string;
@@ -79,8 +81,7 @@ type Context = {
   sessions: Set<Session>;
   teardowns: string[];
   environments: EnvironmentStats[];
-  held: number;
-  waiting: (() => void)[];
+  waiting: Set<() => void>;
   stopping: boolean;
   update(id: string, patch: Partial<InternState>): Promise<void>;
 };
@@ -90,6 +91,7 @@ const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
 const stopWaitMs = 30_000;
+const loginWaitMs = 30_000;
 const noLogin = "no login has spare capacity";
 const copyName = "up";
 
@@ -148,19 +150,18 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     sessions: new Set(),
     teardowns: [],
     environments: [],
-    held: 0,
-    waiting: [],
+    waiting: new Set(),
     stopping: false,
     update,
   };
 }
 
-async function acquire(ctx: Context, id: string, avoid: Provider[]): Promise<Lease | null> {
+async function acquire(ctx: Context, id: string): Promise<Lease | null> {
   for (;;) {
     checkStopping(ctx);
-    const lease = await ctx.scheduler.acquire(id, avoid);
+    const leased = ctx.scheduler.leased();
+    const lease = await ctx.scheduler.acquire(id);
     if (lease !== null) {
-      ctx.held += 1;
       let released = false;
       return {
         ...lease,
@@ -168,13 +169,23 @@ async function acquire(ctx: Context, id: string, avoid: Provider[]): Promise<Lea
           if (released) return;
           released = true;
           lease.release();
-          ctx.held -= 1;
-          for (const wake of ctx.waiting.splice(0)) wake();
+          for (const wake of ctx.waiting) wake();
         },
       };
     }
-    if (ctx.held === 0 || ctx.scheduler.capacity() === 0) return null;
-    await new Promise<void>((resolve) => ctx.waiting.push(resolve));
+    if (!ctx.scheduler.leased()) {
+      if (!leased) return null;
+      continue;
+    }
+    await new Promise<void>((resolve) => {
+      const wake = () => {
+        clearTimeout(timer);
+        ctx.waiting.delete(wake);
+        resolve();
+      };
+      const timer = setTimeout(wake, loginWaitMs);
+      ctx.waiting.add(wake);
+    });
   }
 }
 
@@ -199,7 +210,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
   };
 }
 
-async function attempt<T>(ctx: Context, id: string, count: number, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<{ value: T } | RequestError> {
+async function attempt<T>(ctx: Context, id: string, count: number, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<{ value: T } | RequestError | NoQuota> {
   const provider = providers[lease.login.provider];
   let session: Session | undefined;
   const done = new AbortController();
@@ -218,13 +229,13 @@ async function attempt<T>(ctx: Context, id: string, count: number, env: Environm
     const live: Note = async (text) => {
       if (!stopped) await note(text);
     };
-    const result = await Promise.race([work(session, count, env, lease.login.provider, live).then((value) => ({ value })), watchOut(env.out, done.signal)]);
+    const result = await Promise.race([work(session, count, env, lease.login, live).then((value) => ({ value })), watchOut(env.out, done.signal)]);
     if (typeof result !== "string") return result;
     stopped = true;
     await execute(["docker", "kill", env.runner]);
     throw new Error(`${result}, so its runner was stopped`);
   } catch (error) {
-    if (error instanceof RequestError && provider.isLoginFailure(error)) return error;
+    if (error instanceof NoQuota || (error instanceof RequestError && provider.isLoginFailure(error))) return error;
     throw error;
   } finally {
     done.abort();
@@ -235,8 +246,8 @@ async function attempt<T>(ctx: Context, id: string, count: number, env: Environm
   }
 }
 
-async function leased<T>(ctx: Context, id: string, target: Target | null, avoid: Provider[], work: Work<T>, note: Note): Promise<{ value: T } | null> {
-  let lease = await acquire(ctx, id, avoid);
+async function leased<T>(ctx: Context, id: string, target: Target | null, work: Work<T>, note: Note): Promise<{ value: T } | null> {
+  let lease = await acquire(ctx, id);
   if (lease === null) return null;
   const project = `qa-${ctx.runId}-${id}`;
   let slot: HeldSlot | undefined;
@@ -264,15 +275,16 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
         environment.readyAt = now();
       });
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
-      if (!(outcome instanceof RequestError)) return outcome;
+      if (!(outcome instanceof Error)) return outcome;
       ctx.scheduler.exhaust(lease);
-      await note(`login ${lease.login.id} failed with ${message(outcome)}`);
+      await note(outcome instanceof RequestError ? `login ${lease.login.id} failed with ${message(outcome)}` : outcome.message);
       await teardown();
       started = false;
       slot?.release();
       slot = undefined;
       lease.release();
-      const next = await acquire(ctx, id, avoid);
+      await ctx.update(id, { status: "queued" });
+      const next = await acquire(ctx, id);
       if (next === null) return null;
       await note(`moved to ${next.login.id}`);
       lease = next;
@@ -291,7 +303,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, avoid:
   }
 }
 
-async function agentTask<T>(ctx: Context, id: string, target: Target | null, avoid: Provider[], work: Work<T>): Promise<Outcome<T>> {
+async function agentTask<T>(ctx: Context, id: string, target: Target | null, work: Work<T>): Promise<Outcome<T>> {
   const notes: string[] = [];
   const detail = () => (notes.length === 0 ? null : stripControl(notes.join("; ")));
   const note = async (text: string) => {
@@ -300,7 +312,7 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, avo
   };
   let outcome: Outcome<T>;
   try {
-    const result = await leased(ctx, id, target, avoid, work, note);
+    const result = await leased(ctx, id, target, work, note);
     outcome = result === null ? { status: "limited" } : { status: "done", value: result.value };
     if (result === null) notes.push(noLogin, ...ctx.scheduler.refusals(id));
   } catch (error) {
@@ -347,7 +359,7 @@ function promptEnvironment(target: Target, env: Environment, minutes: number): P
 }
 
 async function askWith<T>(ctx: Context, id: string, prompt: string, file: string, parse: (raw: string) => T): Promise<T> {
-  const outcome = await agentTask(ctx, id, null, [], async (session, attempt) => {
+  const outcome = await agentTask(ctx, id, null, async (session, attempt) => {
     const path = join(ctx.runDir, outDir(id, attempt), file);
     await rm(path, { force: true });
     let parsed = null as { value: T } | null;
@@ -379,23 +391,24 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
 
 async function explore(ctx: Context, intern: InternState, target: Target, minutes: number): Promise<{ outcome: Outcome<void>; findings: Finding[]; rejected: Rejected[] }> {
   const attempts: { attempt: number; environment: FindingEnvironment }[] = [];
-  const outcome = await agentTask(ctx, intern.id, target, [], async (session, attempt, env, provider, note) => {
-    const environment = { commit: target.commit, dirty: target.dirty, environment: env.project, provider, model: session.model };
+  const outcome = await agentTask(ctx, intern.id, target, async (session, attempt, env, login, note) => {
+    const environment = { commit: target.commit, dirty: target.dirty, environment: env.project, provider: login.provider, model: session.model };
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
-    let toolCalls = 0;
     await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
-      toolCalls += turn.toolCalls;
       if (idle) {
         const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
-        if (toolCalls === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
+        const quota = await hasQuota(login);
+        if (quota && session.toolCalls() === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
         await note(`${stopped}: "${turn.lastMessage}"`);
+        if (!quota) throw new NoQuota(`the quota command of login ${login.id} reported no quota`);
         return null;
       }
       const { rejected } = await readFindings(ctx.runDir, intern.id, attempt, environment);
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id, attempt));
     });
+    if (session.toolCalls() === 0) throw new Error(`made no tool call in its ${minutes} minutes`);
   });
   const results = await Promise.all(attempts.map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
   const findings = results.flatMap((result) => result.findings);
@@ -406,7 +419,6 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
 
 async function reproduce(ctx: Context, intern: InternState, group: Group, target: Target, minutes: number): Promise<void> {
   const finding = lead(group);
-  const avoid = [...new Set(group.findings.map((entry) => entry.environment.provider))];
   const check = async (attempt: number): Promise<{ result: Confirmation | null; error: string | null }> => {
     try {
       return { result: await readConfirmation(ctx.runDir, intern.id, attempt), error: null };
@@ -415,8 +427,8 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     }
   };
   const attempts: { attempt: number; provider: Provider }[] = [];
-  const outcome = await agentTask(ctx, intern.id, target, avoid, async (session, attempt, env, provider, note) => {
-    attempts.push({ attempt, provider });
+  const outcome = await agentTask(ctx, intern.id, target, async (session, attempt, env, login, note) => {
+    attempts.push({ attempt, provider: login.provider });
     const out = outDir(intern.id, attempt);
     const file = join(ctx.runDir, out, "confirmation.json");
     const deadline = Date.now() + minutes * minute;
@@ -465,7 +477,7 @@ function internState(id: string, role: InternState["role"], charter: string, gro
 function progress(intern: InternState): string {
   if (intern.status === "starting" || intern.status === "testing") return `${intern.id} ${intern.status} on ${intern.login} (${intern.provider})`;
   if (intern.detail === null) return `${intern.id} ${intern.status}`;
-  return `${intern.id} ${intern.status}: ${oneLine(redact(intern.detail)).slice(0, 300)}`;
+  return `${intern.id} ${intern.status}: ${oneLine(redact(intern.detail)).slice(-300)}`;
 }
 
 function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
@@ -475,6 +487,7 @@ function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args:
 
 async function stop(ctx: Context, running: Promise<unknown> | undefined): Promise<void> {
   ctx.stopping = true;
+  for (const wake of ctx.waiting) wake();
   killCommands();
   const closed = await Promise.allSettled(
     [...ctx.sessions].map(async (session) => {
@@ -579,7 +592,7 @@ async function newRun(ref: TargetRef, options: RunState["options"], print: (line
 
 export async function startCopy(opts: CopyOptions): Promise<string> {
   const ref = await resolveTarget(opts.dir, opts.rev, false);
-  const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0 }, opts.print);
+  const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0, confirmConcurrency: 0 }, opts.print);
   const ctx = context(runId, runDir, "", new Scheduler([]), async () => {});
   const dirs = [join(runDir, "envs"), join(runDir, "interns")];
   const phase = async (next: RunPhase) => {
@@ -658,7 +671,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
 export async function runQa(opts: RunOptions): Promise<string> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
   const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
-  const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0 };
+  const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0, confirmConcurrency: 0 };
   const { runId, runDir, state, save } = await newRun(ref, options, opts.print);
 
   const ctx = context(runId, runDir, "", scheduler, async (id, patch) => {
@@ -727,8 +740,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     egress = target.settings.egress;
     const slots = await freeSlots();
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
-    const concurrency = Math.min(opts.replay?.groups.length ?? opts.interns, scheduler.capacity(), slots);
-    state.options.concurrency = concurrency;
+    const width = Math.min(scheduler.capacity(), slots);
+    state.options.concurrency = Math.min(opts.interns, width);
     const cards = deck(target.settings.focus);
     state.interns = Array.from({ length: opts.interns }, (_, index) => {
       const charter = cards[index % cards.length];
@@ -740,11 +753,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     await phase("building");
     ctx.images = await buildImages(runId, target, source);
-    const running = limit(concurrency);
 
     if (groups === null) {
       await phase("testing");
-      const results = await settle(state.interns.map((intern) => running(() => explore(ctx, intern, target, opts.minutes))));
+      const testing = limit(state.options.concurrency);
+      const results = await settle(state.interns.map((intern) => testing(() => explore(ctx, intern, target, opts.minutes))));
       findings = results.flatMap((result) => result.findings);
       rejected = results.flatMap((result) => result.rejected);
       if (results.every((result) => result.outcome.status !== "done")) {
@@ -771,11 +784,13 @@ export async function runQa(opts: RunOptions): Promise<string> {
       }));
     }
 
+    state.options.confirmConcurrency = Math.min(groups.length, width);
     await phase("confirming");
     const confirmations = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id) }));
     state.interns.push(...confirmations.map((entry) => entry.intern));
     await save();
-    await settle(confirmations.map(({ group, intern }) => running(() => reproduce(ctx, intern, group, target, opts.confirmMinutes))));
+    const confirming = limit(state.options.confirmConcurrency);
+    await settle(confirmations.map(({ group, intern }) => confirming(() => reproduce(ctx, intern, group, target, opts.confirmMinutes))));
     if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null)) {
       throw new Error(`No confirming intern recorded a result: ${confirmations.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
     }

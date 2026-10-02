@@ -33,6 +33,7 @@ console.error = (...data: unknown[]) => process.stderr.write(`${oneLine(stripCon
 export type Session = {
   model: string | null;
   prompt(text: string): Promise<{ stopReason: string; toolCalls: number; lastMessage: string }>;
+  toolCalls(): number;
   cancel(): Promise<void>;
   close(): Promise<void>;
 };
@@ -201,7 +202,7 @@ export async function openSession(opts: {
   const setup = async () => {
     await connection.agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, _meta: opts.provider.clientMeta ?? undefined },
       clientInfo: { name: "qa-interns", version },
     });
     const started = await connection.agent
@@ -210,12 +211,10 @@ export async function openSession(opts: {
     if (opts.provider.modeId !== null) {
       await connection.agent.request(methods.agent.session.setMode, { sessionId: started.sessionId, modeId: opts.provider.modeId });
     }
-    if (opts.model === null) return { started, model: modelOf(started.newSessionResponse) };
-    const chosen = await connection.agent.request(methods.agent.session.setConfigOption, {
-      sessionId: started.sessionId,
-      configId: "model",
-      value: opts.model,
-    });
+    let chosen: NewSessionResponse | SetSessionConfigOptionResponse = started.newSessionResponse;
+    for (const { configId, value } of opts.model === null ? [] : opts.provider.modelConfig(opts.model)) {
+      chosen = await connection.agent.request(methods.agent.session.setConfigOption, { sessionId: started.sessionId, configId, value });
+    }
     return { started, model: modelOf(chosen) };
   };
 
@@ -226,18 +225,19 @@ export async function openSession(opts: {
       timer = setTimeout(() => reject(timedOut), startupMs);
     });
     const { started: session, model } = await Promise.race([setup(), expired]).finally(() => clearTimeout(timer));
+    let calls = 0;
 
     return {
       model,
       async prompt(text) {
-        let toolCalls = 0;
+        const before = calls;
         let lastMessage = "";
         let complete = false;
         const drain = async () => {
           for (;;) {
             const message = await session.nextUpdate();
             if (message.kind === "stop") return;
-            if (message.update.sessionUpdate === "tool_call") toolCalls += 1;
+            if (message.update.sessionUpdate === "tool_call") calls += 1;
             if (!complete && message.update.sessionUpdate === "agent_message_chunk" && message.update.content.type === "text") {
               lastMessage += message.update.content.text;
               complete = redact(lastMessage).length >= lastMessageLength + 2 * longestSecret();
@@ -246,11 +246,12 @@ export async function openSession(opts: {
         };
         try {
           const [response] = await Promise.all([session.prompt(text), drain()]);
-          return { stopReason: response.stopReason, toolCalls, lastMessage: redact(lastMessage).slice(0, lastMessageLength) };
+          return { stopReason: response.stopReason, toolCalls: calls - before, lastMessage: redact(lastMessage).slice(0, lastMessageLength) };
         } catch (error) {
           throw await failure(error);
         }
       },
+      toolCalls: () => calls,
       cancel: () => connection.agent.notify(methods.agent.session.cancel, { sessionId: session.sessionId }),
       close,
     };
