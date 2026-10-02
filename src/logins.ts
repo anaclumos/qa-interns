@@ -169,7 +169,7 @@ async function seatStore(command: string[], leasePid: number, intern: string): P
     .map((line) => line.trim())
     .filter((line) => line !== "")
     .at(-1);
-  return exitCode === 0 && store !== undefined && isAbsolute(store) && isDirectory(store) ? store : null;
+  return exitCode === 0 && store !== undefined ? store : null;
 }
 
 export function flock(file: string, ...options: string[]): number | null {
@@ -237,6 +237,7 @@ export class Scheduler {
   private readonly used: Record<Provider, number> = { claude: 0, codex: 0, cursor: 0, grok: 0 };
   private readonly exhaustedMounts = new Set<string>();
   private readonly live = new Set<Held>();
+  private readonly refused = new Map<string, string[]>();
 
   constructor(logins: Login[]) {
     this.slots = logins.map((login) => {
@@ -258,6 +259,8 @@ export class Scheduler {
 
   async acquire(intern: string, avoid: Provider[]): Promise<Lease | null> {
     const tried = new Set<Slot>();
+    const refused: string[] = [];
+    this.refused.set(intern, refused);
     while (true) {
       const slot = this.next(avoid, tried);
       if (slot === undefined) return null;
@@ -265,7 +268,7 @@ export class Scheduler {
       slot.active += 1;
       let lease: Lease | null = null;
       try {
-        lease = await this.lease(slot, intern);
+        lease = await this.lease(slot, intern, refused);
       } finally {
         if (lease === null) slot.active -= 1;
       }
@@ -280,18 +283,27 @@ export class Scheduler {
     else slot.exhausted = true;
   }
 
-  private async lease(slot: Slot, intern: string): Promise<Lease | null> {
+  refusals(intern: string): string[] {
+    return this.refused.get(intern) ?? [];
+  }
+
+  private async lease(slot: Slot, intern: string, refused: string[]): Promise<Lease | null> {
     const { login } = slot;
     if (slot.store !== null) return this.grant(slot, slot.store, login.concurrency, null);
     if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
     const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
+    const refuse = (problems: string[]) => refused.push(...problems.map((problem) => `seat store of login ${login.id}: ${problem}`));
     let lease: Lease | null = null;
     try {
       const path = await seatStore(login.seat, keeper.pid, intern);
-      if (path !== null) {
+      if (path !== null && !isAbsolute(path)) refuse(["the last line its command printed is not an absolute path"]);
+      else if (path !== null && !isDirectory(path)) refuse([`store ${path} is not an existing directory`]);
+      else if (path !== null) {
         const found = resolveStore(login.provider, path);
         const known = [...this.slots.flatMap((other) => other.store ?? []), ...this.live];
-        if (storeProblems(login.provider, path, found, known).length === 0) {
+        const problems = storeProblems(login.provider, path, found, known);
+        refuse(problems);
+        if (problems.length === 0) {
           const mounted = mountedPath(login.provider, path);
           if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, 1, keeper);
         }
