@@ -166,7 +166,7 @@ ${canEdit ? `<a href="/invoices/new">New invoice</a>` : ""}
 ${option("", "All statuses", options.status)}${option("draft", "Draft", options.status)}${option("sent", "Sent", options.status)}${option("paid", "Paid", options.status)}
 </select></div>
 <div><label for="sort">Sort by</label><select id="sort" name="sort">
-${option("", "Newest first", options.sort)}${option("due", "Due date, earliest first", options.sort)}${option("total", "Total, highest first", options.sort)}${option("customer", "Customer, A to Z", options.sort)}
+${option("", "Newest first", options.sort)}${option("due", "Due date, earliest first", options.sort)}${option("total", "Currency A to Z, then total, highest first", options.sort)}${option("customer", "Customer, A to Z", options.sort)}
 </select></div>
 <div><button>Apply</button></div>
 </form>

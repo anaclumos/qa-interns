@@ -252,7 +252,7 @@ const server = Bun.serve({
           sort === "due"
             ? sql`due_date, id`
             : sort === "total"
-              ? sql`total::numeric / (case currency when 'KRW' then 1 else 100 end) desc, id`
+              ? sql`currency, total desc, id`
               : sort === "customer"
                 ? sql`lower(customer), id`
                 : sql`id desc`;
