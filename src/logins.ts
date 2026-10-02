@@ -136,11 +136,15 @@ type Grant = { store: string; mounted: string; where: string };
 
 type Slot = { login: Login; active: number; exhausted: boolean; store: Grant | null };
 
-function mountedPath(provider: Provider, store: string): string {
+function mountSource(provider: Provider, store: string): string {
   const mounts = providers[provider].mounts(store);
   const [mount] = mounts;
   if (mount === undefined || mounts.length > 1) throw new Error(`A lease locks one mount source, but a ${provider} store mounts ${mounts.length}`);
-  return realpathSync(mount.source);
+  return mount.source;
+}
+
+function mountedPath(provider: Provider, store: string): string {
+  return realpathSync(mountSource(provider, store));
 }
 
 const lockHeld = 75;
@@ -240,11 +244,14 @@ export class Scheduler {
   private readonly refused = new Map<string, string[]>();
 
   constructor(logins: Login[]) {
+    const known: Held[] = [];
     this.slots = logins.map((login) => {
       if (login.store === null) return { login, active: 0, exhausted: false, store: null };
       const found = resolveStore(login.provider, login.store);
-      if (found.credential === null) throw new Error(`${login.provider} store ${login.store} has no ${credentialName(login.provider)}`);
+      const problems = storeProblems(login.provider, login.store, found, known);
+      if (problems.length > 0) throw new Error(`login ${login.id}: ${problems.join("; ")}`);
       const store = { store: found.store, mounted: mountedPath(login.provider, login.store), where: `login ${login.id}` };
+      known.push(store);
       return { login, active: 0, exhausted: false, store };
     });
   }
@@ -317,6 +324,16 @@ export class Scheduler {
   private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null): Lease | null {
     const unlock = lock(grant.mounted, slots);
     if (unlock === null) return null;
+    try {
+      const source = mountSource(slot.login.provider, grant.store);
+      const resolved = realpathSync(source);
+      if (source !== grant.mounted || resolved !== source) {
+        throw new Error(`${grant.where}: store ${grant.store} changed after its check; ${source} resolves to ${resolved}, not ${grant.mounted}`);
+      }
+    } catch (error) {
+      unlock();
+      throw error;
+    }
     this.used[slot.login.provider] += 1;
     const entry = { ...grant };
     this.live.add(entry);

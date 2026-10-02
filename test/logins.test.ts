@@ -507,12 +507,56 @@ describe("Scheduler", () => {
     lease.release();
   });
 
-  test("a store mounted whole stays locked when its agent replaces the credential file", async () => {
+  test("a configured store that breaks a store rule stops the scheduler", async () => {
     const store = join(dir, "grok-linked");
     await mkdir(join(store, "tokens"), { recursive: true });
     await Bun.write(join(store, "tokens", "auth.json"), "{}");
     await symlink("tokens/auth.json", join(store, "auth.json"));
     const grok: Login = { id: "grok-linked", provider: "grok", store, seat: null, concurrency: 1, model: null };
+    expect(() => new Scheduler([grok])).toThrow(`login grok-linked: ${join(store, "auth.json")} is a symbolic link`);
+    expect(() => new Scheduler([login("codex-1", "codex", 1), { ...login("codex-1", "codex", 1), id: "codex-2" }])).toThrow(
+      `login codex-2: duplicate store ${codexStore}, already used by login codex-1`,
+    );
+  });
+
+  test("a store replaced with a symbolic link after the scheduler checks it is not leased", async () => {
+    const child = join(dir, "swapped", "child");
+    const elsewhere = join(dir, "swapped", "elsewhere");
+    for (const store of [child, elsewhere]) {
+      await mkdir(store, { recursive: true });
+      await Bun.write(join(store, ".credentials.json"), "{}");
+      await Bun.write(join(store, "auth.json"), "{}");
+    }
+    const claude: Login = { id: "claude-swapped", provider: "claude", store: child, seat: null, concurrency: 1, model: null };
+    const codex: Login = { id: "codex-swapped", provider: "codex", store: child, seat: null, concurrency: 1, model: null };
+    const wholeStore = new Scheduler([claude]);
+    const fileStore = new Scheduler([codex]);
+    await rename(child, join(dir, "swapped", "kept"));
+    await symlink(elsewhere, child);
+    await expect(wholeStore.acquire("x1", [])).rejects.toThrow(`login claude-swapped: store ${child} changed after its check; ${child} resolves to ${elsewhere}, not ${child}`);
+    await expect(fileStore.acquire("x2", [])).rejects.toThrow(
+      `login codex-swapped: store ${child} changed after its check; ${join(child, "auth.json")} resolves to ${join(elsewhere, "auth.json")}, not ${join(child, "auth.json")}`,
+    );
+    await rm(child);
+    await rename(join(dir, "swapped", "kept"), child);
+    await rename(join(child, "auth.json"), join(child, "auth.json.kept"));
+    await symlink(join(elsewhere, "auth.json"), join(child, "auth.json"));
+    await expect(fileStore.acquire("x3", [])).rejects.toThrow(`${join(child, "auth.json")} resolves to ${join(elsewhere, "auth.json")}, not ${join(child, "auth.json")}`);
+    await rm(join(child, "auth.json"));
+    await rename(join(child, "auth.json.kept"), join(child, "auth.json"));
+    const whole = held(await wholeStore.acquire("x4", []));
+    expect(whole.mounted).toBe(child);
+    whole.release();
+    const file = held(await fileStore.acquire("x5", []));
+    expect(file.mounted).toBe(join(child, "auth.json"));
+    file.release();
+  });
+
+  test("a store mounted whole stays locked when its agent replaces the credential file", async () => {
+    const store = join(dir, "grok-replaced");
+    await mkdir(store);
+    await Bun.write(join(store, "auth.json"), "{}");
+    const grok: Login = { id: "grok-replaced", provider: "grok", store, seat: null, concurrency: 1, model: null };
     const first = held(await new Scheduler([grok]).acquire("r1", []));
     await Bun.write(join(store, "auth.json.new"), "{}");
     await rename(join(store, "auth.json.new"), join(store, "auth.json"));
