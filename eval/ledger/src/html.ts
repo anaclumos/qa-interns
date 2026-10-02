@@ -29,12 +29,13 @@ header nav form { margin: 0; display: flex; gap: 6px; align-items: center; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 main { max-width: 1040px; margin: 0 auto; padding: 20px; }
 a { color: #0550ae; }
+.scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; background: #fff; }
 th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #d0d7de; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 label { display: block; margin: 10px 0 4px; }
 input, select, button { font: inherit; padding: 4px 8px; }
-fieldset { border: 1px solid #d0d7de; background: #fff; margin: 16px 0; }
+fieldset { border: 1px solid #d0d7de; background: #fff; margin: 16px 0; min-width: 0; }
 .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 12px 0; }
 .row label { margin: 0; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
@@ -123,11 +124,10 @@ ${error ? `<p class="error" role="alert">${esc(error)}</p>` : ""}
   );
 }
 
-type ListOptions = { q: string; status: string; sort: string; page: number };
+type ListOptions = { q: string; status: string; sort: string; page: number; pages: number };
 
 export function invoiceListPage(ctx: Ctx, invoices: Invoice[], count: number, options: ListOptions) {
   const canEdit = ctx.role !== "viewer";
-  const pages = Math.max(1, Math.ceil(count / 10));
   const link = (page: number) => {
     const params = new URLSearchParams();
     if (options.q) params.set("q", options.q);
@@ -166,15 +166,15 @@ ${canEdit ? `<a href="/invoices/new">New invoice</a>` : ""}
 ${option("", "All statuses", options.status)}${option("draft", "Draft", options.status)}${option("sent", "Sent", options.status)}${option("paid", "Paid", options.status)}
 </select></div>
 <div><label for="sort">Sort by</label><select id="sort" name="sort">
-${option("", "Newest first", options.sort)}${option("due", "Due date, earliest first", options.sort)}${option("total", "Total, highest first", options.sort)}${option("customer", "Customer, A to Z", options.sort)}
+${option("", "Newest first", options.sort)}${option("due", "Due date, earliest first", options.sort)}${option("total", "Currency A to Z, then total, highest first", options.sort)}${option("customer", "Customer, A to Z", options.sort)}
 </select></div>
 <div><button>Apply</button></div>
 </form>
 <p>${count} ${count === 1 ? "invoice" : "invoices"}</p>
-<table>
+<div class="scroll" role="region" aria-label="Invoices" tabindex="0"><table>
 <thead><tr>${canEdit ? `<th><span class="visually-hidden">Select</span></th>` : ""}<th>Number</th><th>Customer</th><th>Issue date</th><th>Due date</th><th class="num">Total</th><th>Status</th></tr></thead>
 <tbody>${rows || `<tr><td colspan="${canEdit ? 7 : 6}">No invoices on this page.</td></tr>`}</tbody>
-</table>
+</table></div>
 ${
   canEdit
     ? `<div class="actions"><button type="button" id="bulk-paid">Mark selected as paid</button><span id="bulk-message" role="status"></span></div>
@@ -203,8 +203,8 @@ document.getElementById("bulk-paid").addEventListener("click", async () => {
 }
 <nav aria-label="Pagination" class="actions">
 ${options.page > 1 ? `<a href="${esc(link(options.page - 1))}">Previous</a>` : ""}
-<span>Page ${options.page} of ${pages}</span>
-${options.page < pages ? `<a href="${esc(link(options.page + 1))}">Next</a>` : ""}
+<span>Page ${options.page} of ${options.pages}</span>
+${options.page < options.pages ? `<a href="${esc(link(options.page + 1))}">Next</a>` : ""}
 </nav>`,
   );
 }
@@ -231,7 +231,7 @@ export function invoiceDetailPage(ctx: Ctx, invoice: Invoice & { lines: Line[] }
 <dt>Currency</dt><dd>${invoice.currency}</dd>
 <dt>Tax rate</dt><dd>${invoice.taxRate}%</dd>
 </dl>
-<table>
+<div class="scroll" role="region" aria-label="Line items" tabindex="0"><table>
 <thead><tr><th>Description</th><th class="num">Quantity</th><th class="num">Unit price</th><th class="num">Amount</th></tr></thead>
 <tbody>${lines}</tbody>
 <tfoot>
@@ -239,7 +239,7 @@ export function invoiceDetailPage(ctx: Ctx, invoice: Invoice & { lines: Line[] }
 <tr><td colspan="3">Tax (${invoice.taxRate}%)</td><td class="num">${money(invoice.tax, invoice.currency)}</td></tr>
 <tr><th scope="row" colspan="3">Total</th><td class="num"><strong>${money(invoice.total, invoice.currency)}</strong></td></tr>
 </tfoot>
-</table>
+</table></div>
 <script>
 const due = document.getElementById("due-date");
 due.textContent = new Date(due.dateTime).toLocaleDateString();
@@ -304,10 +304,10 @@ export function invoiceFormPage(ctx: Ctx, invoice: (Invoice & { lines: Line[] })
 </div>
 <fieldset>
 <legend>Line items</legend>
-<table>
+<div class="scroll" role="region" aria-label="Line items" tabindex="0"><table>
 <thead><tr><th>Description</th><th>Quantity</th><th>Unit price</th><th><span class="visually-hidden">Remove</span></th></tr></thead>
 <tbody id="lines">${lines}</tbody>
-</table>
+</table></div>
 <p><button type="button" id="add-line">Add line</button></p>
 </fieldset>
 <p><button type="submit">${invoice ? "Save changes" : "Create invoice"}</button> <a href="${invoice ? `/invoices/${invoice.id}` : "/invoices"}">Cancel</a></p>
@@ -390,10 +390,10 @@ export function teamPage(ctx: Ctx, members: Member[], error: string) {
     ctx,
     `<h1>${esc(ctx.team.name)}</h1>
 <p>Your role: ${ctx.role}</p>
-<table>
+<div class="scroll" role="region" aria-label="Team members" tabindex="0"><table>
 <thead><tr><th>Name</th><th>Email</th><th>Role</th>${isOwner ? `<th><span class="visually-hidden">Remove</span></th>` : ""}</tr></thead>
 <tbody>${rows}</tbody>
-</table>
+</table></div>
 ${
   isOwner
     ? `<h2>Invite a member</h2>
