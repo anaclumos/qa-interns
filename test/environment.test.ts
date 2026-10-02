@@ -242,7 +242,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
       read_only: true,
       cap_drop: ["ALL"],
       security_opt: ["no-new-privileges:true"],
-      mem_limit: "2147483648",
+      mem_limit: "4294967296",
       cpus: 2,
       pids_limit: 4096,
       ulimits: { fsize: 1073741824 },

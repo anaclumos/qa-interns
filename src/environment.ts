@@ -246,7 +246,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...hardening,
     "    pids_limit: 4096",
     `    ulimits: ${y({ fsize: outLimit })}`,
-    `    mem_limit: ${y("2g")}`,
+    `    mem_limit: ${y("4g")}`,
     "    cpus: 2",
     `    networks: ${y(["qa_internal", ...(proxied ? ["qa_agent"] : [])])}`,
   );
