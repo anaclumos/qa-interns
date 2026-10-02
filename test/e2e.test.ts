@@ -27,7 +27,7 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true };
+type FakeLogin = { id: string; provider: Provider; limit?: "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
@@ -498,6 +498,38 @@ USER qa
         [1, false, ["db", "qa-proxy", "qa-runner", "web"]],
         [2, false, ["db", "qa-proxy", "qa-runner", "web"]],
       ]);
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an intern whose agent stops without a tool call, as Cursor does at its plan limit, fails, and so does a run with no other intern",
+    async () => {
+      const lines: string[] = [];
+      const detail = 'stopped at minute 0 without a tool call: "\n\nUpgrade your plan to continue"';
+      const run = runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("upgrade", [{ id: "cursor-upgrade", provider: "cursor", upgrade: true }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: (line) => lines.push(line),
+      });
+
+      await expect(run).rejects.toThrow(`No testing intern completed: i1 failed: ${detail}`);
+      const runDir = lines[0];
+      if (runDir === undefined) throw new Error("runQa printed no run directory");
+      const state = await readState(runDir);
+      expect(state.phase).toBe("failed");
+      expect(intern(state, "i1")).toMatchObject({ login: "cursor-upgrade", status: "failed", findings: 0, detail });
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
