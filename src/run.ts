@@ -26,7 +26,7 @@ import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation,
 import { hasQuota, loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
-import { lead, renderReplay, renderReport, writeTickets } from "./report.ts";
+import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
@@ -277,12 +277,12 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, work: 
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
       if (!(outcome instanceof Error)) return outcome;
       ctx.scheduler.exhaust(lease);
+      await note(outcome instanceof RequestError ? `login ${lease.login.id} failed with ${message(outcome)}` : outcome.message);
       await teardown();
       started = false;
       slot?.release();
       slot = undefined;
       lease.release();
-      await note(outcome instanceof RequestError ? `login ${lease.login.id} failed with ${message(outcome)}` : outcome.message);
       await ctx.update(id, { status: "queued" });
       const next = await acquire(ctx, id);
       if (next === null) return null;
@@ -396,13 +396,11 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
-    let toolCalls = 0;
     await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
-      toolCalls += turn.toolCalls;
       if (idle) {
         const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
         const quota = await hasQuota(login);
-        if (quota && toolCalls === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
+        if (quota && session.toolCalls() === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
         await note(`${stopped}: "${turn.lastMessage}"`);
         if (!quota) throw new NoQuota(`the quota command of login ${login.id} reported no quota`);
         return null;
@@ -410,6 +408,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
       const { rejected } = await readFindings(ctx.runDir, intern.id, attempt, environment);
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id, attempt));
     });
+    if (session.toolCalls() === 0) throw new Error(`made no tool call in its ${minutes} minutes`);
   });
   const results = await Promise.all(attempts.map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
   const findings = results.flatMap((result) => result.findings);
@@ -443,7 +442,7 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check(attempt);
-    await note(answer.result === null ? `confirmation failed: ${answer.error}` : answer.result.reproduced ? "reproduced" : "did not reproduce");
+    await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
   });
   const answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };

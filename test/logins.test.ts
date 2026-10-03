@@ -309,6 +309,31 @@ describe("loadLogins", () => {
     expect(message).toContain(`logins[0] "grok-empty": grok store ${emptyStore} has no auth.json`);
   });
 
+  test("accepts an opencode store whose auth.json holds one opencode-go API key, and rejects any other content without quoting it", async () => {
+    const store = (name: string) => join(dir, "stores", `opencode-${name}`);
+    const contents: Record<string, string> = {
+      key: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" } }),
+      empty: "{}",
+      blank: JSON.stringify({ "opencode-go": { type: "api", key: "" } }),
+      extra: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" }, anthropic: { type: "api", key: "other-key" } }),
+      wellknown: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" }, "https://example.test": { type: "wellknown", key: "TOKEN", token: "remote-token" } }),
+      broken: "{",
+    };
+    for (const [name, content] of Object.entries(contents)) {
+      await mkdir(store(name), { recursive: true });
+      await Bun.write(join(store(name), "auth.json"), content);
+    }
+    const file = await writeLogins("opencode.json", { logins: [{ id: "opencode-key", provider: "opencode", store: store("key"), model: "opencode-go/mimo-v2.6-pro" }] });
+    expect(await loadLogins(file)).toEqual([{ id: "opencode-key", provider: "opencode", store: store("key"), seat: null, quota: null, concurrency: 1, model: "opencode-go/mimo-v2.6-pro" }]);
+
+    const bad = ["empty", "blank", "extra", "wellknown", "broken"];
+    const message = await failure("opencode-bad.json", { logins: bad.map((name) => ({ id: `opencode-${name}`, provider: "opencode", store: store(name) })) });
+    for (const [index, name] of bad.entries()) {
+      expect(message).toContain(`logins[${index}] "opencode-${name}": ${join(store(name), "auth.json")} must hold one opencode-go API key and nothing else`);
+    }
+    for (const value of ["go-key", "other-key", "remote-token"]) expect(message).not.toContain(value);
+  });
+
   test("rejects two logins that name the same store after resolving the path", async () => {
     const message = await failure("same-store.json", {
       logins: [
@@ -503,11 +528,35 @@ describe("Scheduler", () => {
     for (const lease of [retry, ...others]) lease?.release();
   });
 
+  test("a store that another login's live lease holds is refused when a seat login returns it, until that lease ends", async () => {
+    await mkdir(join(dir, "same-store"));
+    await Bun.write(join(dir, "same-store", "auth.json"), "{}");
+    await Bun.write(
+      join(dir, "same-seat.sh"),
+      ["#!/bin/sh", "printf '%s\\n' \"$QA_INTERNS_LEASE_PID\" > \"$(dirname \"$0\")/seat-$QA_INTERNS_INTERN.pid\"", "echo \"$(dirname \"$0\")/same-store\"", ""].join("\n"),
+    );
+    const command = ["sh", join(dir, "same-seat.sh")];
+    const scheduler = new Scheduler([login("codex-pool-a", "codex", 1, command), login("codex-pool-b", "codex", 2, command)]);
+    const first = held(await scheduler.acquire("m1"));
+    expect(first.login.id).toBe("codex-pool-a");
+    expect(first.store).toBe(await realpath(join(dir, "same-store")));
+    expect(await scheduler.acquire("m2")).toBeNull();
+    expect(scheduler.refusals("m2")).toEqual([
+      `seat store of login codex-pool-b: duplicate store ${join(dir, "same-store")}, already used by login codex-pool-a; one store serves one process at a time`,
+    ]);
+    expect(await ended(await leasePid("m2"))).toBe(true);
+    expect(alive(await leasePid("m1"))).toBe(true);
+    first.release();
+    const second = held(await scheduler.acquire("m3"));
+    expect(second.store).toBe(first.store);
+    second.release();
+  });
+
   test("a store that live leases hold is granted again when a seat login returns it, up to the login's concurrency across runs", async () => {
     const shared = join(dir, "shared-store");
     await mkdir(shared);
     await Bun.write(join(shared, ".credentials.json"), "{}");
-    await Bun.write(join(shared, "auth.json"), "{}");
+    await Bun.write(join(shared, "auth.json"), JSON.stringify({ "opencode-go": { type: "api", key: "go-key" } }));
     await Bun.write(
       join(dir, "shared-seat.sh"),
       ["#!/bin/sh", "printf '%s\\n' \"$QA_INTERNS_LEASE_PID\" > \"$(dirname \"$0\")/seat-$QA_INTERNS_INTERN.pid\"", "echo \"$(dirname \"$0\")/shared-store\"", ""].join("\n"),
@@ -532,6 +581,38 @@ describe("Scheduler", () => {
       expect(three.store).toBe(one.store);
       releaseAll([one, two, three]);
     }
+  });
+
+  test("leases of two providers never hold one mounted path at once, in one run or across runs", async () => {
+    const both = join(dir, "both-store");
+    await mkdir(both);
+    await Bun.write(join(both, "auth.json"), JSON.stringify({ "opencode-go": { type: "api", key: "go-key" } }));
+    const codex = login("codex-both", "codex", 1, ["echo", both]);
+    const opencode = login("opencode-both", "opencode", 3, ["echo", both]);
+
+    const run = new Scheduler([codex, opencode]);
+    const first = held(await run.acquire("b1"));
+    expect(first.login.id).toBe("codex-both");
+    expect(await run.acquire("b2")).toBeNull();
+    expect(run.refusals("b2")).toEqual([`seat store of login opencode-both: duplicate store ${both}, already used by login codex-both; one store serves one process at a time`]);
+    first.release();
+
+    const own = held(await new Scheduler([opencode]).acquire("b3"));
+    const other = await holder([opencode], 1);
+    expect(other.count).toBe(1);
+    own.release();
+    expect(await new Scheduler([codex]).acquire("b4")).toBeNull();
+    other.child.kill("SIGKILL");
+    await other.child.exited;
+
+    const lone = await holder([codex], 1);
+    expect(lone.count).toBe(1);
+    expect(await new Scheduler([opencode]).acquire("b5")).toBeNull();
+    lone.child.kill("SIGKILL");
+    await lone.child.exited;
+    const last = held(await new Scheduler([opencode]).acquire("b6"));
+    expect(last.store).toBe(await realpath(both));
+    last.release();
   });
 
   test("a failing seat command or a relative path moves on to the next login", async () => {

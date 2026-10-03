@@ -175,9 +175,10 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     expect(readFileSync(path.join(out, finding.evidence[0]), "utf8")).toBe(page);
   });
 
-  test("a continue prompt makes no tool call", async () => {
+  test("a continue prompt makes no tool call, and the session keeps the count of every turn", async () => {
     const result = await session.prompt("You have 12 minutes left. Keep testing your charter. No finding files were rejected so far.");
     expect(result).toEqual({ stopReason: "end_turn", toolCalls: 0, lastMessage: "Nothing more to test." });
+    expect(session.toolCalls()).toBe(1);
   });
 
   test("a usage limit rejects the prompt with a RequestError that Claude counts as a login failure", async () => {

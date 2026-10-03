@@ -193,7 +193,7 @@ const confirmationTurn = () => {
   }
   mkdirSync("/qa/out/evidence", { recursive: true });
   writeFileSync("/qa/out/evidence/reproduction.txt", "fake reproduction\n");
-  writeJson("/qa/out/confirmation.json", { reproduced: true, observed: "fake reproduction", evidence: ["evidence/reproduction.txt"] });
+  writeJson("/qa/out/confirmation.json", { steps: true, task: true, observed: "fake reproduction", evidence: ["evidence/reproduction.txt"] });
   say("Wrote the confirmation.");
   return endTurn;
 };
@@ -214,8 +214,9 @@ const prompt = async (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit, upgrade } = login();
+  const { limit, upgrade, hang } = login();
   if (limit === true) return limited;
+  if (hang === true) return slowTurn();
   if (upgrade === true) {
     say("\n\nUpgrade your plan to continue");
     return endTurn;

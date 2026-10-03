@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
-import { closeSync, lstatSync, mkdirSync, openSync, realpathSync, statSync, type Stats } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
@@ -61,6 +61,19 @@ function resolveStore(provider: Provider, store: string): Store {
   return { store: realpathSync(store), credential: stat(credential)?.isFile() === true ? realpathSync(credential) : null };
 }
 
+const opencodeGoAuth = z.strictObject({ "opencode-go": z.object({ type: z.literal("api"), key: z.string().min(1) }) });
+
+function holdsOneOpencodeGoKey(file: string): boolean {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
+  return opencodeGoAuth.safeParse(value).success;
+}
+
 function claudeConfigDirs(): string[] {
   return [...new Set([join(homedir(), ".claude"), process.env.CLAUDE_CONFIG_DIR ?? ""].filter(isDirectory).map((dir) => realpathSync(dir)))];
 }
@@ -82,6 +95,10 @@ function storeProblems(provider: Provider, path: string, found: Store, known: He
   if (found.credential === null) problems.push(`${provider} store ${path} has no ${name}`);
   else if (lstatSync(join(path, name)).isSymbolicLink()) {
     problems.push(`${join(path, name)} is a symbolic link; a runner can place a link in its own store to choose what another run mounts, so the credential is a regular file in the store`);
+  } else if (provider === "opencode" && !holdsOneOpencodeGoKey(found.credential)) {
+    problems.push(
+      `${join(path, name)} must hold one opencode-go API key and nothing else; a runner can read every credential in it, and OpenCode loads remote config, which can add MCP servers, for a wellknown entry`,
+    );
   }
   if (provider === "claude") {
     for (const config of claudeConfigDirs()) {
@@ -255,8 +272,9 @@ function claimed(key: string): boolean {
   });
 }
 
-function slotLock(dir: string, mounted: string, slots: number): number | null {
-  for (const test of [lockFile(dir, mounted, "under"), ...ancestors(mounted).map((path) => lockFile(dir, path, "at"))]) {
+function slotLock(dir: string, mounted: string, provider: Provider, slots: number): number | null {
+  const others = providerNames.filter((other) => other !== provider).map((other) => lockFile(dir, mounted, other));
+  for (const test of [lockFile(dir, mounted, "under"), ...ancestors(mounted).map((path) => lockFile(dir, path, "at")), ...others]) {
     const fd = flock(test, "--exclusive", "--nonblock");
     if (fd === null) return null;
     closeSync(fd);
@@ -268,26 +286,28 @@ function slotLock(dir: string, mounted: string, slots: number): number | null {
   return null;
 }
 
-function blocked(mounted: string, slots: number): boolean {
+function blocked(mounted: string, provider: Provider, slots: number): boolean {
   const dir = locksDir();
   return exclusive(dir, () => {
-    const fd = slotLock(dir, mounted, slots);
+    const fd = slotLock(dir, mounted, provider, slots);
     if (fd !== null) closeSync(fd);
     return fd === null;
   });
 }
 
-function lock(mounted: string, slots: number): (() => void) | null {
+function lock(mounted: string, provider: Provider, slots: number): (() => void) | null {
   const dir = locksDir();
   return exclusive(dir, () => {
-    const fd = slotLock(dir, mounted, slots);
+    const fd = slotLock(dir, mounted, provider, slots);
     if (fd === null) return null;
     const held = [fd];
     const release = () => {
       for (const each of held) closeSync(each);
     };
     try {
-      for (const share of [lockFile(dir, mounted, "at"), ...ancestors(mounted).map((path) => lockFile(dir, path, "under"))]) held.push(take(dir, share, "--shared", "--nonblock"));
+      for (const share of [lockFile(dir, mounted, "at"), lockFile(dir, mounted, provider), ...ancestors(mounted).map((path) => lockFile(dir, path, "under"))]) {
+        held.push(take(dir, share, "--shared", "--nonblock"));
+      }
     } catch (error) {
       release();
       throw error;
@@ -299,7 +319,7 @@ function lock(mounted: string, slots: number): (() => void) | null {
 export class Scheduler {
   private readonly slots: Slot[];
   private readonly exhaustedMounts = new Set<string>();
-  private readonly live = new Set<Held>();
+  private readonly live = new Set<Held & { login: Login }>();
   private readonly refused = new Map<string, string[]>();
 
   constructor(logins: Login[]) {
@@ -316,7 +336,7 @@ export class Scheduler {
   }
 
   leased(): boolean {
-    return this.slots.some((slot) => !slot.exhausted && (slot.store === null ? claimed(JSON.stringify(slot.login.seat)) : blocked(slot.store.mounted, slot.login.concurrency)));
+    return this.slots.some((slot) => !slot.exhausted && (slot.store === null ? claimed(JSON.stringify(slot.login.seat)) : blocked(slot.store.mounted, slot.login.provider, slot.login.concurrency)));
   }
 
   capacity(): number {
@@ -378,7 +398,7 @@ export class Scheduler {
       else if (path !== null && !isDirectory(path)) refuse([`store ${path} is not an existing directory`]);
       else if (path !== null) {
         const found = resolveStore(login.provider, path);
-        const known = [...this.slots.flatMap((other) => other.store ?? []), ...[...this.live].filter((other) => other.store !== found.store)];
+        const known = [...this.slots.flatMap((other) => other.store ?? []), ...[...this.live].filter((other) => other.login !== login || other.store !== found.store)];
         const problems = storeProblems(login.provider, path, found, known);
         refuse(problems);
         if (problems.length === 0) {
@@ -393,7 +413,7 @@ export class Scheduler {
   }
 
   private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null, unclaim: () => void): Lease | null {
-    const unlock = lock(grant.mounted, slots);
+    const unlock = lock(grant.mounted, slot.login.provider, slots);
     if (unlock === null) return null;
     try {
       const source = mountSource(slot.login.provider, grant.store);
@@ -405,7 +425,7 @@ export class Scheduler {
       unlock();
       throw error;
     }
-    const entry = { ...grant };
+    const entry = { ...grant, login: slot.login };
     this.live.add(entry);
     let released = false;
     return {

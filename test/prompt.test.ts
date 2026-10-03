@@ -167,4 +167,8 @@ describe("correctionPrompt", () => {
     expect(prompt).toContain("/qa/out/groups.json");
     expect(prompt).toContain("finding id i2/page-two-repeats is missing");
   });
+
+  test("does not start with a slash, which OpenCode reads as a slash command", () => {
+    expect(correctionPrompt("/qa/out/groups.json", "finding id i2/page-two-repeats is missing").startsWith("/")).toBe(false);
+  });
 });
