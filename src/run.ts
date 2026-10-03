@@ -11,7 +11,6 @@ import {
   readRelayLogs,
   removeCopies,
   runnerEnv,
-  saveDisks,
   startEnvironment,
   stopEnvironment,
   stopProject,
@@ -540,7 +539,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
     const teardowns = [...ctx.teardowns];
     try {
       await stopProject(project, join(opts.runDir, "interns", opts.name));
-      await saveDisks(opts.runDir, opts.name, project, opts.runnerImage);
+      await removeCopies(opts.runDir, opts.runId, opts.runnerImage);
     } catch (reason) {
       teardowns.push(message(reason));
     }
