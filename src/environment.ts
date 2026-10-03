@@ -86,16 +86,19 @@ async function networkIds(): Promise<string[]> {
   return (await execute(["docker", "network", "ls", "-q"])).split("\n").filter((id) => id !== "");
 }
 
-async function inspectNetwork(id: string): Promise<z.infer<typeof networksSchema>> {
-  const cmd = ["docker", "network", "inspect", id];
+async function inspectNetworks(ids: string[]): Promise<z.infer<typeof networksSchema>> {
+  if (ids.length === 0) return [];
+  const cmd = ["docker", "network", "inspect", ...ids];
   const result = await capture(cmd);
   if (result.code === 0) return networksSchema.parse(JSON.parse(result.stdout));
-  if (!(await networkIds()).includes(id)) return [];
-  throw failure(cmd, result.code, result.stderr);
+  const listed = await networkIds();
+  const left = ids.filter((id) => listed.includes(id));
+  if (left.length === ids.length) throw failure(cmd, result.code, result.stderr);
+  return inspectNetworks(left);
 }
 
 async function usedBlocks(): Promise<Cidr[]> {
-  const networks = (await Promise.all((await networkIds()).map(inspectNetwork))).flat();
+  const networks = await inspectNetworks(await networkIds());
   const routes = routesSchema.parse(JSON.parse(await execute(["ip", "-4", "-j", "route", "show", "table", "all"])));
   const subnets = networks.flatMap((network) => (network.IPAM.Config ?? []).map((config) => config.Subnet)).filter((subnet) => !subnet.includes(":"));
   const destinations = routes.map((route) => route.dst).filter((dst) => dst !== "default");
@@ -406,6 +409,7 @@ export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void
   const project = projectName(spec.runId, spec.name);
   const dir = envDir(spec);
   const log = join(dir, "env.log");
+  await removeCopy(spec.runDir, spec.runId, spec.name, spec.runner.image);
   await writeFiles(spec);
   await createDisk(spec.runner.out, spec.runner.image, project);
   const tmp = join(dir, "tmp");
@@ -628,11 +632,15 @@ async function removeAsRoot(dir: string, image: string, paths: string[]): Promis
   await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
 }
 
+export async function removeCopy(runDir: string, runId: string, name: string, image: string): Promise<void> {
+  const dir = join(runDir, "envs", name);
+  const paths = [projectName(runId, name), "tmp"].filter((path) => existsSync(join(dir, path)));
+  if (paths.length > 0) await removeAsRoot(dir, image, paths);
+}
+
 export async function stopEnvironment(runDir: string, name: string, project: string, image: string, removed?: () => void): Promise<void> {
   await down(project, join(runDir, "interns", name));
   removed?.();
-  await removeImages([`vsc-${project}-`]);
-  await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
   await saveDisks(runDir, name, project, image);
 }
 
