@@ -1,10 +1,10 @@
-import { closeSync, existsSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { errorCode } from "./findings.ts";
+import { errorCode, message } from "./findings.ts";
 import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
@@ -128,10 +128,10 @@ export async function freeSlots(): Promise<number> {
   return openSlots(await usedBlocks()).length;
 }
 
-function slotLocks(): string {
+function runtimeLocks(kind: "slots" | "runs"): string {
   const runtime = process.env.XDG_RUNTIME_DIR;
-  if (runtime === undefined || runtime === "") throw new Error("XDG_RUNTIME_DIR is not set, and QA Interns keeps the locks of its network slots there");
-  const dir = join(runtime, "qa-interns", "slots");
+  if (runtime === undefined || runtime === "") throw new Error("XDG_RUNTIME_DIR is not set, and QA Interns keeps the locks of its network slots and runs there");
+  const dir = join(runtime, "qa-interns", kind);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
@@ -139,7 +139,7 @@ function slotLocks(): string {
 export type HeldSlot = { slot: number; release: () => void };
 
 export async function freeSlot(): Promise<HeldSlot> {
-  const dir = slotLocks();
+  const dir = runtimeLocks("slots");
   for (const slot of openSlots(await usedBlocks())) {
     const fd = flock(join(dir, `${slotAddress(slot, 0)}.lock`), "--exclusive", "--nonblock");
     if (fd === null) continue;
@@ -606,9 +606,9 @@ async function saveRelayLogs(project: string, dir: string): Promise<void> {
   for (const id of ids) await Bun.write(join(dir, `${relayPrefix}${id}${relaySuffix}`), await execute(["docker", "logs", id]));
 }
 
-async function down(project: string, relayDir: string): Promise<void> {
+async function down(project: string, relayDir: string | null): Promise<void> {
   await execute(["docker", "compose", "-p", project, "stop", "--timeout", "2"]);
-  await saveRelayLogs(project, relayDir);
+  if (relayDir !== null) await saveRelayLogs(project, relayDir);
   await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
   const ids = await projectObjects(project);
   if (ids.length > 0) throw new Error(`docker compose down left objects of ${project} behind: ${ids.join(", ")}`);
@@ -689,8 +689,56 @@ export async function stopRun(runDir: string, runId: string): Promise<void> {
     execute(["docker", "volume", "ls", ...listing]),
   ]);
   const projects = [...new Set(found.join("\n").split("\n"))].filter((project) => project.startsWith(prefix));
-  const results = await Promise.allSettled(projects.map((project) => down(project, join(runDir, "interns", project.slice(prefix.length)))));
+  const kept = existsSync(runDir);
+  const results = await Promise.allSettled(projects.map((project) => down(project, kept ? join(runDir, "interns", project.slice(prefix.length)) : null)));
   const errors = results.flatMap((result) => (result.status === "rejected" ? [String(result.reason)] : []));
   if (errors.length > 0) throw new Error(`Teardown of run ${runId} failed:\n${errors.join("\n")}`);
   await removeImages([prefix, `vsc-${prefix}`]);
+}
+
+export type HeldRun = { end: () => void };
+
+export function holdRun(runId: string, runDir: string): HeldRun {
+  const dir = runtimeLocks("runs");
+  const entry = join(dir, runId);
+  const pending = join(dir, `.${runId}`);
+  const fd = flock(pending, "--exclusive", "--nonblock");
+  if (fd === null) throw new Error(`Another process holds ${pending}`);
+  writeSync(fd, runDir);
+  renameSync(pending, entry);
+  let held = true;
+  return {
+    end: () => {
+      if (!held) return;
+      held = false;
+      rmSync(entry, { force: true });
+      closeSync(fd);
+    },
+  };
+}
+
+export async function sweepRuns(image: string): Promise<string[]> {
+  const dir = runtimeLocks("runs");
+  const runIds = readdirSync(dir).filter((name) => !name.startsWith("."));
+  const errors = await Promise.all(
+    runIds.map(async (runId) => {
+      const entry = join(dir, runId);
+      const fd = flock(entry, "--exclusive", "--nonblock");
+      if (fd === null) return [];
+      try {
+        const runDir = readFileSync(entry, "utf8");
+        if (runDir !== "") {
+          await stopRun(runDir, runId);
+          await removeCopies(runDir, runId, image);
+        }
+        rmSync(entry, { force: true });
+        return [];
+      } catch (error) {
+        return [`Removing what run ${runId} left after its process ended failed: ${message(error)}`];
+      } finally {
+        closeSync(fd);
+      }
+    }),
+  );
+  return errors.flat();
 }

@@ -25,6 +25,7 @@ const timeout = 20 * 60_000;
 const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
 const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
+const runLocks = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs");
 let built = false;
 
 type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true };
@@ -181,6 +182,7 @@ USER qa
       expect(lines).toContain("phase confirming");
       const state = await readState(runDir);
       expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger" }, options: { interns: 2 } });
+      expect(existsSync(join(runLocks, state.runId))).toBe(false);
       expect(state.options.concurrency).toBeGreaterThanOrEqual(1);
       expect(state.options.confirmConcurrency).toBe(1);
       expect(state.interns.map((entry) => [entry.id, entry.role, entry.status, entry.findings, entry.model])).toEqual([
@@ -699,6 +701,58 @@ USER qa
       expect(intern(state, "i1")).toMatchObject({ login: "claude-limit", status: "failed" });
       expect(intern(state, "i1").detail).toStartWith(`${failure}; teardown failed: docker compose down left objects of qa-${state.runId}-i1 behind`);
       expect(await leftovers(state.runId)).toEqual([]);
+      expect(existsSync(join(runLocks, state.runId))).toBe(true);
+    },
+    timeout,
+  );
+
+  test(
+    "a run first tears down what a run whose process ended left, without creating its deleted run directory, and leaves a run whose process lives",
+    async () => {
+      const module = join(import.meta.dir, "..", "src", "environment.ts");
+      const hold = async (runId: string, runDir: string) => {
+        const holder = Bun.spawn([process.execPath, "-e", `const { holdRun } = await import(${JSON.stringify(module)}); holdRun(${JSON.stringify(runId)}, ${JSON.stringify(runDir)}); console.log("held"); await Bun.sleep(600000);`], {
+          env: { ...process.env },
+          stdout: "pipe",
+        });
+        await holder.stdout.getReader().read();
+        return holder;
+      };
+      const dead = newRunId();
+      const live = newRunId();
+      const deadDir = join(root, "swept", dead);
+      const compose = join(root, `swept-${dead}.yml`);
+      await Bun.write(compose, `services:\n  qa-relay:\n    image: ${JSON.stringify(fakeImage)}\n    command: ["sleep", "infinity"]\n`);
+      const third = await freeBlock(214);
+      const blocker = `qair-f-e2e-${id}-swept`;
+      const previous = process.env.QA_INTERNS_SUBNET;
+      const deadHolder = await hold(dead, deadDir);
+      const liveHolder = await hold(live, join(root, "swept", live));
+      try {
+        await execute(["docker", "compose", "-p", `qa-${dead}-i1`, "-f", compose, "up", "-d"]);
+        await execute(["docker", "tag", fakeImage, `qa-${dead}-web:latest`]);
+        await execute(["docker", "tag", fakeImage, `qa-${live}-web:latest`]);
+        await execute(["docker", "network", "create", "--internal", "--subnet", `10.214.${third}.0/25`, blocker]);
+        deadHolder.kill("SIGKILL");
+        await deadHolder.exited;
+        process.env.QA_INTERNS_SUBNET = `10.214.${third}.0/23`;
+        const loginsFile = await logins("swept", [{ id: "claude-1", provider: "claude" }]);
+        const run = runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+        await expect(run).rejects.toThrow("No free network slot");
+        expect(await leftovers(dead)).toEqual([]);
+        expect(existsSync(deadDir)).toBe(false);
+        expect(existsSync(join(runLocks, dead))).toBe(false);
+        expect(await leftovers(live)).toEqual([`qa-${live}-web:latest`]);
+      } finally {
+        if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+        else process.env.QA_INTERNS_SUBNET = previous;
+        deadHolder.kill("SIGKILL");
+        liveHolder.kill("SIGKILL");
+        await Promise.all([deadHolder.exited, liveHolder.exited]);
+        await capture(["docker", "network", "rm", blocker]);
+        await stopRun(deadDir, dead);
+        await stopRun(join(root, "swept", live), live);
+      }
     },
     timeout,
   );
