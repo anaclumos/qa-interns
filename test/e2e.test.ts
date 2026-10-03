@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -752,6 +752,7 @@ USER qa
         await capture(["docker", "network", "rm", blocker]);
         await stopRun(deadDir, dead);
         await stopRun(join(root, "swept", live), live);
+        rmSync(join(runLocks, live), { force: true });
       }
     },
     timeout,
