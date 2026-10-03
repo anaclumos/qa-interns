@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
-import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, watch, writeFileSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
@@ -245,6 +245,15 @@ function locksDir(): string {
   return dir;
 }
 
+const releasedFile = "released";
+
+export function watchReleases(wake: () => void): () => void {
+  const watcher = watch(locksDir(), (_event, name) => {
+    if (name === releasedFile) wake();
+  });
+  return () => watcher.close();
+}
+
 function lockFile(dir: string, path: string, kind: string): string {
   return join(dir, `${createHash("sha256").update(path).digest("hex")}-${kind}.lock`);
 }
@@ -448,6 +457,7 @@ export class Scheduler {
         keeper?.kill();
         unlock();
         unclaim();
+        writeFileSync(join(locksDir(), releasedFile), `${process.pid}\n`, { mode: 0o600 });
       },
     };
   }
