@@ -379,7 +379,7 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   try {
     const env = await targetEnv(target.settings.hostEnv, dir);
     const compose = ["docker", "compose", "-p", buildProject, ...sourceComposeArgs(target, sourceDir)];
-    const config = buildConfigSchema.parse(JSON.parse(await execute([...compose, "config", "--format", "json", ...services], { env })));
+    const config = buildConfigSchema.parse(JSON.parse(await execute([...compose, "config", "--format", "json", "--no-env-resolution", ...services], { env })));
     const builds = services.map((name) => {
       const service = config.services[name];
       if (service?.build === undefined) throw new Error(`docker compose config renders no build for service ${name} from the Compose files of ${sourceDir}`);
@@ -387,7 +387,8 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
     });
     const hasher = new Bun.CryptoHasher("sha256");
     for (const file of buildCode) hasher.update(await readFile(file));
-    hasher.update(JSON.stringify(builds).replaceAll(sourceDir, ""));
+    const hostValues = target.settings.hostEnv.filter((name) => !target.settings.secrets.hostEnv.includes(name)).map((name) => [name, env[name] ?? null]);
+    hasher.update(JSON.stringify([builds, hostValues]).replaceAll(sourceDir, ""));
     await hashTree(hasher, sourceDir);
     const key = hasher.digest("hex").slice(0, keyLength);
     const shared = (name: string) => `${imagePrefix}${key}-${name.toLowerCase()}:latest`;

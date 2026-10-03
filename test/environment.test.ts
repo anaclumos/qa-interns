@@ -671,7 +671,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     expect(created).toEqual([]);
   });
 
-  test("give a later run the image an earlier run built from an export with the same files and build settings, and build again when a file or a build argument differs", async () => {
+  test("give a later run the image an earlier run built from an export with the same files and build settings, and build again when a file, a build argument, or a hostEnv value differs", async () => {
     const source = await scratch();
     const scope = crypto.randomUUID().slice(0, 8);
     await Bun.write(join(source, "Dockerfile"), "FROM scratch\nARG LABEL\nLABEL qa-interns-test=$LABEL\nCOPY build.txt /build.txt\n");
@@ -681,10 +681,15 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       JSON.stringify({
         dockerComposeFile: "compose.yml",
         service: "web",
-        customizations: { "qa-interns": { urls: { app: "http://web:3000" }, ready: "http://web:3000/health", seed: "node seed.mjs", hostEnv: ["QA_INTERNS_TEST_LABEL"] } },
+        customizations: {
+          "qa-interns": { urls: { app: "http://web:3000" }, ready: "http://web:3000/health", seed: "node seed.mjs", hostEnv: ["QA_INTERNS_TEST_LABEL", "QA_INTERNS_TEST_UNREAD"] },
+        },
       }),
     );
-    await Bun.write(join(source, ".devcontainer", "compose.yml"), "services:\n  web:\n    build:\n      context: ..\n      args:\n        LABEL: ${QA_INTERNS_TEST_LABEL}\n");
+    await Bun.write(
+      join(source, ".devcontainer", "compose.yml"),
+      "services:\n  web:\n    build:\n      context: ..\n      args:\n        LABEL: ${QA_INTERNS_TEST_LABEL}\n    env_file: initialized.env\n",
+    );
     const own: string[] = [];
     const build = async (dir: string) => {
       const { images } = await buildImages(crypto.randomUUID().slice(0, 8), await loadTarget(ref, dir), dir);
@@ -692,6 +697,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       return images.web ?? "";
     };
     process.env.QA_INTERNS_TEST_LABEL = "one";
+    process.env.QA_INTERNS_TEST_UNREAD = "one";
     try {
       const first = await build(source);
       const built = (await imageIds()).get(first);
@@ -703,11 +709,15 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       process.env.QA_INTERNS_TEST_LABEL = "two";
       await build(copy);
       process.env.QA_INTERNS_TEST_LABEL = "one";
+      process.env.QA_INTERNS_TEST_UNREAD = "two";
+      await build(copy);
+      process.env.QA_INTERNS_TEST_UNREAD = "one";
       await Bun.write(join(copy, "build.txt"), `${scope} changed`);
       await build(copy);
-      expect(new Set(await sharedTags(own.slice(1))).size).toBe(3);
+      expect(new Set(await sharedTags(own.slice(1))).size).toBe(4);
     } finally {
       delete process.env.QA_INTERNS_TEST_LABEL;
+      delete process.env.QA_INTERNS_TEST_UNREAD;
       const ids = await imageIds();
       const left = [...new Set([...own, ...(await sharedTags(own))])].filter((name) => ids.has(name));
       if (left.length > 0) await execute(["docker", "image", "rm", ...left]);
