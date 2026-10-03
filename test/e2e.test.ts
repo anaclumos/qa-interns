@@ -856,6 +856,32 @@ USER qa
   );
 
   test(
+    "two asks that share one login and the one free block of QA_INTERNS_SUBNET both run, the second once the first has removed its networks",
+    async () => {
+      const third = await freeBlock(215);
+      const blocker = `qair-f-e2e-${id}-shared`;
+      await execute(["docker", "network", "create", "--internal", "--subnet", `10.215.${third}.0/25`, blocker]);
+      const previous = process.env.QA_INTERNS_SUBNET;
+      process.env.QA_INTERNS_SUBNET = `10.215.${third}.0/22`;
+      try {
+        const first = await askOptions(newRunId(), "first");
+        const second = { ...(await askOptions(newRunId(), "second")), loginsFile: first.loginsFile };
+        expect(await Promise.allSettled([ask(first), ask(second)])).toEqual([
+          { status: "fulfilled", value: { groups: [] } },
+          { status: "fulfilled", value: { groups: [] } },
+        ]);
+        expect(await leftovers(first.runId)).toEqual([]);
+        expect(await leftovers(second.runId)).toEqual([]);
+      } finally {
+        if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+        else process.env.QA_INTERNS_SUBNET = previous;
+        await execute(["docker", "network", "rm", blocker]);
+      }
+    },
+    timeout,
+  );
+
+  test(
     "an intern does not start when devcontainer up gives its dev container host access",
     async () => {
       const hostile = join(root, "hostile");

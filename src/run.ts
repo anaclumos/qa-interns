@@ -253,17 +253,18 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
   let slot: HeldSlot | undefined;
   let started = false;
   let unread = null as EnvironmentStats | null;
-  const releaseSlot = () => {
+  const release = () => {
     slot?.release();
     slot = undefined;
+    lease.release();
   };
-  const teardown = async (stopped: () => void, removed: () => void) => {
+  const teardown = async (removed: () => void) => {
     const environment = unread;
     unread = null;
     try {
       if (environment !== null) environment.containers = await containerStats(project);
     } finally {
-      await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage, stopped, removed);
+      await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage, removed);
     }
   };
   try {
@@ -282,7 +283,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
       if (!(outcome instanceof Error)) return outcome;
       ctx.scheduler.exhaust(lease);
       await note(outcome instanceof RequestError ? `login ${lease.login.id} failed with ${message(outcome)}` : outcome.message);
-      await teardown(lease.release, releaseSlot);
+      await teardown(release);
       started = false;
       await ctx.update(id, { status: "queued" });
       const next = await acquire(ctx, id);
@@ -293,12 +294,11 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     }
   } finally {
     const handOff = () => {
-      releaseSlot();
-      lease.release();
+      release();
       free();
     };
     try {
-      if (started) await teardown(lease.release, handOff);
+      if (started) await teardown(handOff);
     } catch (error) {
       ctx.teardowns.push(`${id}: ${message(error)}`);
       await note(`teardown failed: ${message(error)}`);
