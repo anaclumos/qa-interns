@@ -297,6 +297,35 @@ USER qa
   );
 
   test(
+    "a confirming intern takes the login of the one before it once that intern's containers stop, before its teardown ends",
+    async () => {
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("handoff", [{ id: "claude-handoff", provider: "claude", second: true }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null, options: { concurrency: 1, confirmConcurrency: 1 } });
+      const confirmations = state.interns.filter((entry) => entry.role === "confirm").toSorted((a, b) => Date.parse(a.startedAt ?? "") - Date.parse(b.startedAt ?? ""));
+      expect(confirmations.map((entry) => entry.status)).toEqual(["done", "done"]);
+      const [first, second] = confirmations;
+      expect(Date.parse(second?.startedAt ?? "")).toBeLessThan(Date.parse(first?.endedAt ?? ""));
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "the report counts the connections that target services open through the relay, per egress host and outcome, with the ones a connection limit refused",
     async () => {
       const relayed = join(root, "relayed");

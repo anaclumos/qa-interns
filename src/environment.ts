@@ -606,8 +606,9 @@ async function saveRelayLogs(project: string, dir: string): Promise<void> {
   for (const id of ids) await Bun.write(join(dir, `${relayPrefix}${id}${relaySuffix}`), await execute(["docker", "logs", id]));
 }
 
-async function down(project: string, relayDir: string): Promise<void> {
+async function down(project: string, relayDir: string, stopped?: () => void): Promise<void> {
   await execute(["docker", "compose", "-p", project, "stop", "--timeout", "2"]);
+  stopped?.();
   await saveRelayLogs(project, relayDir);
   await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
   const ids = await projectObjects(project);
@@ -628,8 +629,8 @@ async function removeAsRoot(dir: string, image: string, paths: string[]): Promis
   await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
 }
 
-export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<void> {
-  await down(project, join(runDir, "interns", name));
+export async function stopEnvironment(runDir: string, name: string, project: string, image: string, stopped?: () => void): Promise<void> {
+  await down(project, join(runDir, "interns", name), stopped);
   await removeImages([`vsc-${project}-`]);
   await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
   await saveDisks(runDir, name, project, image);
