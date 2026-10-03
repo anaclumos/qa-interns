@@ -629,8 +629,9 @@ async function removeAsRoot(dir: string, image: string, paths: string[]): Promis
   await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
 }
 
-export async function stopEnvironment(runDir: string, name: string, project: string, image: string, stopped?: () => void): Promise<void> {
+export async function stopEnvironment(runDir: string, name: string, project: string, image: string, stopped?: () => void, removed?: () => void): Promise<void> {
   await down(project, join(runDir, "interns", name), stopped);
+  removed?.();
   await removeImages([`vsc-${project}-`]);
   await removeAsRoot(join(runDir, "envs", name), image, [project, "tmp"]);
   await saveDisks(runDir, name, project, image);

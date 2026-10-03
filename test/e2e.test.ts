@@ -297,7 +297,7 @@ USER qa
   );
 
   test(
-    "a confirming intern takes the login of the one before it once that intern's containers stop, before its teardown ends",
+    "a confirming intern takes the login of the one before it once that intern's containers and networks are removed, before its teardown ends",
     async () => {
       const runDir = await runQa({
         dir: target,
@@ -733,7 +733,7 @@ USER qa
   );
 
   test(
-    "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, and a run fails when every block overlaps one",
+    "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, a queued confirmation takes the one free block after the one before it, and a run fails when every block overlaps one",
     async () => {
       const third = await freeBlock(214);
       const subnet = `10.214.${third}.0/22`;
@@ -747,17 +747,18 @@ USER qa
       process.env.QA_INTERNS_SUBNET = subnet;
       try {
         await block(`10.214.${third}.0/25`);
-        const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude" }]);
+        const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude", second: true }]);
         const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
         const runDir = await run();
         const state = await readState(runDir);
         expect(state.phase).toBe("done");
         expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([
           ["i1", "done"],
+          ["judge", "done"],
           ["c1", "done"],
+          ["c2", "done"],
         ]);
-        expect(internalSubnet(runDir, "i1")).toBe(`10.214.${third + 2}.0/25`);
-        expect(internalSubnet(runDir, "c1")).toBe(`10.214.${third + 2}.0/25`);
+        for (const internId of ["i1", "judge", "c1", "c2"]) expect(internalSubnet(runDir, internId)).toBe(`10.214.${third + 2}.0/25`);
         expect(await leftovers(state.runId)).toEqual([]);
 
         await block(`10.214.${third + 3}.128/25`);
