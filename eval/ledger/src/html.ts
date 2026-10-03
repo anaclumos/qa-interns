@@ -158,7 +158,7 @@ ${canEdit ? `<td><input type="checkbox" name="invoice" value="${invoice.id}" ari
     `<h1>Invoices</h1>
 <div class="actions">
 ${canEdit ? `<a href="/invoices/new">New invoice</a>` : ""}
-<a href="/invoices/export.csv">Export CSV</a>
+<a href="/invoices/export.csv">Export all invoices as CSV</a>
 </div>
 <form method="get" action="/invoices" class="row" role="search">
 <div><label for="q">Customer</label><input id="q" name="q" type="search" value="${esc(options.q)}"></div>
