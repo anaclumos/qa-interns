@@ -732,6 +732,10 @@ USER qa
         expect(state).toMatchObject({ phase: "done", error: null });
         expect(intern(state, "i1").detail).toContain(`; teardown failed: docker run --rm --name qa-${state.runId}-i1-disk-`);
         expect(intern(state, "i1").detail).toEndWith(`umount: ${join(runDir, "interns", "i1", "out")}: target is busy.`);
+        expect(intern(state, "i1").findings).toBe(1);
+        const report = await Bun.file(join(runDir, "findings.json")).json();
+        expect(report.groups).toHaveLength(1);
+        expect(report.groups[0]).toMatchObject({ confirmed: true, reproductions: ["i1", "c1"] });
         expect(await leftovers(state.runId)).toEqual([]);
         expect(await workspaces(runDir, state)).toEqual([]);
         expect(await disks(runDir, state)).toEqual([]);

@@ -15,6 +15,7 @@ import {
   removeDir,
   renderOverride,
   runnerEnv,
+  saveDisk,
   slotSubnets,
   startEnvironment,
   stopEnvironment,
@@ -700,6 +701,34 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       await removeDir(dir, image, "qair-t-remove");
       expect(existsSync(join(root, "real dir", "run"))).toBe(false);
       expect(readFileSync("/proc/self/mountinfo", "utf8")).not.toContain(root);
+    },
+    20 * 60_000,
+  );
+
+  test(
+    "a save of an output disk that a process holds fails and keeps the disk's files readable, and a later save copies them into the folder",
+    async () => {
+      const root = await scratch();
+      const image = await ensureRunnerImage();
+      const out = join(root, "interns", "i1", "out");
+      await mkdir(out, { recursive: true });
+      await createDisk(out, image, "qair-t-busy");
+      await mkdir(join(out, "findings"));
+      await Bun.write(join(out, "findings", "a.json"), "{}\n");
+      const mounted = () => readFileSync("/proc/self/mountinfo", "utf8").includes(` ${out} `);
+      const holder = Bun.spawn(["sleep", "infinity"], { cwd: out });
+      try {
+        await expect(saveDisk(out, image, "qair-t-busy")).rejects.toThrow(`exited with 32: umount: ${out}: target is busy.`);
+        expect(mounted()).toBe(true);
+        expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
+      } finally {
+        holder.kill();
+        await holder.exited;
+      }
+      await saveDisk(out, image, "qair-t-busy");
+      expect(mounted()).toBe(false);
+      expect(await readdir(dirname(out))).toEqual(["out"]);
+      expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
     },
     20 * 60_000,
   );
