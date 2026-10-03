@@ -315,13 +315,18 @@ describe("loadLogins", () => {
     expect(message).toContain(`logins[0] "grok-empty": grok store ${emptyStore} has no auth.json`);
   });
 
-  test("accepts an opencode store whose auth.json holds one opencode-go API key, and rejects any other content without quoting it", async () => {
+  test("accepts an opencode store whose auth.json holds one opencode-go or one openrouter API key, and rejects any other content without quoting it", async () => {
     const store = (name: string) => join(dir, "stores", `opencode-${name}`);
     const contents: Record<string, string> = {
-      key: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" } }),
+      go: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" } }),
+      openrouter: JSON.stringify({ openrouter: { type: "api", key: "router-key" } }),
       empty: "{}",
-      blank: JSON.stringify({ "opencode-go": { type: "api", key: "" } }),
-      extra: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" }, anthropic: { type: "api", key: "other-key" } }),
+      blank: JSON.stringify({ openrouter: { type: "api", key: "" } }),
+      both: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" }, openrouter: { type: "api", key: "router-key" } }),
+      extra: JSON.stringify({ openrouter: { type: "api", key: "router-key" }, anthropic: { type: "api", key: "other-key" } }),
+      other: JSON.stringify({ anthropic: { type: "api", key: "other-key" } }),
+      oauth: JSON.stringify({ openrouter: { type: "oauth", refresh: "refresh-token", access: "access-token", expires: 0 } }),
+      field: JSON.stringify({ openrouter: { type: "api", key: "router-key", metadata: { label: "metadata-value" } } }),
       wellknown: JSON.stringify({ "opencode-go": { type: "api", key: "go-key" }, "https://example.test": { type: "wellknown", key: "TOKEN", token: "remote-token" } }),
       broken: "{",
     };
@@ -329,15 +334,23 @@ describe("loadLogins", () => {
       await mkdir(store(name), { recursive: true });
       await Bun.write(join(store(name), "auth.json"), content);
     }
-    const file = await writeLogins("opencode.json", { logins: [{ id: "opencode-key", provider: "opencode", store: store("key"), model: "opencode-go/mimo-v2.6-pro" }] });
-    expect(await loadLogins(file)).toEqual([{ id: "opencode-key", provider: "opencode", store: store("key"), seat: null, quota: null, concurrency: 1, model: "opencode-go/mimo-v2.6-pro" }]);
+    const file = await writeLogins("opencode.json", {
+      logins: [
+        { id: "opencode-go", provider: "opencode", store: store("go"), model: "opencode-go/mimo-v2.6-pro" },
+        { id: "opencode-openrouter", provider: "opencode", store: store("openrouter"), model: "openrouter/xiaomi/mimo-v2.6-pro" },
+      ],
+    });
+    expect(await loadLogins(file)).toEqual([
+      { id: "opencode-go", provider: "opencode", store: store("go"), seat: null, quota: null, concurrency: 1, model: "opencode-go/mimo-v2.6-pro" },
+      { id: "opencode-openrouter", provider: "opencode", store: store("openrouter"), seat: null, quota: null, concurrency: 1, model: "openrouter/xiaomi/mimo-v2.6-pro" },
+    ]);
 
-    const bad = ["empty", "blank", "extra", "wellknown", "broken"];
+    const bad = ["empty", "blank", "both", "extra", "other", "oauth", "field", "wellknown", "broken"];
     const message = await failure("opencode-bad.json", { logins: bad.map((name) => ({ id: `opencode-${name}`, provider: "opencode", store: store(name) })) });
     for (const [index, name] of bad.entries()) {
-      expect(message).toContain(`logins[${index}] "opencode-${name}": ${join(store(name), "auth.json")} must hold one opencode-go API key and nothing else`);
+      expect(message).toContain(`logins[${index}] "opencode-${name}": ${join(store(name), "auth.json")} must hold one opencode-go or openrouter API key and nothing else`);
     }
-    for (const value of ["go-key", "other-key", "remote-token"]) expect(message).not.toContain(value);
+    for (const value of ["go-key", "router-key", "other-key", "refresh-token", "access-token", "metadata-value", "remote-token"]) expect(message).not.toContain(value);
   });
 
   test("rejects two logins that name the same store after resolving the path", async () => {

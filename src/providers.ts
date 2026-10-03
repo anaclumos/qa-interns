@@ -1,15 +1,17 @@
 import type { RequestError } from "@agentclientprotocol/sdk";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import type { GeneratedFile, Mount, Provider } from "./types.ts";
 
+export type Access = { env: Record<string, string>; egress: string[]; key: string | null };
+
 export type ProviderSpec = {
   adapter: string[];
-  env: Record<string, string>;
+  access(store: string): Access;
   mounts(store: string): Mount[];
   files: GeneratedFile[];
   tmpfs: string[];
-  egress: string[];
   clientMeta: Record<string, unknown> | null;
   sessionMeta: Record<string, unknown> | null;
   modeId: string | null;
@@ -43,9 +45,53 @@ plugins = false
 enabled = false
 `;
 
+const opencodeHosts = { "opencode-go": ["opencode.ai"], openrouter: ["openrouter.ai"] };
+const apiKey = z.strictObject({ type: z.literal("api"), key: z.string().min(1) });
+const opencodeAuth = z.union([
+  z.strictObject({ "opencode-go": apiKey }).transform((auth) => ({ provider: "opencode-go" as const, key: auth["opencode-go"].key })),
+  z.strictObject({ openrouter: apiKey }).transform((auth) => ({ provider: "openrouter" as const, key: auth.openrouter.key })),
+]);
+
+export const opencodeAuthRule = "must hold one opencode-go or openrouter API key and nothing else";
+
+export function opencodeLogin(file: string): z.infer<typeof opencodeAuth> | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
+  return opencodeAuth.safeParse(value).data ?? null;
+}
+
+const opencodeEnv = {
+  XDG_DATA_HOME: "/home/qa/.local/share",
+  OPENCODE_DISABLE_MODELS_FETCH: "true",
+  OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+  OPENCODE_PERMISSION: JSON.stringify({
+    "*": "deny",
+    ...Object.fromEntries(
+      ["bash", "read", "glob", "grep", "edit", "task", "webfetch", "todowrite", "invalid", "external_directory", "doom_loop"].map((name) => [name, "allow"]),
+    ),
+  }),
+};
+
 function storePath(store: string): string {
   if (!path.isAbsolute(store)) throw new Error(`login store must be an absolute path, got "${store}"`);
   return store;
+}
+
+function fixed(env: Record<string, string>, egress: string[]): () => Access {
+  return () => ({ env, egress, key: null });
+}
+
+function opencodeAccess(store: string): Access {
+  const file = path.join(storePath(store), "auth.json");
+  const login = opencodeLogin(file);
+  if (login === null) throw new Error(`${file} ${opencodeAuthRule}`);
+  const config = { enabled_providers: [login.provider], agent: { title: { disable: true } } };
+  return { env: { ...opencodeEnv, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) }, egress: opencodeHosts[login.provider], key: login.key };
 }
 
 function plainModel(model: string): ConfigValue[] {
@@ -71,17 +117,19 @@ function cursorModel(model: string): ConfigValue[] {
 export const providers: Record<Provider, ProviderSpec> = {
   claude: {
     adapter: ["claude-agent-acp"],
-    env: {
-      CLAUDE_CONFIG_DIR: "/home/qa/.claude",
-      CLAUDE_SECURESTORAGE_CONFIG_DIR: "/home/qa/.claude-login",
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-      DISABLE_AUTOUPDATER: "1",
-    },
+    access: fixed(
+      {
+        CLAUDE_CONFIG_DIR: "/home/qa/.claude",
+        CLAUDE_SECURESTORAGE_CONFIG_DIR: "/home/qa/.claude-login",
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+        DISABLE_AUTOUPDATER: "1",
+      },
+      ["api.anthropic.com", "platform.claude.com"],
+    ),
     mounts: (store) => [{ source: storePath(store), target: "/home/qa/.claude-login", readOnly: false }],
     files: [],
     tmpfs: ["/home/qa/.claude"],
-    egress: ["api.anthropic.com", "platform.claude.com"],
     clientMeta: null,
     sessionMeta: { claudeCode: { options: { strictMcpConfig: true } } },
     modeId: "bypassPermissions",
@@ -90,11 +138,10 @@ export const providers: Record<Provider, ProviderSpec> = {
   },
   codex: {
     adapter: ["codex-acp"],
-    env: { CODEX_HOME: "/home/qa/.codex", INITIAL_AGENT_MODE: "agent-full-access", NO_BROWSER: "1" },
+    access: fixed({ CODEX_HOME: "/home/qa/.codex", INITIAL_AGENT_MODE: "agent-full-access", NO_BROWSER: "1" }, ["chatgpt.com", "auth.openai.com", "api.openai.com"]),
     mounts: (store) => [{ source: path.join(storePath(store), "auth.json"), target: "/home/qa/.codex/auth.json", readOnly: false }],
     files: [{ target: "/home/qa/.codex/config.toml", content: codexConfig }],
     tmpfs: ["/home/qa/.codex"],
-    egress: ["chatgpt.com", "auth.openai.com", "api.openai.com"],
     clientMeta: null,
     sessionMeta: null,
     modeId: null,
@@ -103,11 +150,10 @@ export const providers: Record<Provider, ProviderSpec> = {
   },
   cursor: {
     adapter: ["cursor-agent", "--force", "acp"],
-    env: { XDG_CONFIG_HOME: "/home/qa/.config", CURSOR_CONFIG_DIR: "/home/qa/.cursor" },
+    access: fixed({ XDG_CONFIG_HOME: "/home/qa/.config", CURSOR_CONFIG_DIR: "/home/qa/.cursor" }, ["*.cursor.sh"]),
     mounts: (store) => [{ source: storePath(store), target: "/home/qa/.config/cursor", readOnly: false }],
     files: [],
     tmpfs: ["/home/qa/.config"],
-    egress: ["*.cursor.sh"],
     clientMeta: { parameterizedModelPicker: true },
     sessionMeta: null,
     modeId: null,
@@ -116,11 +162,10 @@ export const providers: Record<Provider, ProviderSpec> = {
   },
   grok: {
     adapter: ["grok", "agent", "--always-approve", "stdio"],
-    env: { GROK_AUTH_PATH: "/home/qa/.grok-login/auth.json" },
+    access: fixed({ GROK_AUTH_PATH: "/home/qa/.grok-login/auth.json" }, ["cli-chat-proxy.grok.com", "auth.x.ai"]),
     mounts: (store) => [{ source: storePath(store), target: "/home/qa/.grok-login", readOnly: false }],
     files: [],
     tmpfs: [],
-    egress: ["cli-chat-proxy.grok.com", "auth.x.ai"],
     clientMeta: null,
     sessionMeta: null,
     modeId: null,
@@ -130,22 +175,10 @@ export const providers: Record<Provider, ProviderSpec> = {
   },
   opencode: {
     adapter: ["opencode", "acp"],
-    env: {
-      XDG_DATA_HOME: "/home/qa/.local/share",
-      OPENCODE_DISABLE_MODELS_FETCH: "true",
-      OPENCODE_DISABLE_PROJECT_CONFIG: "true",
-      OPENCODE_CONFIG_CONTENT: JSON.stringify({ enabled_providers: ["opencode-go"] }),
-      OPENCODE_PERMISSION: JSON.stringify({
-        "*": "deny",
-        ...Object.fromEntries(
-          ["bash", "read", "glob", "grep", "edit", "task", "webfetch", "todowrite", "invalid", "external_directory", "doom_loop"].map((name) => [name, "allow"]),
-        ),
-      }),
-    },
+    access: opencodeAccess,
     mounts: (store) => [{ source: path.join(storePath(store), "auth.json"), target: "/home/qa/.local/share/opencode/auth.json", readOnly: true }],
     files: [],
     tmpfs: ["/home/qa/.local", "/home/qa/.local/share", "/home/qa/.local/share/opencode"],
-    egress: ["opencode.ai"],
     clientMeta: null,
     sessionMeta: null,
     modeId: null,

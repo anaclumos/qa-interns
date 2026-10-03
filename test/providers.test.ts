@@ -1,8 +1,26 @@
 import { RequestError } from "@agentclientprotocol/sdk";
-import { describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { providers } from "../src/providers.ts";
 import { providerNames, type Provider } from "../src/types.ts";
+
+let dir: string;
+
+beforeAll(async () => {
+  dir = await mkdtemp(path.join(os.tmpdir(), "qa-interns-providers-"));
+});
+
+afterAll(async () => {
+  await rm(dir, { recursive: true, force: true });
+});
+
+async function opencodeStore(name: string, auth: string): Promise<string> {
+  const store = path.join(dir, name);
+  await Bun.write(path.join(store, "auth.json"), auth);
+  return store;
+}
 
 const authRequired = new RequestError(-32000, "Authentication required", undefined);
 const cursorAuthRequired = new RequestError(-32000, "Authentication required", {
@@ -96,7 +114,7 @@ describe("mounts", () => {
   test("claude mounts the store directory as its credential store", () => {
     const mounts = providers.claude.mounts("/srv/qa-logins/claude-1");
     expect(mounts).toEqual([{ source: "/srv/qa-logins/claude-1", target: "/home/qa/.claude-login", readOnly: false }]);
-    expect(providers.claude.env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(mounts[0]?.target);
+    expect(providers.claude.access("/srv/qa-logins/claude-1").env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(mounts[0]?.target);
   });
 
   test("codex mounts only auth.json from the store", () => {
@@ -114,28 +132,53 @@ describe("mounts", () => {
   test("grok mounts the store directory and reads auth.json from it", () => {
     const mounts = providers.grok.mounts("/srv/qa-logins/grok-1");
     expect(mounts).toEqual([{ source: "/srv/qa-logins/grok-1", target: "/home/qa/.grok-login", readOnly: false }]);
-    expect(providers.grok.env.GROK_AUTH_PATH).toBe(path.join(mounts[0]?.target ?? "", "auth.json"));
+    expect(providers.grok.access("/srv/qa-logins/grok-1").env.GROK_AUTH_PATH).toBe(path.join(mounts[0]?.target ?? "", "auth.json"));
   });
 
-  test("opencode mounts only auth.json from the store, read-only, into its data directory", () => {
-    const mounts = providers.opencode.mounts("/srv/qa-logins/opencode-1");
-    expect(mounts).toEqual([{ source: "/srv/qa-logins/opencode-1/auth.json", target: "/home/qa/.local/share/opencode/auth.json", readOnly: true }]);
-    expect(path.join(providers.opencode.env.XDG_DATA_HOME ?? "", "opencode", "auth.json")).toBe(mounts[0]?.target ?? "");
+  test("opencode mounts only auth.json from the store, read-only, into its data directory", async () => {
+    const store = await opencodeStore("opencode-1", JSON.stringify({ openrouter: { type: "api", key: "sk-or-v1-test-8f3a1c" } }));
+    const mounts = providers.opencode.mounts(store);
+    expect(mounts).toEqual([{ source: path.join(store, "auth.json"), target: "/home/qa/.local/share/opencode/auth.json", readOnly: true }]);
+    expect(path.join(providers.opencode.access(store).env.XDG_DATA_HOME ?? "", "opencode", "auth.json")).toBe(mounts[0]?.target ?? "");
   });
 
   test.each([...providerNames])("%s rejects a relative store", (provider) => {
     expect(() => providers[provider].mounts("logins/one")).toThrow('login store must be an absolute path, got "logins/one"');
   });
 
-  test("the provider env points at or into every mount target", () => {
+  test("the provider env points at or into every mount target", async () => {
+    const opencode = await opencodeStore("opencode-env", JSON.stringify({ "opencode-go": { type: "api", key: "sk-go-test-5b2e" } }));
     for (const provider of providerNames) {
       const spec = providers[provider];
-      const roots = Object.values(spec.env).filter((value) => value.startsWith("/"));
-      for (const mount of [...spec.mounts("/srv/qa-logins/x"), ...spec.files]) {
+      const store = provider === "opencode" ? opencode : "/srv/qa-logins/x";
+      const roots = Object.values(spec.access(store).env).filter((value) => value.startsWith("/"));
+      for (const mount of [...spec.mounts(store), ...spec.files]) {
         const related = (root: string) => mount.target === root || mount.target.startsWith(`${root}/`) || root.startsWith(`${mount.target}/`);
         expect(roots.some(related)).toBe(true);
       }
     }
+  });
+});
+
+describe("access", () => {
+  test.each([
+    ["openrouter", "sk-or-v1-test-8f3a1c", ["openrouter.ai"]],
+    ["opencode-go", "sk-go-test-5b2e", ["opencode.ai"]],
+  ])("an opencode store with one %s key enables only that provider, turns off title requests, allows only its hosts, and names the key", async (upstream, key, egress) => {
+    const store = await opencodeStore(`access-${upstream}`, JSON.stringify({ [upstream]: { type: "api", key } }));
+    const access = providers.opencode.access(store);
+    expect(JSON.parse(access.env.OPENCODE_CONFIG_CONTENT ?? "")).toEqual({ enabled_providers: [upstream], agent: { title: { disable: true } } });
+    expect(access.egress).toEqual(egress);
+    expect(access.key).toBe(key);
+  });
+
+  test("an opencode store whose auth.json holds two keys fails", async () => {
+    const store = await opencodeStore("access-two", JSON.stringify({ openrouter: { type: "api", key: "sk-or-v1-test-8f3a1c" }, "opencode-go": { type: "api", key: "sk-go-test-5b2e" } }));
+    expect(() => providers.opencode.access(store)).toThrow(`${path.join(store, "auth.json")} must hold one opencode-go or openrouter API key and nothing else`);
+  });
+
+  test.each(["claude", "codex", "cursor", "grok"] as const)("%s names no key", (provider) => {
+    expect(providers[provider].access("/srv/qa-logins/x").key).toBeNull();
   });
 });
 

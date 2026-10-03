@@ -24,6 +24,11 @@ export function keepHostSecrets(names: string[]): string | null {
   return keep(found.filter(({ value }) => value !== ""));
 }
 
+export function keepLoginKey(key: string, login: string): void {
+  const short = keep([{ value: key, where: `The API key of login ${login}` }]);
+  if (short !== null) throw new Error(short);
+}
+
 export function keepSeedSecrets(seed: unknown, fields: string[]): string | null {
   const named = new Set<string>();
   const found: { value: string; where: string }[] = [];
