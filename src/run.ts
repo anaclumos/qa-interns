@@ -10,6 +10,7 @@ import {
   networkRange,
   readRelayLogs,
   removeCopies,
+  removeCopy,
   runnerEnv,
   saveDisks,
   startEnvironment,
@@ -27,7 +28,7 @@ import { hasQuota, loadLogins, Scheduler, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
-import { forgetSecrets, hasSecrets, redact, redactFiles, redactJson } from "./secrets.ts";
+import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Confirmation, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Login, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
@@ -191,6 +192,8 @@ async function acquire(ctx: Context, id: string): Promise<Lease | null> {
 
 function environmentSpec(ctx: Context, name: string, slot: number, target: Target | null, lease: Lease, attempt: number): EnvironmentSpec {
   const provider = providers[lease.login.provider];
+  const access = provider.access(lease.store);
+  if (access.key !== null) keepLoginKey(access.key, lease.login.id);
   return {
     runId: ctx.runId,
     runDir: ctx.runDir,
@@ -201,12 +204,12 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
     runner: {
       image: ctx.runnerImage,
       out: join(ctx.runDir, outDir(name, attempt)),
-      env: { ...runnerEnv(target === null ? {} : target.settings.urls), ...provider.env },
+      env: { ...runnerEnv(target === null ? {} : target.settings.urls), ...access.env },
       mounts: provider.mounts(lease.store),
       files: provider.files,
       tmpfs: provider.tmpfs,
     },
-    egress: provider.egress,
+    egress: access.egress,
   };
 }
 
@@ -540,9 +543,20 @@ export async function ask(opts: AskOptions): Promise<unknown> {
     const teardowns = [...ctx.teardowns];
     try {
       await stopProject(project, join(opts.runDir, "interns", opts.name));
+      await removeCopy(opts.runDir, opts.runId, opts.name, opts.runnerImage);
       await saveDisks(opts.runDir, opts.name, project, opts.runnerImage);
     } catch (reason) {
       teardowns.push(message(reason));
+    }
+    const dirs = [join(opts.runDir, "envs", opts.name), join(opts.runDir, "interns", opts.name)];
+    if (teardowns.length > ctx.teardowns.length) {
+      if (hasSecrets()) teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}`);
+    } else {
+      try {
+        await redactFiles(dirs);
+      } catch (reason) {
+        teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}: ${message(reason)}`);
+      }
     }
     return teardowns.length === 0 ? null : `Teardown of ${project} failed: ${teardowns.join("; ")}`;
   });
@@ -551,13 +565,13 @@ export async function ask(opts: AskOptions): Promise<unknown> {
     async () => {
       const [result] = await Promise.allSettled([askWith(ctx, opts.name, opts.prompt, opts.file, opts.parse)]);
       const teardown = await finish();
-      if (teardown !== null) throw new Error(result.status === "rejected" ? `${message(result.reason)}; ${teardown}` : teardown);
-      if (result.status === "rejected") throw result.reason;
+      if (teardown !== null) throw new Error(redact(result.status === "rejected" ? `${message(result.reason)}; ${teardown}` : teardown));
+      if (result.status === "rejected") throw new Error(redact(message(result.reason)));
       return result.value;
     },
     async () => {
       const teardown = await finish();
-      if (teardown !== null) throw new Error(teardown);
+      if (teardown !== null) throw new Error(redact(teardown));
     },
   );
 }
