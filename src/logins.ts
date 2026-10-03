@@ -86,7 +86,7 @@ function storeProblems(provider: Provider, path: string, found: Store, known: He
   }
   for (const other of known) {
     if (other.store === found.store) {
-      problems.push(`duplicate store ${path}, already used by ${other.where}; one store serves one process at a time`);
+      problems.push(`duplicate store ${path}, already used by ${other.where}; one store serves one login`);
     } else if (found.store.startsWith(`${other.store}/`) || other.store.startsWith(`${found.store}/`)) {
       problems.push(`store ${path} contains or is inside the store of ${other.where}; a runner mounting one could read or change the other`);
     }

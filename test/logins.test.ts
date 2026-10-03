@@ -380,7 +380,7 @@ describe("loadLogins", () => {
     });
     expect(message.split("\n").slice(1)).toEqual([
       "  logins[1] \"claude-1\": duplicate id, already used by logins[0]",
-      `  logins[1] "claude-1": duplicate store ${claudeStore}, already used by logins[0]; one store serves one process at a time`,
+      `  logins[1] "claude-1": duplicate store ${claudeStore}, already used by logins[0]; one store serves one login`,
       "  logins[2]: id: Invalid input: expected string, received undefined",
       "  logins[2]: Unrecognized key: \"concurency\"",
       "  logins[3] \"codex-pool\": seat: Too small: expected array to have >=1 items",
@@ -542,7 +542,7 @@ describe("Scheduler", () => {
     expect(first.store).toBe(await realpath(join(dir, "same-store")));
     expect(await scheduler.acquire("m2")).toBeNull();
     expect(scheduler.refusals("m2")).toEqual([
-      `seat store of login codex-pool-b: duplicate store ${join(dir, "same-store")}, already used by login codex-pool-a; one store serves one process at a time`,
+      `seat store of login codex-pool-b: duplicate store ${join(dir, "same-store")}, already used by login codex-pool-a; one store serves one login`,
     ]);
     expect(await ended(await leasePid("m2"))).toBe(true);
     expect(alive(await leasePid("m1"))).toBe(true);
@@ -594,7 +594,7 @@ describe("Scheduler", () => {
     const first = held(await run.acquire("b1"));
     expect(first.login.id).toBe("codex-both");
     expect(await run.acquire("b2")).toBeNull();
-    expect(run.refusals("b2")).toEqual([`seat store of login opencode-both: duplicate store ${both}, already used by login codex-both; one store serves one process at a time`]);
+    expect(run.refusals("b2")).toEqual([`seat store of login opencode-both: duplicate store ${both}, already used by login codex-both; one store serves one login`]);
     first.release();
 
     const own = held(await new Scheduler([opencode]).acquire("b3"));
@@ -650,8 +650,8 @@ describe("Scheduler", () => {
     const cases: [Login["provider"], string, string][] = [
       ["cursor", "/", "store / is the root of the file system"],
       ["codex", bare, `codex store ${bare} has no auth.json`],
-      ["codex", codexStore, `duplicate store ${codexStore}, already used by login codex-1; one store serves one process at a time`],
-      ["opencode", codexStore, `duplicate store ${codexStore}, already used by login codex-1; one store serves one process at a time`],
+      ["codex", codexStore, `duplicate store ${codexStore}, already used by login codex-1; one store serves one login`],
+      ["opencode", codexStore, `duplicate store ${codexStore}, already used by login codex-1; one store serves one login`],
       ["cursor", join(dir, "stores"), `store ${join(dir, "stores")} contains or is inside the store of login codex-1; a runner mounting one could read or change the other`],
       ["codex", linked, `${join(linked, "auth.json")} is a symbolic link; a runner can place a link in its own store to choose what another run mounts, so the credential is a regular file in the store`],
       ["cursor", through, `store ${through} resolves through a symbolic link to ${real}; a runner can place a link in its own store to choose what another run mounts`],
