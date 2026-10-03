@@ -747,6 +747,8 @@ USER qa
     async () => {
       const runId = newRunId();
       const other = `qair-f-e2e-other-${runId}`;
+      const sibling = join(root, "asks", runId, "envs", "i1", `qa-${runId}-i1`, "marker");
+      await Bun.write(sibling, "sibling copy\n");
       await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${runId}-i1`, other]);
       try {
         expect(await ask(await askOptions(runId, "score"))).toEqual({ groups: [] });
@@ -756,6 +758,8 @@ USER qa
       }
       expect(await leftovers(runId)).toEqual([]);
       expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
+      expect(await readdir(join(root, "asks", runId, "envs", "score"))).not.toContain("tmp");
+      expect(await Bun.file(sibling).text()).toBe("sibling copy\n");
     },
     timeout,
   );

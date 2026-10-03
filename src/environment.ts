@@ -409,8 +409,7 @@ export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void
   const project = projectName(spec.runId, spec.name);
   const dir = envDir(spec);
   const log = join(dir, "env.log");
-  const earlier = [project, "tmp"].filter((path) => existsSync(join(dir, path)));
-  if (earlier.length > 0) await removeAsRoot(dir, spec.runner.image, earlier);
+  await removeCopy(spec.runDir, spec.runId, spec.name, spec.runner.image);
   await writeFiles(spec);
   await createDisk(spec.runner.out, spec.runner.image, project);
   const tmp = join(dir, "tmp");
@@ -633,12 +632,18 @@ async function removeAsRoot(dir: string, image: string, paths: string[]): Promis
   await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
 }
 
+export async function removeCopy(runDir: string, runId: string, name: string, image: string): Promise<void> {
+  const dir = join(runDir, "envs", name);
+  const paths = [projectName(runId, name), "tmp"].filter((path) => existsSync(join(dir, path)));
+  if (paths.length > 0) await removeAsRoot(dir, image, paths);
+}
+
 export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<void> {
   await down(project, join(runDir, "interns", name));
   await saveDisks(runDir, name, project, image);
 }
 
-async function saveDisks(runDir: string, name: string, project: string, image: string): Promise<void> {
+export async function saveDisks(runDir: string, name: string, project: string, image: string): Promise<void> {
   for (const out of await diskOuts(join(runDir, "interns", name))) await saveDisk(out, image, project);
 }
 
