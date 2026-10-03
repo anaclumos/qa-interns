@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { stripControl } from "./findings.ts";
 
 const marker = "[redacted]";
-const minLength = 8;
+export const minLength = 8;
 const secrets = new Set<string>();
 let cached: string[] | null = null;
 

@@ -2,6 +2,7 @@ import type { RequestError } from "@agentclientprotocol/sdk";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import { minLength } from "./secrets.ts";
 import type { GeneratedFile, Mount, Provider } from "./types.ts";
 
 export type Access = { env: Record<string, string>; egress: string[]; key: string | null };
@@ -46,13 +47,13 @@ enabled = false
 `;
 
 const opencodeHosts = { "opencode-go": ["opencode.ai"], openrouter: ["openrouter.ai"] };
-const apiKey = z.strictObject({ type: z.literal("api"), key: z.string().min(1) });
+const apiKey = z.strictObject({ type: z.literal("api"), key: z.string().min(minLength) });
 const opencodeAuth = z.union([
   z.strictObject({ "opencode-go": apiKey }).transform((auth) => ({ provider: "opencode-go" as const, key: auth["opencode-go"].key })),
   z.strictObject({ openrouter: apiKey }).transform((auth) => ({ provider: "openrouter" as const, key: auth.openrouter.key })),
 ]);
 
-export const opencodeAuthRule = "must hold one opencode-go or openrouter API key and nothing else";
+export const opencodeAuthRule = `must hold one opencode-go or openrouter API key of at least ${minLength} characters and nothing else`;
 
 export function opencodeLogin(file: string): z.infer<typeof opencodeAuth> | null {
   let value: unknown;

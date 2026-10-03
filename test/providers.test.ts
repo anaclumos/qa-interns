@@ -174,7 +174,7 @@ describe("access", () => {
 
   test("an opencode store whose auth.json holds two keys fails", async () => {
     const store = await opencodeStore("access-two", JSON.stringify({ openrouter: { type: "api", key: "sk-or-v1-test-8f3a1c" }, "opencode-go": { type: "api", key: "sk-go-test-5b2e" } }));
-    expect(() => providers.opencode.access(store)).toThrow(`${path.join(store, "auth.json")} must hold one opencode-go or openrouter API key and nothing else`);
+    expect(() => providers.opencode.access(store)).toThrow(`${path.join(store, "auth.json")} must hold one opencode-go or openrouter API key of at least 8 characters and nothing else`);
   });
 
   test.each(["claude", "codex", "cursor", "grok"] as const)("%s names no key", (provider) => {
