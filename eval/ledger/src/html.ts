@@ -247,7 +247,7 @@ due.textContent = new Date(due.dateTime).toLocaleDateString();
 ${
   canEdit
     ? `<div class="actions">
-<a href="/invoices/${invoice.id}/edit">Edit</a>
+${invoice.status !== "paid" ? `<a href="/invoices/${invoice.id}/edit">Edit</a>` : ""}
 ${invoice.status === "draft" ? statusButton("sent", "Mark as sent") : ""}
 ${invoice.status !== "paid" ? statusButton("paid", "Mark as paid") : ""}
 <button type="button" id="delete-invoice">Delete</button>
