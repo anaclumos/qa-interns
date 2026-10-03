@@ -1,4 +1,4 @@
-import { closeSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -701,17 +701,31 @@ export type HeldRun = { end: () => void };
 export function holdRun(runId: string, runDir: string): HeldRun {
   const dir = runtimeLocks("runs");
   const entry = join(dir, runId);
-  const pending = join(dir, `.${runId}`);
-  const fd = flock(pending, "--exclusive", "--nonblock");
-  if (fd === null) throw new Error(`Another process holds ${pending}`);
-  writeSync(fd, runDir);
-  renameSync(pending, entry);
+  const pending = join(dir, `.${runId}.${process.pid}`);
+  const fresh = flock(pending, "--exclusive", "--nonblock");
+  if (fresh === null) throw new Error(`Another process holds ${pending}`);
+  let fd = fresh;
+  let created = true;
+  try {
+    writeSync(fresh, runDir);
+    linkSync(pending, entry);
+  } catch (error) {
+    closeSync(fresh);
+    if (errorCode(error) !== "EEXIST") throw error;
+    const existing = flock(entry, "--exclusive", "--nonblock");
+    if (existing === null) throw new Error(`Another process holds run ${runId}`);
+    fd = existing;
+    created = readFileSync(entry, "utf8") === "";
+    if (created) writeSync(fd, runDir);
+  } finally {
+    rmSync(pending, { force: true });
+  }
   let held = true;
   return {
     end: () => {
       if (!held) return;
       held = false;
-      rmSync(entry, { force: true });
+      if (created) rmSync(entry, { force: true });
       closeSync(fd);
     },
   };

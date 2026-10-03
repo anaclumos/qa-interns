@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -10,6 +10,7 @@ import {
   createDisk,
   freeSlot,
   freeSlots,
+  holdRun,
   readRelayLogs,
   removeCopies,
   removeDir,
@@ -105,6 +106,35 @@ async function normalize(runDir: string, composeFiles: string[], override: strin
   if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
   return JSON.parse(proc.stdout.toString());
 }
+
+describe("run locks", () => {
+  test("refuse a run that another process holds, keep the file of a run whose process ended, and delete only a file the holder wrote", async () => {
+    const runId = `qair-t-hold-${crypto.randomUUID().slice(0, 8)}`;
+    const locks = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs");
+    const module = join(import.meta.dir, "..", "src", "environment.ts");
+    const holder = Bun.spawn([process.execPath, "-e", `const { holdRun } = await import(${JSON.stringify(module)}); holdRun(${JSON.stringify(runId)}, "/runs/original"); console.log("held"); await Bun.sleep(600000);`], {
+      env: { ...process.env },
+      stdout: "pipe",
+    });
+    try {
+      await holder.stdout.getReader().read();
+      expect(() => holdRun(runId, "/runs/score")).toThrow(`Another process holds run ${runId}`);
+      holder.kill("SIGKILL");
+      await holder.exited;
+      holdRun(runId, "/runs/score").end();
+      expect(readFileSync(join(locks, runId), "utf8")).toBe("/runs/original");
+      const own = holdRun(`${runId}-own`, "/runs/own");
+      expect(readFileSync(join(locks, `${runId}-own`), "utf8")).toBe("/runs/own");
+      own.end();
+      expect(existsSync(join(locks, `${runId}-own`))).toBe(false);
+      expect((await readdir(locks)).filter((name) => name.includes(runId))).toEqual([runId]);
+    } finally {
+      holder.kill("SIGKILL");
+      await holder.exited;
+      rmSync(join(locks, runId), { force: true });
+    }
+  });
+});
 
 describe.skipIf(!dockerAvailable)("slots", () => {
   test("map a slot to its internal, relay, agent, and egress subnets", () => {
