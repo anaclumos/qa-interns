@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { stripControl } from "./findings.ts";
 
 const marker = "[redacted]";
-const minLength = 8;
+export const minLength = 8;
 const secrets = new Set<string>();
 let cached: string[] | null = null;
 
@@ -22,6 +22,11 @@ export function keepHostSecrets(names: string[]): string | null {
     return { value, where: `The value of ${name}` };
   });
   return keep(found.filter(({ value }) => value !== ""));
+}
+
+export function keepLoginKey(key: string, login: string): void {
+  const short = keep([{ value: key, where: `The API key of login ${login}` }]);
+  if (short !== null) throw new Error(short);
 }
 
 export function keepSeedSecrets(seed: unknown, fields: string[]): string | null {
