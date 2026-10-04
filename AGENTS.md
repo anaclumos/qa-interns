@@ -13,6 +13,7 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 ## Gates
 
 - `bun run typecheck` and `bun test` pass before every commit.
+- `bun test` loads `test/suite-lock.ts` through `bunfig.toml`, which holds an exclusive `flock` on `$XDG_RUNTIME_DIR/qa-interns/suite.lock` until the suite exits, so the suites of one user on one host run one at a time.
 - `claude plugin validate .` and `claude plugin validate skills` pass after any change to `.claude-plugin/` or `skills/`.
 - The lefthook `pre-push` hook in `lefthook.yml` runs the install, typecheck, plugin validate, and test commands of the `ci.yml` `test` job, after it checks for a clean tree and a running Docker daemon. `bun install` installs the hook. A change to one of those commands in one file makes the same change in the other. A job that runs git in another repository first runs `unset $(git rev-parse --local-env-vars)`: git exports `GIT_DIR` to hooks, and without the unset the test fixtures commit into this repository and set its `core.bare`.
 
