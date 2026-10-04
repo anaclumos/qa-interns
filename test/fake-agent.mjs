@@ -214,7 +214,12 @@ const prompt = async (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit, upgrade, hang } = login();
+  const { limit, upgrade, hang, openrouter } = login();
+  if (openrouter !== undefined) {
+    say(`The login key is ${openrouter.key}.`);
+    mkdirSync("/qa/out/evidence", { recursive: true });
+    writeFileSync("/qa/out/evidence/auth.json", readFileSync(process.env.FAKE_CREDENTIAL));
+  }
   if (limit === true) return limited;
   if (hang === true) return slowTurn();
   if (upgrade === true) {
