@@ -201,7 +201,7 @@ describe("renderReport", () => {
     expect(tickets).toEqual([]);
     const notConfirmed = text.slice(text.indexOf("## Not confirmed"), text.indexOf("## Rejected finding files"));
     expect(notConfirmed).toContain("- Reproductions: 2 (i1, i2)");
-    expect(notConfirmed).toContain("Confirmation: c1did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
+    expect(notConfirmed).toContain("Confirmation: c1 did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
     expect(text).toContain("- Confirmed groups: 0\n- Groups not confirmed: 1\n");
   });
 
@@ -253,7 +253,7 @@ describe("renderReport", () => {
     expect(text).toContain("### Totals disagree\n");
     expect(text).toContain("> Row \\[31mred\\[0m\n");
     expect(text).toContain("- interns/i1/out/evidence/a.png\n");
-    expect(text).toContain("Confirmation: c1failed: adapter said no\n");
+    expect(text).toContain("Confirmation: c1 failed: adapter said no\n");
     expect(text).toContain("- interns/i2/out/findings/xy.json: bad input\n");
     expect(text).toContain("| a\\[31m.example | denied |  | 1 | i1 |\n");
     expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Not confirmed", "## Rejected finding files", "## Interns", "## Egress connections", "## Environments"]);
@@ -444,13 +444,13 @@ describe("renderReplay", () => {
     expect(reproduced).toContain(`### ${overlap.findings[0]!.title}`);
     expect(reproduced).toContain("- Group: g1 in run 7c1e9a04\n");
     expect(reproduced).toContain("1. Sign in as owner@acme.test with the password acme-owner-pass.");
-    expect(reproduced).toContain("Confirmation: c1reproduced it: the steps showed the failure, and the task done through the page's own controls showed it.");
+    expect(reproduced).toContain("Confirmation: c1 reproduced it: the steps showed the failure, and the task done through the page's own controls showed it.");
     expect(reproduced).not.toContain("i2/page-two-repeats");
     expect(reproduced).not.toContain("interns/i1/out/evidence/pagination-overlap.png");
     const notReproduced = between(markdown, "## Not reproduced", "## Not checked");
     expect(notReproduced).toContain(`### ${exportTotal.findings[0]!.title}`);
     expect(notReproduced).toContain("> The detail page at /invoices/2 shows €5,770.60.");
-    expect(notReproduced).toContain("Confirmation: c2did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
+    expect(notReproduced).toContain("Confirmation: c2 did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
     const unchecked = between(markdown, "## Not checked", "## Interns");
     expect(unchecked).toContain(`### ${negative.findings[0]!.title}`);
     expect(unchecked).toContain("Confirmation: c3 failed: no login with spare capacity");
