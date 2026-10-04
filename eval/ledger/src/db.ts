@@ -156,13 +156,16 @@ export async function insertInvoice(teamId: number, input: InvoiceInput, status:
 }
 
 export async function updateInvoice(id: number, input: InvoiceInput) {
-  await sql.begin(async (tx) => {
-    await tx`
+  return sql.begin(async (tx) => {
+    const [invoice] = await tx`
       update invoices set customer = ${input.customer}, issue_date = ${input.issueDate}, due_date = ${input.dueDate},
         currency = ${input.currency}, tax_rate_bp = ${input.taxRateBp}, subtotal = ${input.subtotal}, tax = ${input.tax}, total = ${input.total}
-      where id = ${id}`;
+      where id = ${id} and status <> 'paid'
+      returning id`;
+    if (!invoice) return false;
     await tx`delete from line_items where invoice_id = ${id}`;
     await insertLines(tx, id, input.lines);
+    return true;
   });
 }
 
