@@ -220,7 +220,7 @@ const prompt = async (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit, idle, hang, printKey } = login();
+  const { limit, idle, hang, late, printKey } = login();
   if (printKey === true) {
     say(`The login key is ${loginKey()}.`);
     mkdirSync("/qa/out/evidence", { recursive: true });
@@ -233,7 +233,10 @@ const prompt = async (params) => {
     return endTurn;
   }
   if (text.includes("/qa/out/groups.json")) return groupsTurn(text);
-  if (text.includes("/qa/out/confirmation.json")) return confirmationTurn();
+  if (text.includes("/qa/out/confirmation.json")) {
+    if (late === true && text.includes("Another intern reported")) return slowTurn();
+    return confirmationTurn();
+  }
   if (text.includes("Charter:")) {
     const result = await charterTurn(text);
     return limit === "charter" ? limited : result;
@@ -274,6 +277,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (message.method === "session/cancel") {
+    if (login().deaf === true) return;
     cancelTurn?.();
     cancelTurn = null;
     return;

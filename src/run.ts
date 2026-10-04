@@ -25,7 +25,7 @@ import {
 import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
 import { loadLogin, Scheduler, watchReleases, type Lease } from "./logins.ts";
 import { credentialRule, pi, readKey } from "./pi.ts";
-import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
+import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
@@ -88,6 +88,7 @@ const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
+const writeUpMs = 2 * minute;
 const stopWaitMs = 30_000;
 const loginWaitMs = 30_000;
 const noLogin = "no login has spare capacity";
@@ -305,31 +306,30 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, fre
   return outcome;
 }
 
-async function turnUntil(session: Session, text: string, deadline: number): Promise<Turn | null> {
-  if (Date.now() >= deadline) return null;
+async function turnUntil(session: Session, text: string, deadline: number): Promise<Turn | "ended" | "running"> {
+  if (Date.now() >= deadline) return "ended";
   const turn = session.prompt(text);
   const result = await within(turn, deadline - Date.now());
   if (result !== null) return result;
   const settled = turn.then(
-    () => undefined,
-    () => undefined,
+    () => "ended" as const,
+    () => "ended" as const,
   );
   await session.cancel();
-  await within(settled, settleMs);
-  return null;
+  return (await within(settled, settleMs)) ?? "running";
 }
 
-async function converse(session: Session, first: string, deadline: number, next: (turn: Turn, idle: boolean) => Promise<string | null>): Promise<boolean> {
+async function converse(session: Session, first: string, deadline: number, next: (turn: Turn, idle: boolean) => Promise<string | null>): Promise<"done" | "ended" | "running"> {
   let text: string | null = first;
   let quiet = false;
   while (text !== null) {
     const turn = await turnUntil(session, text, deadline);
-    if (turn === null) return false;
+    if (typeof turn === "string") return turn;
     const idle = quiet && turn.toolCalls === 0;
     quiet = turn.toolCalls === 0;
     text = await next(turn, idle);
   }
-  return true;
+  return "done";
 }
 
 function minutesLeft(deadline: number): number {
@@ -412,13 +412,14 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     const deadline = Date.now() + minutes * minute;
     let answer: { result: Confirmation | null; error: string | null } = { result: null, error: "no confirmation.json written" };
     let corrected = false;
-    await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
+    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
       answer = await check();
       if (answer.error === null || corrected) return null;
       corrected = true;
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
+    if (end === "ended" && !(await Bun.file(file).exists())) await turnUntil(session, timeUpPrompt(), Date.now() + writeUpMs);
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check();
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
