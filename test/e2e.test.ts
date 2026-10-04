@@ -783,6 +783,7 @@ USER qa
       expect(intern(state, "i1").detail).toStartWith(`${failure}; teardown failed: docker compose down left objects of qa-${state.runId}-i1 behind`);
       expect(await leftovers(state.runId)).toEqual([]);
       expect(existsSync(join(runLocks, state.runId))).toBe(true);
+      rmSync(join(runLocks, state.runId));
     },
     timeout,
   );
@@ -915,6 +916,7 @@ USER qa
         await execute(["docker", "rm", "-f", held]);
         await execute(["docker", "network", "rm", held]);
         await removeCopies(join(root, "asks", runId), runId, fakeImage);
+        rmSync(join(runLocks, runId), { force: true });
       }
       expect(await leftovers(runId)).toEqual([]);
       expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
