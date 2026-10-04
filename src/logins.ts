@@ -348,7 +348,7 @@ export function cpuPressure(): number {
 export function admit(memory: number, pressureLimit = cpuPressureLimit): (() => void) | null {
   const dir = locksDir();
   return exclusive(dir, () => {
-    const { total, available, reserve } = hostMemory();
+    const { total, reserve } = hostMemory();
     if (memory + reserve > total) {
       const gib = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
       throw new Error(`An environment of this target can use ${gib(memory)} GiB, which with the reserve of ${gib(reserve)} GiB is more than the ${gib(total)} GiB of memory this host has`);
@@ -367,7 +367,7 @@ export function admit(memory: number, pressureLimit = cpuPressureLimit): (() => 
       rmSync(file, { force: true });
       closeSync(fd);
     }
-    if (available - reserve - starting < memory) return null;
+    if (hostMemory().available - reserve - starting < memory) return null;
     const file = join(dir, `${startingPrefix}${memory}-${crypto.randomUUID()}`);
     const fd = take(dir, file, "--exclusive", "--nonblock");
     let started = false;
