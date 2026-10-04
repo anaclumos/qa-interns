@@ -4,17 +4,13 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { createDisk, devcontainer, freeSlot, memoryPeak, removeDir, saveDisk, slotSubnets } from "./environment.ts";
 import { message, oneLine } from "./findings.ts";
-import { loadLogins, Scheduler } from "./logins.ts";
+import { loadLogin, Scheduler } from "./logins.ts";
 import { ensureRunnerImage } from "./runner.ts";
 import { runsDir } from "./state.ts";
 import { composeVersion, execute } from "./target.ts";
 
 const agents = [
-  ["claude-agent-acp", "--version"],
-  ["codex-acp", "--version"],
-  ["cursor-agent", "--version"],
-  ["grok", "--version"],
-  ["opencode", "--version"],
+  ["pi-acp", "--version"],
   ["agent-browser", "--version"],
 ];
 
@@ -150,10 +146,10 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
     if (image === null) throw new Error("the runner image is not available");
     return checkMemoryPeak(image);
   });
-  await check("logins", async () => {
-    const logins = await loadLogins(loginsFile);
-    const scheduler = new Scheduler(logins);
-    return `${loginsFile}: ${logins.length} ${logins.length === 1 ? "login" : "logins"}, providers ${scheduler.providers().join(", ")}, capacity ${scheduler.capacity()}`;
+  await check("login", async () => {
+    const login = await loadLogin(loginsFile);
+    const scheduler = new Scheduler(login);
+    return `${loginsFile}: login ${login.id}, capacity ${scheduler.capacity()}`;
   });
   return passed;
 }

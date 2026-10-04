@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { message } from "../src/findings.ts";
-import { defaultLoginsPath, loadLogins } from "../src/logins.ts";
+import { defaultLoginsPath, loadLogin } from "../src/logins.ts";
 import { ask } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { readJson, readState, resolveRunDir } from "../src/state.ts";
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
   const state = await readState(runDir);
   const { groups } = await readJson(join(runDir, "findings.json"), findingsSchema);
   const { defects } = await readJson(defectsFile, defectsSchema);
-  await loadLogins(values.logins);
+  await loadLogin(values.logins);
   const defectIds = defects.map((defect) => defect.id);
   const groupIds = groups.map((group) => group.id);
   const score = await ask({

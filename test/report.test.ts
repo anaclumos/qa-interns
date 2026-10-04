@@ -5,17 +5,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readReplay, renderReplay, renderReport, reproductions, writeTickets, type Egress } from "../src/report.ts";
 import { writeState } from "../src/state.ts";
-import type { EnvironmentStats, Finding, Group, InternState, Provider, RelayRecord, RunState } from "../src/types.ts";
+import type { EnvironmentStats, Finding, Group, InternState, RelayRecord, RunState } from "../src/types.ts";
 
-function intern(id: string, role: InternState["role"], provider: Provider | null, status: InternState["status"], findings: number, detail: string | null): InternState {
+function intern(id: string, role: InternState["role"], leased: boolean, status: InternState["status"], findings: number, detail: string | null): InternState {
   return {
     id,
     role,
     charter: role === "intern" ? "Heavy user: many records, pagination, sorting, filtering, search, bulk actions." : "",
     group: role === "confirm" ? "g1" : null,
-    provider,
-    login: provider === null ? null : `${provider}-1`,
-    model: provider === "claude" ? "claude-opus-5-5" : provider === "codex" ? "gpt-5.5" : null,
+    login: leased ? "openrouter-1" : null,
+    model: leased ? "openrouter/xiaomi/mimo-v2.6-pro" : null,
     project: `qa-7c1e9a04-${id}`,
     status,
     detail,
@@ -38,13 +37,13 @@ const state: RunState = {
   updatedAt: "2026-09-26T09:52:00.000Z",
   endedAt: "2026-09-26T09:52:00.000Z",
   interns: [
-    intern("i1", "intern", "claude", "done", 1, null),
-    intern("i2", "intern", "codex", "done", 1, "stopped at minute 21: \"I found | nothing else\""),
-    intern("i3", "intern", "claude", "done", 2, null),
-    intern("judge", "judge", "codex", "done", 0, null),
-    intern("c1", "confirm", "codex", "done", 0, null),
-    intern("c2", "confirm", "codex", "done", 0, null),
-    intern("c3", "confirm", null, "limited", 0, "no login with spare capacity"),
+    intern("i1", "intern", true, "done", 1, null),
+    intern("i2", "intern", true, "done", 1, "stopped at minute 21: \"I found | nothing else\""),
+    intern("i3", "intern", true, "done", 2, null),
+    intern("judge", "judge", true, "done", 0, null),
+    intern("c1", "confirm", true, "done", 0, null),
+    intern("c2", "confirm", true, "done", 0, null),
+    intern("c3", "confirm", false, "limited", 0, "no login with spare capacity"),
   ],
 };
 
@@ -60,7 +59,7 @@ function finding(id: string, title: string, observed: string, contradicts: strin
     observed,
     contradicts,
     evidence: [`interns/${internId}/out/evidence/${id.slice(id.indexOf("/") + 1)}.png`],
-    environment: { commit: state.target.commit, dirty: state.target.dirty, environment: `qa-7c1e9a04-${internId}`, provider: internId === "i2" ? "codex" : "claude", model: null },
+    environment: { commit: state.target.commit, dirty: state.target.dirty, environment: `qa-7c1e9a04-${internId}`, model: null },
   };
 }
 
@@ -70,7 +69,7 @@ const overlap: Group = {
     finding("i1/pagination-overlap", "Invoice INV-0014 appears on page 1 and page 2", "Page 2 starts with \"INV-0014 Stark Industries\"."),
     finding("i2/page-two-repeats", "Page 2 repeats the last invoice of page 1", "The first row of page 2 is INV-0014.\nIt is also the last row of page 1."),
   ],
-  confirmation: { intern: "c1", provider: "codex", result: { steps: true, task: true, observed: "Page 2 starts with INV-0014.", evidence: ["interns/c1/out/evidence/repeat.png"] }, error: null },
+  confirmation: { intern: "c1", result: { steps: true, task: true, observed: "Page 2 starts with INV-0014.", evidence: ["interns/c1/out/evidence/repeat.png"] }, error: null },
 };
 
 const exportTotal: Group = {
@@ -78,7 +77,6 @@ const exportTotal: Group = {
   findings: [finding("i3/export-total", "CSV export total for INV-0002 leaves out tax", "The CSV row for INV-0002 has the total 5246.00.", "The detail page at /invoices/2 shows €5,770.60.")],
   confirmation: {
     intern: "c2",
-    provider: "codex",
     result: {
       steps: true,
       task: false,
@@ -92,7 +90,7 @@ const exportTotal: Group = {
 const negative: Group = {
   id: "g3",
   findings: [finding("i3/negative-quantity", "An invoice with quantity -3 saves with a negative total", "The detail page shows \"Total -$75.00\".")],
-  confirmation: { intern: "c3", provider: null, result: null, error: "no login with spare capacity" },
+  confirmation: { intern: "c3", result: null, error: "no login with spare capacity" },
 };
 
 const rejected = [{ intern: "i2", file: "interns/i2/out/findings/slow-export.json", reason: "steps must have at least one entry" }];
@@ -100,7 +98,6 @@ const rejected = [{ intern: "i2", file: "interns/i2/out/findings/slow-export.jso
 const environments: EnvironmentStats[] = [
   {
     intern: "i1",
-    attempt: 1,
     startedAt: "2026-09-26T09:00:05.000Z",
     readyAt: "2026-09-26T09:00:47.300Z",
     containers: [
@@ -109,7 +106,7 @@ const environments: EnvironmentStats[] = [
       { service: "web|api", number: 2, state: "exited", oomKilled: true, restarts: 3, memoryPeak: null },
     ],
   },
-  { intern: "i2", attempt: 2, startedAt: "2026-09-26T09:03:00.000Z", readyAt: null, containers: null },
+  { intern: "i2", startedAt: "2026-09-26T09:03:00.000Z", readyAt: null, containers: null },
 ];
 
 function record(n: number, host: string | null, outcome: RelayRecord["outcome"], error: string | null = null): RelayRecord {
@@ -204,7 +201,7 @@ describe("renderReport", () => {
     expect(tickets).toEqual([]);
     const notConfirmed = text.slice(text.indexOf("## Not confirmed"), text.indexOf("## Rejected finding files"));
     expect(notConfirmed).toContain("- Reproductions: 2 (i1, i2)");
-    expect(notConfirmed).toContain("Confirmation: c1 (codex) did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
+    expect(notConfirmed).toContain("Confirmation: c1did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
     expect(text).toContain("- Confirmed groups: 0\n- Groups not confirmed: 1\n");
   });
 
@@ -217,22 +214,22 @@ describe("renderReport", () => {
 
   test("each environment lists its time to ready and one row per container with its peak memory, out-of-memory kill, and restarts", () => {
     const section = markdown.slice(markdown.indexOf("## Environments"));
-    const first = section.slice(section.indexOf("### i1, attempt 1"), section.indexOf("### i2, attempt 2"));
+    const first = section.slice(section.indexOf("### i1"), section.indexOf("### i2"));
     expect(first).toContain("- Started: 2026-09-26T09:00:05.000Z\n- Ready: after 42.3 s\n");
     expect(first.split("\n").filter((line) => line.startsWith("| ")).slice(2)).toEqual([
       "| db-1 | running | 80.0 MiB | no | 0 |",
       "| qa-runner-1 | running | 1228.8 MiB | no | 0 |",
       "| web\\|api-2 | exited | not read | yes | 3 |",
     ]);
-    const second = section.slice(section.indexOf("### i2, attempt 2"));
+    const second = section.slice(section.indexOf("### i2"));
     expect(second).toContain("- Ready: not reached\n");
     expect(second).toContain("No container was read before teardown.");
     expect(second).not.toContain("| ");
   });
 
   test("the JSON form carries the same groups, rejected files, interns, and environments", () => {
-    const data = json as { run: { confirmedGroups: number; notConfirmedGroups: number; rejectedFiles: number; providers: string[] }; groups: { id: string; confirmed: boolean; reproductions: string[] }[]; rejected: unknown; interns: unknown; environments: unknown };
-    expect(data.run).toMatchObject({ confirmedGroups: 1, notConfirmedGroups: 2, rejectedFiles: 1, providers: ["claude", "codex"] });
+    const data = json as { run: { confirmedGroups: number; notConfirmedGroups: number; rejectedFiles: number }; groups: { id: string; confirmed: boolean; reproductions: string[] }[]; rejected: unknown; interns: unknown; environments: unknown };
+    expect(data.run).toMatchObject({ confirmedGroups: 1, notConfirmedGroups: 2, rejectedFiles: 1 });
     expect(data.groups.map((group) => [group.id, group.confirmed, group.reproductions])).toEqual([
       ["g1", true, ["i1", "i2", "c1"]],
       ["g2", false, ["i3"]],
@@ -248,7 +245,7 @@ describe("renderReport", () => {
     const noisy: Group = {
       id: "g1",
       findings: [{ ...finding("i1/bidi", "Totals \u{202e}disagree", "Row \u001b[31mred\u001b[0m"), evidence: ["interns/i1/out/evidence/a\u0007.png"] }],
-      confirmation: { intern: "c1", provider: "codex", result: null, error: "adapter said \u009bno" },
+      confirmation: { intern: "c1", result: null, error: "adapter said \u009bno" },
     };
     const relays = [{ intern: "i1", records: [record(1, "a\u001b[31m\u{202e}.example", "denied")] }];
     const text = renderReport(state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }], { hosts: [], relays }, []).markdown;
@@ -256,7 +253,7 @@ describe("renderReport", () => {
     expect(text).toContain("### Totals disagree\n");
     expect(text).toContain("> Row \\[31mred\\[0m\n");
     expect(text).toContain("- interns/i1/out/evidence/a.png\n");
-    expect(text).toContain("Confirmation: c1 (codex) failed: adapter said no\n");
+    expect(text).toContain("Confirmation: c1failed: adapter said no\n");
     expect(text).toContain("- interns/i2/out/findings/xy.json: bad input\n");
     expect(text).toContain("| a\\[31m.example | denied |  | 1 | i1 |\n");
     expect(text.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Confirmed", "## Not confirmed", "## Rejected finding files", "## Interns", "## Egress connections", "## Environments"]);
@@ -343,7 +340,7 @@ describe("ticket drafts", () => {
   });
 
   test("a group that two testing interns reported gets a draft when its confirmation failed", () => {
-    const failed: Group = { ...overlap, confirmation: { intern: "c3", provider: null, result: null, error: "no login with spare capacity" } };
+    const failed: Group = { ...overlap, confirmation: { intern: "c3", result: null, error: "no login with spare capacity" } };
     const [only] = renderReport(state, [failed], [], none, []).tickets;
     expect(only?.body).toContain("- Reproductions: 2 (i1, i2)\n");
     expect(only?.body).toEndWith("## Confirmation\n\nc3 failed:\n\n```\nno login with spare capacity\n```\n");
@@ -352,7 +349,7 @@ describe("ticket drafts", () => {
 
   test("control characters between backticks cannot close a code block", () => {
     const error = "has unknown fields x\n`\u0000`\u0000`\n![p](http://attacker.test/p.png)\n## Forged";
-    const [only] = renderReport(state, [{ ...overlap, confirmation: { intern: "c1", provider: "codex", result: null, error } }], [], none, []).tickets;
+    const [only] = renderReport(state, [{ ...overlap, confirmation: { intern: "c1", result: null, error } }], [], none, []).tickets;
     const html = Bun.markdown.html(only!.body);
     expect(html).not.toContain("<img");
     expect(html).not.toContain("<h2>Forged</h2>");
@@ -439,7 +436,7 @@ describe("renderReplay", () => {
 
   test("sorts the groups into reproduced, not reproduced, and not checked, under the ids of the earlier run", () => {
     expect(markdown.split("\n").filter((line) => line.startsWith("## "))).toEqual(["## Reproduced", "## Not reproduced", "## Not checked", "## Interns", "## Egress connections", "## Environments"]);
-    expect(markdown.slice(markdown.indexOf("## Environments"))).toContain("### c1, attempt 1\n\n- Started: 2026-09-26T09:00:05.000Z\n- Ready: after 42.3 s\n");
+    expect(markdown.slice(markdown.indexOf("## Environments"))).toContain("### c1\n\n- Started: 2026-09-26T09:00:05.000Z\n- Ready: after 42.3 s\n");
     expect(markdown).toContain(`- Replay of: run \`7c1e9a04\` at commit \`${state.target.commit}\`\n`);
     expect(markdown).toContain(`- Commit: \`${replayState.target.commit}\`\n`);
     expect(markdown).toContain("- Groups reproduced: 1\n- Groups not reproduced: 1\n- Groups not checked: 1\n");
@@ -447,13 +444,13 @@ describe("renderReplay", () => {
     expect(reproduced).toContain(`### ${overlap.findings[0]!.title}`);
     expect(reproduced).toContain("- Group: g1 in run 7c1e9a04\n");
     expect(reproduced).toContain("1. Sign in as owner@acme.test with the password acme-owner-pass.");
-    expect(reproduced).toContain("Confirmation: c1 (codex) reproduced it: the steps showed the failure, and the task done through the page's own controls showed it.");
+    expect(reproduced).toContain("Confirmation: c1reproduced it: the steps showed the failure, and the task done through the page's own controls showed it.");
     expect(reproduced).not.toContain("i2/page-two-repeats");
     expect(reproduced).not.toContain("interns/i1/out/evidence/pagination-overlap.png");
     const notReproduced = between(markdown, "## Not reproduced", "## Not checked");
     expect(notReproduced).toContain(`### ${exportTotal.findings[0]!.title}`);
     expect(notReproduced).toContain("> The detail page at /invoices/2 shows €5,770.60.");
-    expect(notReproduced).toContain("Confirmation: c2 (codex) did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
+    expect(notReproduced).toContain("Confirmation: c2did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
     const unchecked = between(markdown, "## Not checked", "## Interns");
     expect(unchecked).toContain(`### ${negative.findings[0]!.title}`);
     expect(unchecked).toContain("Confirmation: c3 failed: no login with spare capacity");
@@ -466,7 +463,6 @@ describe("renderReplay", () => {
       replay: { runId: "7c1e9a04", commit: state.target.commit },
       target: replayState.target,
       interns: { confirming: 3 },
-      providers: ["codex"],
       reproducedGroups: 1,
       notReproducedGroups: 1,
       uncheckedGroups: 1,

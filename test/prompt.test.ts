@@ -33,7 +33,7 @@ function finding(id: string, title: string, evidence: string[]): Finding {
     observed: "The first row of page 2 reads \"INV-0014 Stark Industries\", the same as the last row of page 1.",
     contradicts: null,
     evidence,
-    environment: { commit: "3f9c2e1d8a7b", dirty: false, environment: `qa-1a2b3c4d-${intern}`, provider: "codex", model: "gpt-5.5" },
+    environment: { commit: "3f9c2e1d8a7b", dirty: false, environment: `qa-1a2b3c4d-${intern}`, model: "openrouter/xiaomi/mimo-v2.6-pro" },
   };
 }
 
@@ -90,14 +90,14 @@ describe("internPrompt", () => {
 });
 
 describe("continuePrompt", () => {
-  test("lists each rejected file at its path inside the runner of its attempt with the reason", () => {
+  test("lists each rejected file at its path inside the runner with the reason", () => {
     const prompt = continuePrompt(
       12,
       [
-        { intern: "i1", file: "interns/i1/out-2/findings/negative-total.json", reason: "steps must have at least one entry" },
-        { intern: "i1", file: "interns/i1/out-2/findings/export.json", reason: "evidence path /qa/out/evidence/a.png does not exist" },
+        { intern: "i1", file: "interns/i1/out/findings/negative-total.json", reason: "steps must have at least one entry" },
+        { intern: "i1", file: "interns/i1/out/findings/export.json", reason: "evidence path /qa/out/evidence/a.png does not exist" },
       ],
-      "interns/i1/out-2",
+      "interns/i1/out",
     );
     expect(prompt).toContain("12");
     expect(prompt).toContain("/qa/out/findings/negative-total.json: steps must have at least one entry");

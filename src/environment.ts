@@ -8,9 +8,9 @@ import { errorCode } from "./findings.ts";
 import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
-import { relayOutcomes, type ContainerStats, type GeneratedFile, type Mount, type RelayRecord } from "./types.ts";
+import { relayOutcomes, type ContainerStats, type Mount, type RelayRecord } from "./types.ts";
 
-export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
+export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; tmpfs: string[] };
 export type EnvironmentSpec = {
   runId: string;
   runDir: string;
@@ -165,10 +165,6 @@ function envDir(spec: EnvironmentSpec): string {
   return join(spec.runDir, "envs", spec.name);
 }
 
-function generatedPath(spec: EnvironmentSpec, file: GeneratedFile): string {
-  return join(envDir(spec), "files", file.target);
-}
-
 function bind(source: string, target: string, readOnly: boolean) {
   return { type: "bind", source, target, read_only: readOnly, bind: { create_host_path: false } };
 }
@@ -219,7 +215,6 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     bind(spec.runner.out, "/qa/out", false),
     bind(join(spec.runDir, "chrome-policy.json"), "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json", true),
     ...spec.runner.mounts.map((mount) => bind(mount.source, mount.target, mount.readOnly)),
-    ...spec.runner.files.map((file) => bind(generatedPath(spec, file), file.target, false)),
   ];
   if (proxied) {
     lines.push(
@@ -363,7 +358,6 @@ function composeArgs(spec: EnvironmentSpec): string[] {
 
 async function writeFiles(spec: EnvironmentSpec): Promise<void> {
   await mkdir(spec.runner.out, { recursive: true });
-  for (const file of spec.runner.files) await Bun.write(generatedPath(spec, file), file.content);
   const { uid, gid } = userInfo();
   await Bun.write(join(envDir(spec), "compose.qa.yml"), renderOverride(spec, uid, gid));
 }

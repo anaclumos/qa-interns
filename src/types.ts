@@ -4,15 +4,9 @@ import type { confirmationSchema } from "./findings.ts";
 import type { storedFindingSchema } from "./report.ts";
 import type { stateSchema } from "./state.ts";
 
-export const providerNames = ["claude", "codex", "cursor", "grok", "opencode"] as const;
-
-export type Provider = (typeof providerNames)[number];
-
-export type Login = { id: string; provider: Provider; store: string | null; seat: string[] | null; quota: string[] | null; concurrency: number; model: string | null };
+export type Login = { id: string; store: string; concurrency: number; model: string | null };
 
 export type Mount = { source: string; target: string; readOnly: boolean };
-
-export type GeneratedFile = { target: string; content: string };
 
 export const internStatuses = ["queued", "starting", "testing", "done", "failed", "limited"] as const;
 
@@ -24,7 +18,7 @@ export type InternState = RunState["interns"][number];
 
 export type ContainerStats = { service: string; number: number; state: string; oomKilled: boolean; restarts: number; memoryPeak: number | null };
 
-export type EnvironmentStats = { intern: string; attempt: number; startedAt: string; readyAt: string | null; containers: ContainerStats[] | null };
+export type EnvironmentStats = { intern: string; startedAt: string; readyAt: string | null; containers: ContainerStats[] | null };
 
 export const runPhases = ["preparing", "building", "starting", "up", "testing", "grouping", "confirming", "reporting", "done", "failed"] as const;
 
@@ -51,7 +45,7 @@ export type RelayRecord = z.infer<typeof relaySchema>;
 export type Group = {
   id: string;
   findings: Finding[];
-  confirmation: { intern: string; provider: Provider | null; result: Confirmation | null; error: string | null } | null;
+  confirmation: { intern: string; result: Confirmation | null; error: string | null } | null;
 };
 
 export type Replay = { runId: string; target: RunState["target"]; groups: Group[] };

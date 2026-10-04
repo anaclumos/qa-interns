@@ -25,9 +25,8 @@ function intern(overrides: Partial<InternState>): InternState {
     role: "intern",
     charter: "First-time user: sign-up, onboarding, empty states, first actions.",
     group: null,
-    provider: "claude",
-    login: "claude-1",
-    model: "claude-opus-4-1",
+    login: "openrouter-1",
+    model: "openrouter/xiaomi/mimo-v2.6-pro",
     project: "qa-3f9a1c2e-i1",
     status: "testing",
     detail: null,
@@ -55,8 +54,6 @@ function runState(runId: string, startedAt: string): RunState {
       intern({ id: "i1", findings: 2 }),
       intern({
         id: "i2",
-        provider: "codex",
-        login: "codex-pool",
         model: null,
         project: "qa-3f9a1c2e-i2",
         status: "done",
@@ -65,7 +62,7 @@ function runState(runId: string, startedAt: string): RunState {
         rejected: 1,
         endedAt: "2026-09-26T09:24:40.002Z",
       }),
-      intern({ id: "i3", provider: null, login: null, model: null, project: null, status: "limited", detail: "No login has spare capacity", startedAt: null }),
+      intern({ id: "i3", login: null, model: null, project: null, status: "limited", detail: "No login has spare capacity", startedAt: null }),
     ],
   };
 }
@@ -181,10 +178,10 @@ describe("formatStatus", () => {
     expect(lines[4]).toBe("");
     const table = lines.slice(5);
     expect(table).toEqual([
-      "Intern  Role    Provider  Status   Findings  Detail",
-      "i1      intern  claude    testing  2",
-      "i2      intern  codex     done     1         Stopped at minute 12: I tested the invoice list. Nothing else to report.",
-      "i3      intern  -         limited  0         No login has spare capacity",
+      "Intern  Role    Status   Findings  Detail",
+      "i1      intern  testing  2",
+      "i2      intern  done     1         Stopped at minute 12: I tested the invoice list. Nothing else to report.",
+      "i3      intern  limited  0         No login has spare capacity",
     ]);
   });
 
