@@ -27,7 +27,7 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
+type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; swap?: true; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
@@ -469,10 +469,33 @@ USER qa
       expect(failedReport.run).toMatchObject({ reproducedGroups: 0, notReproducedGroups: 0, uncheckedGroups: 1 });
       expect(failedReport.groups[0]).toMatchObject({ id: "g1", reproduced: null, confirmation: { intern: "c1", result: null, error: "no confirmation.json written" } });
 
+      const swappedLines: string[] = [];
+      const outside = "evidence path evidence/reproduction.txt resolves outside /qa/out";
+      await expect(
+        runQa({
+          dir: join(replay.target.repo, replay.target.path),
+          rev: next,
+          dirty: false,
+          interns: 0,
+          minutes: 0,
+          confirmMinutes: 0.5,
+          loginsFile: await logins("replay-swap", [{ id: "claude-swap", provider: "claude", swap: true }]),
+          replay: await readReplay(sourceDir, []),
+          runnerImage: async () => fakeImage,
+          print: (line) => swappedLines.push(line),
+        }),
+      ).rejects.toThrow(`No confirming intern recorded a result: c1 done: reproduced; confirmation failed after teardown: ${outside}`);
+      const swappedDir = swappedLines[0] ?? "";
+      const swapped = await readState(swappedDir);
+      const swappedReport = await Bun.file(join(swappedDir, "findings.json")).json();
+      expect(swappedReport.groups[0]).toMatchObject({ id: "g1", reproduced: null, confirmation: { intern: "c1", result: null, error: outside } });
+      expect(await Bun.file(join(swappedDir, "report.md")).text()).not.toContain("interns/c1/out/evidence/reproduction.txt");
+
       for (const [dir, run] of [
         [sourceDir, source],
         [runDir, state],
         [failedDir, failed],
+        [swappedDir, swapped],
       ] as const) {
         expect(await leftovers(run.runId)).toEqual([]);
         expect(await workspaces(dir, run)).toEqual([]);

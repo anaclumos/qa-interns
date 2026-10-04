@@ -453,13 +453,14 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
   });
-  const answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };
-  let confirmation = { intern: intern.id, provider: intern.provider, ...answer };
+  const failure = outcome.status === "done" ? outcome.value.error : outcome.status === "limited" ? noLogin : message(outcome.error);
+  let confirmation: NonNullable<Group["confirmation"]> = { intern: intern.id, provider: intern.provider, result: null, error: failure };
   for (const entry of attempts.toReversed()) {
-    if (confirmation.result !== null) break;
-    const earlier = await check(entry.attempt);
-    if (earlier.result !== null) confirmation = { intern: intern.id, provider: entry.provider, ...earlier };
+    const saved = await check(entry.attempt);
+    if (saved.result !== null || confirmation.error === null) confirmation = { intern: intern.id, provider: entry.provider, ...saved };
+    if (saved.result !== null) break;
   }
+  if (failure === null && confirmation.result === null) await ctx.update(intern.id, { detail: stripControl(`${intern.detail}; confirmation failed after teardown: ${confirmation.error}`) });
   group.confirmation = confirmation;
 }
 

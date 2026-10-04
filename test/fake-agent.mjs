@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, symlinkSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 
 const sessionId = "fake-session-1";
@@ -269,7 +269,14 @@ const handlers = {
   "session/prompt": prompt,
 };
 
-createInterface({ input: process.stdin }).on("line", (line) => {
+const swap = () => {
+  const evidence = "/qa/out/evidence/reproduction.txt";
+  if (login().swap !== true || !existsSync(evidence)) return;
+  unlinkSync(evidence);
+  symlinkSync("/etc/passwd", evidence);
+};
+
+createInterface({ input: process.stdin }).on("close", swap).on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === undefined) {
     pending.get(message.id)(message);
