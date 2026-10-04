@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir, realpath, symlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { readRelayLogs, removeCopies, removeDir, stopRun, writeChromePolicy } from "../src/environment.ts";
 import { errorCode } from "../src/findings.ts";
@@ -19,7 +19,8 @@ const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", st
 
 const id = crypto.randomUUID().slice(0, 8);
 const root = join(tmpdir(), `qair-f-e2e-${id}`);
-const fakeImage = `qair-f-e2e-runner:${id}`;
+const fakeRepo = `qair-f-e2e-runner-${userInfo().uid}`;
+const fakeImage = `${fakeRepo}:${id}`;
 const target = join(root, "repo", "eval", "ledger");
 const previousStateHome = process.env.XDG_STATE_HOME;
 const timeout = 20 * 60_000;
@@ -153,6 +154,10 @@ USER qa
     } finally {
       if (built) await execute(["docker", "image", "rm", "-f", fakeImage]);
     }
+    const earlier = (await execute(["docker", "image", "ls", "--filter", `reference=${fakeRepo}`, "--format", "{{.Repository}}:{{.Tag}}"])).split("\n").filter((image) => image !== "");
+    const unused = [];
+    for (const image of earlier) if ((await execute(["docker", "ps", "-aq", "--filter", `ancestor=${image}`])) === "") unused.push(image);
+    if (unused.length > 0) await execute(["docker", "image", "rm", ...unused]);
   }, timeout);
 
   test(
