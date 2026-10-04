@@ -28,4 +28,4 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 - Usage-limit detection is structural: JSON-RPC `code` and `data` fields, or the exit code of a login's `quota` command, never message text.
 - Several interns can share one Codex `auth.json`, and README Known limits records the refresh-token race that this sharing accepts.
 - Docker objects of a run are named `qa-<runId>-*` and prebuilt images `qa-<runId>-<service in lowercase>:latest`. Manual and test work uses other prefixes and removes what it creates.
-- Adapter and browser versions are pinned in `runner/Dockerfile`. A version bump re-verifies the adapter's usage-limit error shape and MCP sources from its source before it lands.
+- Adapter and browser versions are pinned in `runner/Dockerfile`. A version bump re-verifies the adapter's usage-limit error shape and MCP sources from its source before it lands. An agent-browser bump re-measures the browser's default viewport, which `src/prompt.ts` states, inside the runner.
