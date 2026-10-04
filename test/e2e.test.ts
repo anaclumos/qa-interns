@@ -83,6 +83,7 @@ async function askOptions(runId: string, name: string): Promise<AskOptions> {
     name,
     loginsFile: await logins(`ask-${runId}`, [{ id: "claude-1", provider: "claude" }]),
     runnerImage: fakeImage,
+    admit: () => () => {},
     prompt: "Write /qa/out/groups.json.",
     file: "groups.json",
     parse: (raw) => JSON.parse(raw),
@@ -172,7 +173,7 @@ USER qa
         ]),
         replay: null,
         onEnd: `test -f "$QA_INTERNS_RUN_DIR/report.md" && printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'`,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -279,7 +280,7 @@ USER qa
           { id: "claude-wide-2", provider: "claude", second: true },
         ]),
         replay: null,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: () => {},
       });
 
@@ -309,7 +310,7 @@ USER qa
         confirmMinutes: 0.5,
         loginsFile: await logins("handoff", [{ id: "claude-handoff", provider: "claude", second: true }]),
         replay: null,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: () => {},
       });
 
@@ -356,7 +357,7 @@ USER qa
         confirmMinutes: 0.5,
         loginsFile: await logins("relayed", [{ id: "claude-1", provider: "claude" }]),
         replay: null,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: () => {},
       });
 
@@ -393,7 +394,7 @@ USER qa
     "a replay hands the confirmed group of an earlier run to a confirming intern at a new commit and reports that it reproduced",
     async () => {
       const loginsFile = await logins("replay", [{ id: "claude-1", provider: "claude" }]);
-      const sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+      const sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
       const source = await readState(sourceDir);
       const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false"];
       const next = (await execute([...git, "commit-tree", "-p", source.target.commit, "-m", "Next", `${source.target.commit}^{tree}`])).trim();
@@ -410,7 +411,7 @@ USER qa
         confirmMinutes: 0.5,
         loginsFile,
         replay,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -458,7 +459,7 @@ USER qa
           confirmMinutes: 0.5,
           loginsFile: await logins("replay-silent", [{ id: "claude-no-confirm", provider: "claude", confirms: false }]),
           replay: await readReplay(sourceDir, []),
-          runnerImage: async () => fakeImage,
+          runnerImage: async () => fakeImage, admit: () => () => {},
           print: (line) => failedLines.push(line),
         }),
       ).rejects.toThrow("No confirming intern recorded a result: c1 done: confirmation failed: no confirmation.json written");
@@ -502,7 +503,7 @@ USER qa
           { id: "claude-no-confirm", provider: "claude", confirms: false, model: "fake-model-c" },
         ]),
         replay: null,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
@@ -587,7 +588,7 @@ USER qa
         confirmMinutes: 0.5,
         loginsFile: await logins("upgrade", [{ id: "cursor-upgrade", provider: "cursor", upgrade: true }]),
         replay: null,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -623,7 +624,7 @@ USER qa
           { id: "claude-next", provider: "claude", model: "fake-model-b" },
         ]),
         replay: null,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -669,7 +670,7 @@ USER qa
         confirmMinutes: 0.5,
         loginsFile: await logins("hang", [{ id: "grok-hang", provider: "grok", hang: true }]),
         replay: null,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -702,7 +703,7 @@ USER qa
         confirmMinutes: 0.5,
         loginsFile: await logins("teardown", [{ id: "claude-limit", provider: "claude", limit: true }]),
         replay: null,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
@@ -749,7 +750,7 @@ USER qa
       try {
         await block(`10.214.${third}.0/25`);
         const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude", second: true }]);
-        const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+        const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
         const runDir = await run();
         const state = await readState(runDir);
         expect(state.phase).toBe("done");
@@ -916,7 +917,7 @@ USER qa
       process.env.QA_PROBE_DIR = probe;
       let error: unknown = null;
       try {
-        await runQa({ dir: hostile, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+        await runQa({ dir: hostile, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: (line) => lines.push(line) });
       } catch (reason) {
         error = reason;
       } finally {
@@ -976,7 +977,7 @@ USER qa
       let runDir: string;
       let printed: string;
       try {
-        runDir = await runQa({ dir: secret, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+        runDir = await runQa({ dir: secret, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: (line) => lines.push(line) });
       } finally {
         printed = stderr.mock.calls.map(([chunk]) => String(chunk)).join("");
         stderr.mockRestore();
@@ -1022,12 +1023,12 @@ USER qa
       const key = `sk-or-v1-${crypto.randomUUID()}`;
       const loginsFile = await logins("login-key", [{ id: "opencode-1", provider: "opencode", openrouter: { type: "api", key } }]);
       const lines: string[] = [];
-      const runDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+      const runDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: (line) => lines.push(line) });
 
       const state = await readState(runDir);
       expect(state.phase).toBe("done");
       expect(intern(state, "i1").provider).toBe("opencode");
-      const options = { runDir, runId: state.runId, loginsFile, runnerImage: fakeImage };
+      const options = { runDir, runId: state.runId, loginsFile, runnerImage: fakeImage, admit: () => () => {} };
       expect(await ask({ ...options, name: "score", prompt: "Write /qa/out/groups.json.", file: "groups.json", parse: (raw) => JSON.parse(raw) })).toEqual({ groups: [] });
       const failed = ask({
         ...options,
@@ -1194,7 +1195,7 @@ USER qa
         loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
         replay: null,
         onEnd: `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; exit 3`,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -1344,7 +1345,7 @@ USER qa
         confirmMinutes: 0.5,
         loginsFile: await logins("dirty", [{ id: "claude-1", provider: "claude" }]),
         replay: null,
-        runnerImage: async () => fakeImage,
+        runnerImage: async () => fakeImage, admit: () => () => {},
         print: (line) => lines.push(line),
       });
 

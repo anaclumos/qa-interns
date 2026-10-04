@@ -8,6 +8,7 @@ import {
   buildImages,
   containerStats,
   createDisk,
+  environmentMemory,
   freeSlot,
   freeSlots,
   readRelayLogs,
@@ -528,12 +529,27 @@ networks:
 });
 
 describe.skipIf(!dockerAvailable)("environment helpers", () => {
-  test("leave inactive services out of the image build", async () => {
+  test("add target service limits times their containers, the default for unset limits, the runner, the proxy, and the relay", async () => {
+    const gib = 1024 ** 3;
+    const mib = 1024 ** 2;
+    const target = await loadTarget(ref, ledgerSource);
+    expect(environmentMemory(target)).toBe(6 * gib + 128 * mib);
+    const limited: Target = { ...target, services: { ...target.services, db: { build: false, image: "postgres:17.11-alpine", tags: [], memLimit: 512 * mib, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, replicas: 1, active: true } } };
+    expect(environmentMemory(limited)).toBe(5 * gib + 640 * mib);
+    const replicated: Target = { ...limited, services: { ...limited.services, db: { ...limited.services.db!, replicas: 3 } } };
+    expect(environmentMemory(replicated)).toBe(6 * gib + 640 * mib);
+    const relayed: Target = { ...target, settings: { ...target.settings, egress: ["api.pwnedpasswords.com"] } };
+    expect(environmentMemory(relayed)).toBe(6 * gib + 256 * mib);
+    expect(environmentMemory(null)).toBe(4 * gib + 128 * mib);
+  });
+
+  test("leave inactive services out of the environment's memory and the image build", async () => {
     const target = await loadTarget(ref, ledgerSource);
     const profiled: Target = {
       ...target,
-      services: { web: { build: true, image: null, tags: [], memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, active: false } },
+      services: { web: { build: true, image: null, tags: [], memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, replicas: 1, active: false } },
     };
+    expect(environmentMemory(profiled)).toBe(environmentMemory(null));
     expect(await buildImages("3f9a1c2e", profiled, ledgerSource)).toEqual({});
   });
 
