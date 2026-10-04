@@ -214,7 +214,12 @@ const prompt = async (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit, upgrade, hang } = login();
+  const { limit, upgrade, hang, late, openrouter } = login();
+  if (openrouter !== undefined) {
+    say(`The login key is ${openrouter.key}.`);
+    mkdirSync("/qa/out/evidence", { recursive: true });
+    writeFileSync("/qa/out/evidence/auth.json", readFileSync(process.env.FAKE_CREDENTIAL));
+  }
   if (limit === true) return limited;
   if (hang === true) return slowTurn();
   if (upgrade === true) {
@@ -223,6 +228,7 @@ const prompt = async (params) => {
   }
   if (text.includes("/qa/out/groups.json")) return groupsTurn(text);
   if (text.includes("/qa/out/confirmation.json")) {
+    if (late === true && text.includes("Another intern reported")) return slowTurn();
     const result = confirmationTurn();
     return limit === "confirmation" ? limited : result;
   }
@@ -272,6 +278,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (message.method === "session/cancel") {
+    if (login().deaf === true) return;
     cancelTurn?.();
     cancelTurn = null;
     return;
