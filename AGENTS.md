@@ -8,12 +8,12 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 - `runner/`: the runner image, the runner's egress proxy, and the target's relay. The image tag is derived from these files and the host uid and gid, so any edit rebuilds it on the next run.
 - `skills/qa-interns/` and `.claude-plugin/`: the Claude Code plugin. It has one skill and no hooks.
 - `eval/ledger/`: the evaluation target. `eval/defects.json` is the only place its planted defects are described; the application code carries no hint of them.
-- `test/`: `bun test`. Tests that need Docker skip when `docker info` fails.
+- `test/`: `bun run test`. Tests that need Docker skip when `docker info` fails. The end-to-end tests are split across `test/e2e-*.test.ts` files that share the fixture in `test/e2e.ts`, so `bun test --parallel` runs them in separate worker processes; a file holds no state that another file reads. `test/subnet.ts` locks each `/22` block it hands out for the life of the process, so files that run at once never share a block.
 
 ## Gates
 
-- `bun run typecheck` and `bun test` pass before every commit.
-- `bun test` loads `test/suite-lock.ts` through `bunfig.toml`, which holds an exclusive `flock` on `$XDG_RUNTIME_DIR/qa-interns/suite.lock` until the suite exits, so the suites of one user on one host run one at a time.
+- `bun run typecheck` and `bun run test` pass before every commit.
+- One exclusive `flock` on `$XDG_RUNTIME_DIR/qa-interns/suite.lock` covers each suite, so the suites of one user on one host run one at a time. `bun run test` runs `test/suite-lock.ts` as a script, which takes the lock and then starts `bun test --parallel=4`. `bunfig.toml` preloads the same file into every `bun test` process: a serial `bun test` takes the lock itself, and a `--parallel` worker fails unless it or a process above it holds the lock, because the workers of one suite are separate processes and a lock that one worker takes blocks the others. A process under a lock holder, such as a `git push` run inside one, takes no second lock.
 - `claude plugin validate .` and `claude plugin validate skills` pass after any change to `.claude-plugin/` or `skills/`.
 - The lefthook `pre-push` hook in `lefthook.yml` runs the install, typecheck, plugin validate, and test commands of the `ci.yml` `test` job, after it checks for a clean tree and a running Docker daemon. `bun install` installs the hook. A change to one of those commands in one file makes the same change in the other. A job that runs git in another repository first runs `unset $(git rev-parse --local-env-vars)`: git exports `GIT_DIR` to hooks, and without the unset the test fixtures commit into this repository and set its `core.bare`.
 

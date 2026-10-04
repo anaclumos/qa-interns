@@ -12,7 +12,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit && tsc --noEmit -p eval/ledger",
-    "test": "bun test"
+    "test": "bun test/suite-lock.ts bun test --parallel=4"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.5.0",
