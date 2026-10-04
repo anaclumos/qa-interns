@@ -28,7 +28,7 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; late?: true; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
+type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; late?: true; deaf?: true; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
@@ -362,7 +362,7 @@ USER qa
   );
 
   test(
-    "a replay hands the confirmed group of an earlier run to a confirming intern at a new commit and reports that it reproduced, also when the intern writes its confirmation only after its time box ends",
+    "a replay hands the confirmed group of an earlier run to a confirming intern at a new commit and reports that it reproduced, also when the intern writes its confirmation only after its time box ends, and sends no prompt after a turn that a cancel does not end",
     async () => {
       const loginsFile = await logins("replay", [{ id: "claude-1", provider: "claude" }]);
       const sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
@@ -465,11 +465,36 @@ USER qa
       const lateReport = await Bun.file(join(lateDir, "findings.json")).json();
       expect(lateReport.groups[0]).toMatchObject({ id: "g1", reproduced: true, confirmation: { intern: "c1", result: { steps: true, task: true }, error: null } });
 
+      const deafLines: string[] = [];
+      await expect(
+        runQa({
+          dir: join(replay.target.repo, replay.target.path),
+          rev: next,
+          dirty: false,
+          interns: 0,
+          minutes: 0,
+          confirmMinutes: 0.5,
+          loginsFile: await logins("replay-deaf", [{ id: "claude-deaf", provider: "claude", late: true, deaf: true }]),
+          replay: await readReplay(sourceDir, ["g1"]),
+          runnerImage: async () => fakeImage,
+          print: (line) => deafLines.push(line),
+        }),
+      ).rejects.toThrow("No confirming intern recorded a result: c1 done: confirmation failed: no confirmation.json written");
+      const deafDir = deafLines[0] ?? "";
+      const deaf = await readState(deafDir);
+      const deafTraffic = (await Bun.file(join(deafDir, "interns", "c1", "transcript.jsonl")).text())
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => JSON.parse(line))
+        .filter((line) => line.from === "client" && (line.message.method === "session/prompt" || line.message.method === "session/cancel"));
+      expect(deafTraffic.map((line) => line.message.method)).toEqual(["session/prompt", "session/cancel"]);
+
       for (const [dir, run] of [
         [sourceDir, source],
         [runDir, state],
         [failedDir, failed],
         [lateDir, late],
+        [deafDir, deaf],
       ] as const) {
         expect(await leftovers(run.runId)).toEqual([]);
         expect(await workspaces(dir, run)).toEqual([]);

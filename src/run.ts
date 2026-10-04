@@ -327,31 +327,30 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, wor
   return outcome;
 }
 
-async function turnUntil(session: Session, text: string, deadline: number): Promise<Turn | null> {
-  if (Date.now() >= deadline) return null;
+async function turnUntil(session: Session, text: string, deadline: number): Promise<Turn | "ended" | "running"> {
+  if (Date.now() >= deadline) return "ended";
   const turn = session.prompt(text);
   const result = await within(turn, deadline - Date.now());
   if (result !== null) return result;
   const settled = turn.then(
-    () => undefined,
-    () => undefined,
+    () => "ended" as const,
+    () => "ended" as const,
   );
   await session.cancel();
-  await within(settled, settleMs);
-  return null;
+  return (await within(settled, settleMs)) ?? "running";
 }
 
-async function converse(session: Session, first: string, deadline: number, next: (turn: Turn, idle: boolean) => Promise<string | null>): Promise<boolean> {
+async function converse(session: Session, first: string, deadline: number, next: (turn: Turn, idle: boolean) => Promise<string | null>): Promise<"done" | "ended" | "running"> {
   let text: string | null = first;
   let quiet = false;
   while (text !== null) {
     const turn = await turnUntil(session, text, deadline);
-    if (turn === null) return false;
+    if (typeof turn === "string") return turn;
     const idle = quiet && turn.toolCalls === 0;
     quiet = turn.toolCalls === 0;
     text = await next(turn, idle);
   }
-  return true;
+  return "done";
 }
 
 function minutesLeft(deadline: number): number {
@@ -438,14 +437,14 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     const deadline = Date.now() + minutes * minute;
     let answer: { result: Confirmation | null; error: string | null } = { result: null, error: "no confirmation.json written" };
     let corrected = false;
-    const finished = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
+    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
       answer = await check(attempt);
       if (answer.error === null || corrected) return null;
       corrected = true;
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
-    if (!finished && !(await Bun.file(file).exists())) await turnUntil(session, timeUpPrompt(), Date.now() + writeUpMs);
+    if (end === "ended" && !(await Bun.file(file).exists())) await turnUntil(session, timeUpPrompt(), Date.now() + writeUpMs);
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check(attempt);
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;

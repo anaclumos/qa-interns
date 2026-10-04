@@ -278,6 +278,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     return;
   }
   if (message.method === "session/cancel") {
+    if (login().deaf === true) return;
     cancelTurn?.();
     cancelTurn = null;
     return;
