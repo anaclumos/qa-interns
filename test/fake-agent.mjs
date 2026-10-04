@@ -214,7 +214,7 @@ const prompt = async (params) => {
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit, upgrade, hang, openrouter } = login();
+  const { limit, upgrade, hang, late, openrouter } = login();
   if (openrouter !== undefined) {
     say(`The login key is ${openrouter.key}.`);
     mkdirSync("/qa/out/evidence", { recursive: true });
@@ -228,6 +228,7 @@ const prompt = async (params) => {
   }
   if (text.includes("/qa/out/groups.json")) return groupsTurn(text);
   if (text.includes("/qa/out/confirmation.json")) {
+    if (late === true && text.includes("Another intern reported")) return slowTurn();
     const result = confirmationTurn();
     return limit === "confirmation" ? limited : result;
   }
