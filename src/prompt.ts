@@ -45,6 +45,9 @@ ${JSON.stringify(env.seed, null, 2)}
 const howToWork = `How to work:
 - Drive the browser with agent-browser. \`agent-browser skills get core\` prints its command reference, and \`agent-browser skills get dogfood\` prints its guide to exploratory testing.
 - \`agent-browser open <url>\` opens a page. \`agent-browser snapshot -i\` lists the interactive elements with refs such as \`@e3\`. \`agent-browser click @e3\` and \`agent-browser fill @e3 "text"\` act on them. Refs go stale after navigation or a page change; run \`agent-browser snapshot -i\` again.
+- A ref to an element that the page replaced after the snapshot acts on an element with the same role and name, which can be another element, and prints \`✓ Done\`. A page can replace its elements after it loads with no visible change. When a link opens a page other than its \`href\`, or a control acts on something other than what it shows, repeat the action with a CSS selector, such as \`agent-browser click 'a[href="/lists/7"]'\`, and report only what the selector shows.
+- \`agent-browser click\`, on a ref, a selector, or a \`find\` locator, presses the middle of the box around the whole element. On a link that wraps onto two lines, that point can lie outside both lines of the link, so the press lands on the text around it, prints \`✓ Done\`, and opens nothing. Before you report that a link does nothing, run \`agent-browser focus @e3\` on the link, then print its text and the middle of each of its lines with \`agent-browser eval '[document.activeElement.textContent.slice(0, 100), ...[...document.activeElement.getClientRects()].map((r) => [Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2)])]'\`. When it prints the link's text and more than one point, press one of the points with \`agent-browser mouse move <x> <y>\`, \`agent-browser mouse down\`, and \`agent-browser mouse up\`.
+- To empty a field, click it, then run \`agent-browser press Control+a\` and \`agent-browser press Backspace\`. \`agent-browser fill @e3 ""\` empties the field on screen only: a page built with React keeps the old value and submits it. A field emptied that way keeps the old value until you type into it, so type a character with \`agent-browser type @e3 "1"\` before you empty it again.
 - On a native date, time, \`datetime-local\`, month, or week input, \`fill\`, \`type\`, \`keyboard type\`, and a click on a day of its calendar popup print \`✓ Done\` and leave the input empty. \`agent-browser snapshot -i\` lists such an input as one spinbutton per part, such as Month, Day, and Year, and \`agent-browser snapshot\` without \`-i\` shows which input each spinbutton belongs to. Click each spinbutton, then press its characters one at a time, for example \`agent-browser click @e5\`, \`agent-browser press 1\`, and \`agent-browser press 0\` for October. An AM/PM spinbutton takes \`A\` or \`P\`.
 - \`agent-browser console\` prints console messages, and \`agent-browser errors\` prints page errors.
 - \`agent-browser set viewport 390 844\`, \`agent-browser set device "iPhone 15"\`, \`agent-browser set media dark\`, and \`agent-browser set offline on\` (then \`off\`) change the viewport, the device, the color scheme, and the network state.
@@ -200,6 +203,12 @@ Confirmation:
 - \`observed\` states what your attempts showed, for the steps and for the task.
 - Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.
 - The session ends when the time box ends. Write the file before then.`;
+}
+
+export function timeUpPrompt(): string {
+  return `The time box has ended. Stop testing. Write /qa/out/confirmation.json now from the attempts you made, in the format from your first message, and do nothing else.
+- \`steps\` and \`task\` are each true when one of your attempts showed the failure, and false only when you made both attempts and neither showed it.
+- When you cannot give both values this way, do not write the file.`;
 }
 
 export function correctionPrompt(file: string, reason: string): string {
