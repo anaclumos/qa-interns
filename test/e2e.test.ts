@@ -10,7 +10,7 @@ import { readReplay } from "../src/report.ts";
 import { ask, runQa, type AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { redact } from "../src/secrets.ts";
-import { newRunId, readState } from "../src/state.ts";
+import { newRunId, readState, writeState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
 import type { EnvironmentStats, Finding, Provider, RunState } from "../src/types.ts";
 import { freeBlock } from "./subnet.ts";
@@ -1314,6 +1314,122 @@ USER qa
       const state = await readState(runDir);
       expect(state).toMatchObject({ phase: "failed", error: "interrupted" });
       expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "a run that SIGTERM interrupts while an intern tests writes report.md, findings.json, and state.json with the findings of the interns that ended, before its teardown",
+    async () => {
+      const cli = Bun.spawn(
+        [
+          process.execPath,
+          cliScript,
+          "run",
+          target,
+          "--interns",
+          "2",
+          "--logins",
+          await logins("snapshot", [
+            { id: "claude-1", provider: "claude" },
+            { id: "grok-hang", provider: "grok", hang: true },
+          ]),
+        ],
+        { env: { ...process.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+      );
+      const reader = cli.stdout.getReader();
+      const decoder = new TextDecoder();
+      let out = "";
+      while (!out.includes("\n")) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error(`run exited before it printed its run directory: ${await new Response(cli.stderr).text()}`);
+        out += decoder.decode(chunk.value, { stream: true });
+      }
+      const drained = (async () => {
+        for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) out += decoder.decode(chunk.value, { stream: true });
+      })();
+      const errors = new Response(cli.stderr).text();
+      const runDir = out.slice(0, out.indexOf("\n"));
+      const statuses = async () => (await readState(runDir)).interns.map((entry) => `${entry.status}:${entry.findings}`).sort();
+      while (cli.exitCode === null && (await statuses()).join() !== "done:1,testing:0") await Bun.sleep(100);
+      if (cli.exitCode !== null) {
+        await drained;
+        throw new Error(`run exited with ${cli.exitCode} before one intern ended and the other tested:\n${out}${await errors}`);
+      }
+      cli.kill("SIGTERM");
+      const ended = (await readState(runDir)).interns.find((entry) => entry.status === "done")?.id;
+      const written = async () => {
+        const file = Bun.file(join(runDir, "findings.json"));
+        if (!(await file.exists())) return null;
+        try {
+          return await file.json();
+        } catch (error) {
+          if (error instanceof SyntaxError) return null;
+          throw error;
+        }
+      };
+      let early = null;
+      while (cli.exitCode === null && (early = await written()) === null) await Bun.sleep(10);
+      const live = await leftovers(basename(runDir));
+      const [code] = await Promise.all([cli.exited, drained]);
+
+      expect(early?.run).toMatchObject({ phase: "failed", error: "interrupted" });
+      expect(early?.groups.map((group: { findings: { id: string }[] }) => group.findings.map((finding) => finding.id))).toEqual([[`${ended}/fake-home`]]);
+      expect(early?.interns.map((entry: { id: string; status: string }) => [entry.id, entry.status])).toEqual(
+        ["i1", "i2"].map((entry) => [entry, entry === ended ? "done" : "testing"]),
+      );
+      expect(live).not.toEqual([]);
+      expect(code).toBe(130);
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "failed", error: "interrupted" });
+      expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "down ends a run whose orchestrator ended before it recorded the end of the run or of an intern",
+    async () => {
+      const started = new Date().toISOString();
+      const member = { role: "confirm" as const, charter: title, provider: "claude" as const, login: "claude-1", model: null, findings: 0, rejected: 0, startedAt: started };
+      for (const [phase, error, expected] of [
+        ["confirming", null, "The orchestrator process ended in phase confirming"],
+        ["failed", "interrupted", "interrupted"],
+      ] as const) {
+        const runId = newRunId();
+        const runDir = join(root, "ended", runId);
+        await mkdir(runDir, { recursive: true });
+        await writeState(runDir, {
+          runId,
+          pid: process.pid,
+          pidStart: 0,
+          target: { repo: join(root, "repo"), path: "eval/ledger", commit: "0".repeat(40), dirty: false },
+          options: { interns: 0, minutes: 0, confirmMinutes: 10, concurrency: 0, confirmConcurrency: 3 },
+          phase,
+          error,
+          startedAt: started,
+          updatedAt: started,
+          endedAt: error === null ? null : started,
+          interns: [
+            { ...member, id: "c1", group: "g1", project: `qa-${runId}-c1`, status: "done", detail: "reproduced", endedAt: started },
+            { ...member, id: "c2", group: "g2", project: `qa-${runId}-c2`, status: "testing", detail: null, endedAt: null },
+            { ...member, id: "c3", group: "g3", project: null, status: "queued", detail: null, startedAt: null, endedAt: null },
+          ],
+        });
+
+        const down = await capture([process.execPath, cliScript, "down", runDir], { env: { ...process.env } });
+        expect(down).toMatchObject({ code: 0, stdout: `Run ${runId} has no environments left.\n` });
+        const state = await readState(runDir);
+        expect(state).toMatchObject({ phase: "failed", error: expected });
+        const ended = state.endedAt ?? "";
+        expect(Date.parse(ended)).toBeGreaterThanOrEqual(Date.parse(started));
+        expect(intern(state, "c1")).toMatchObject({ status: "done", detail: "reproduced", endedAt: started });
+        expect(intern(state, "c2")).toMatchObject({ status: "failed", endedAt: state.updatedAt });
+        expect(intern(state, "c3")).toMatchObject({ status: "failed", endedAt: state.updatedAt });
+
+        expect(await capture([process.execPath, cliScript, "down", runDir], { env: { ...process.env } })).toMatchObject({ code: 0 });
+        expect(await readState(runDir)).toEqual(state);
+      }
     },
     timeout,
   );

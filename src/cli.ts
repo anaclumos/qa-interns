@@ -49,7 +49,8 @@ Commands:
   down [<run>]
       Stop the run's orchestrator with SIGTERM when it is still running, then
       tear down every environment the run still has and delete its leftover
-      workspace copies.
+      workspace copies. When the orchestrator ended before it recorded the end
+      of the run or of an intern, set that phase or status to failed.
   help
       Print this help.
 
@@ -213,9 +214,18 @@ async function main(args: string[]): Promise<number> {
       await stopRun(dir, state.runId);
       await removeCopies(dir, state.runId, await runnerImage());
       const after = await readState(dir);
-      if (after.phase === "up") {
+      const live = after.interns.filter((intern) => intern.status === "queued" || intern.status === "starting" || intern.status === "testing");
+      if ((after.phase !== "done" && after.phase !== "failed") || live.length > 0) {
         const ended = new Date().toISOString();
-        await writeState(dir, { ...after, phase: "done", updatedAt: ended, endedAt: ended });
+        const done = after.phase === "up" || after.phase === "done";
+        await writeState(dir, {
+          ...after,
+          phase: done ? "done" : "failed",
+          error: after.error ?? (done ? null : `The orchestrator process ended in phase ${after.phase}`),
+          updatedAt: ended,
+          endedAt: after.endedAt ?? ended,
+          interns: after.interns.map((intern) => (live.includes(intern) ? { ...intern, status: "failed", endedAt: ended } : intern)),
+        });
       }
       print(`Run ${state.runId} has no environments left.`);
       return 0;

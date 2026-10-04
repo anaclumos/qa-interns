@@ -511,14 +511,19 @@ async function stop(ctx: Context, running: Promise<unknown> | undefined): Promis
   await within(Promise.allSettled([running]), stopWaitMs);
 }
 
-async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () => Promise<void>): Promise<T> {
+async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () => Promise<void>, snapshot: () => Promise<void> = async () => {}): Promise<T> {
   let running: Promise<T> | undefined;
   let signalled = false;
   const handler = () => {
     if (signalled) return;
     signalled = true;
     process.stderr.write("Interrupted. Closing sessions and tearing down.\n");
-    stop(ctx, running)
+    Promise.all([
+      stop(ctx, running),
+      snapshot().catch((error) => {
+        process.stderr.write(`Writing the report after the interrupt failed: ${redact(message(error))}\n`);
+      }),
+    ])
       .then(interrupted)
       .then(
         () => process.exit(130),
@@ -714,7 +719,31 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let groups: Group[] | null = opts.replay?.groups ?? null;
   let egress: string[] = [];
 
+  const write = async (error: string | null, teardowns: string[]) => {
+    const problems = [error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+    state.phase = problems.length === 0 ? "done" : "failed";
+    state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
+    state.endedAt = now();
+    const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
+    const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
+    const traffic = redactJson({ hosts: egress, relays: logs.flat() });
+    const environments = redactJson(ctx.environments);
+    const report =
+      opts.replay === null
+        ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
+        : { ...renderReplay(redactJson(state), redactJson(opts.replay), traffic, environments), tickets: [] };
+    await Bun.write(join(runDir, "report.md"), report.markdown);
+    await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
+    return report.tickets;
+  };
+
+  const snapshot = once(async (error: string | null) => {
+    await write(error, ctx.teardowns);
+    await save();
+  });
+
   const finish = once(async (error: string | null): Promise<string | null> => {
+    await Promise.allSettled([snapshot(error)]);
     const teardowns = [...ctx.teardowns];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
@@ -733,21 +762,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
         teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}: ${message(reason)}`);
       }
     }
-    const problems = [error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
-    state.phase = problems.length === 0 ? "done" : "failed";
-    state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
-    state.endedAt = now();
-    const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
-    const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
-    const traffic = redactJson({ hosts: egress, relays: logs.flat() });
-    const environments = redactJson(ctx.environments);
-    const report =
-      opts.replay === null
-        ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
-        : { ...renderReplay(redactJson(state), redactJson(opts.replay), traffic, environments), tickets: [] };
-    await Bun.write(join(runDir, "report.md"), report.markdown);
-    await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
-    await writeTickets(runDir, report.tickets);
+    await writeTickets(runDir, await write(error, teardowns));
     await save();
     return teardowns.length === 0 ? null : teardowns.join("; ");
   });
@@ -777,9 +792,16 @@ export async function runQa(opts: RunOptions): Promise<string> {
     if (groups === null) {
       await phase("testing");
       const testing = limit(state.options.concurrency);
-      const results = await settle(state.interns.map((intern) => testing((free) => explore(ctx, intern, target, opts.minutes, free))));
-      findings = results.flatMap((result) => result.findings);
-      rejected = results.flatMap((result) => result.rejected);
+      const results: Awaited<ReturnType<typeof explore>>[] = [];
+      await settle(
+        state.interns.map((intern, index) =>
+          testing(async (free) => {
+            results[index] = await explore(ctx, intern, target, opts.minutes, free);
+            findings = results.flatMap((result) => result.findings);
+            rejected = results.flatMap((result) => result.rejected);
+          }),
+        ),
+      );
       if (results.every((result) => result.outcome.status !== "done")) {
         throw new Error(`No testing intern completed: ${state.interns.map((intern) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
       }
@@ -855,5 +877,6 @@ export async function runQa(opts: RunOptions): Promise<string> {
         if (hook !== null) process.stderr.write(`${hook}\n`);
       }
     },
+    () => snapshot("interrupted"),
   );
 }
