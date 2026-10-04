@@ -299,6 +299,35 @@ USER qa
   );
 
   test(
+    "a confirming intern takes the login of the one before it once that intern's containers and networks are removed, before its teardown ends",
+    async () => {
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("handoff", [{ id: "claude-handoff", provider: "claude", second: true }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null, options: { concurrency: 1, confirmConcurrency: 1 } });
+      const confirmations = state.interns.filter((entry) => entry.role === "confirm").toSorted((a, b) => Date.parse(a.startedAt ?? "") - Date.parse(b.startedAt ?? ""));
+      expect(confirmations.map((entry) => entry.status)).toEqual(["done", "done"]);
+      const [first, second] = confirmations;
+      expect(Date.parse(second?.startedAt ?? "")).toBeLessThan(Date.parse(first?.endedAt ?? ""));
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "the report counts the connections that target services open through the relay, per egress host and outcome, with the ones a connection limit refused",
     async () => {
       const relayed = join(root, "relayed");
@@ -756,7 +785,7 @@ USER qa
   );
 
   test(
-    "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, and a run fails when every block overlaps one",
+    "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, a queued confirmation takes the one free block after the one before it, and a run fails when every block overlaps one",
     async () => {
       const third = await freeBlock(214);
       const subnet = `10.214.${third}.0/22`;
@@ -770,17 +799,18 @@ USER qa
       process.env.QA_INTERNS_SUBNET = subnet;
       try {
         await block(`10.214.${third}.0/25`);
-        const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude" }]);
+        const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude", second: true }]);
         const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
         const runDir = await run();
         const state = await readState(runDir);
         expect(state.phase).toBe("done");
         expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([
           ["i1", "done"],
+          ["judge", "done"],
           ["c1", "done"],
+          ["c2", "done"],
         ]);
-        expect(internalSubnet(runDir, "i1")).toBe(`10.214.${third + 2}.0/25`);
-        expect(internalSubnet(runDir, "c1")).toBe(`10.214.${third + 2}.0/25`);
+        for (const internId of ["i1", "judge", "c1", "c2"]) expect(internalSubnet(runDir, internId)).toBe(`10.214.${third + 2}.0/25`);
         expect(await leftovers(state.runId)).toEqual([]);
 
         await block(`10.214.${third + 3}.128/25`);
@@ -877,6 +907,32 @@ USER qa
       await Bun.write(file, JSON.stringify({ logins: [{ id: "claude-seatless", provider: "claude", seat: ["false"] }] }));
       await expect(ask({ ...seatless, loginsFile: file })).rejects.toThrow("No login has spare capacity for score");
       expect(await leftovers(seatless.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "two asks that share one login and the one free block of QA_INTERNS_SUBNET both run, the second once the first has removed its networks",
+    async () => {
+      const third = await freeBlock(215);
+      const blocker = `qair-f-e2e-${id}-shared`;
+      await execute(["docker", "network", "create", "--internal", "--subnet", `10.215.${third}.0/25`, blocker]);
+      const previous = process.env.QA_INTERNS_SUBNET;
+      process.env.QA_INTERNS_SUBNET = `10.215.${third}.0/22`;
+      try {
+        const first = await askOptions(newRunId(), "first");
+        const second = { ...(await askOptions(newRunId(), "second")), loginsFile: first.loginsFile };
+        expect(await Promise.allSettled([ask(first), ask(second)])).toEqual([
+          { status: "fulfilled", value: { groups: [] } },
+          { status: "fulfilled", value: { groups: [] } },
+        ]);
+        expect(await leftovers(first.runId)).toEqual([]);
+        expect(await leftovers(second.runId)).toEqual([]);
+      } finally {
+        if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+        else process.env.QA_INTERNS_SUBNET = previous;
+        await execute(["docker", "network", "rm", blocker]);
+      }
     },
     timeout,
   );
