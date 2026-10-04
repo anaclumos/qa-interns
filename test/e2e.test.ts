@@ -27,7 +27,7 @@ const title = "Home page shows the fake defect";
 const knownGap = "The environment has no video model.";
 let built = false;
 
-type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true };
+type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
 
 async function logins(name: string, entries: FakeLogin[]): Promise<string> {
   const list = [];
@@ -130,11 +130,12 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       `FROM ${base}
 USER root
 COPY fake-agent.mjs /opt/qa-fake/fake-agent.mjs
-RUN rm /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok \\
+RUN rm /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok /usr/local/bin/opencode \\
  && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$CLAUDE_SECURESTORAGE_CONFIG_DIR/.credentials.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/claude-agent-acp \\
  && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$XDG_CONFIG_HOME/cursor/auth.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/cursor-agent \\
  && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$GROK_AUTH_PATH" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/grok \\
- && chmod 755 /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok
+ && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$XDG_DATA_HOME/opencode/auth.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/opencode \\
+ && chmod 755 /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok /usr/local/bin/opencode
 USER qa
 `,
     );
@@ -292,6 +293,35 @@ USER qa
       const starts = confirmations.map((entry) => Date.parse(entry.startedAt ?? ""));
       const ends = confirmations.map((entry) => Date.parse(entry.endedAt ?? ""));
       expect(Math.max(...starts)).toBeLessThan(Math.min(...ends));
+    },
+    timeout,
+  );
+
+  test(
+    "a confirming intern takes the login of the one before it once that intern's containers and networks are removed, before its teardown ends",
+    async () => {
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("handoff", [{ id: "claude-handoff", provider: "claude", second: true }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null, options: { concurrency: 1, confirmConcurrency: 1 } });
+      const confirmations = state.interns.filter((entry) => entry.role === "confirm").toSorted((a, b) => Date.parse(a.startedAt ?? "") - Date.parse(b.startedAt ?? ""));
+      expect(confirmations.map((entry) => entry.status)).toEqual(["done", "done"]);
+      const [first, second] = confirmations;
+      expect(Date.parse(second?.startedAt ?? "")).toBeLessThan(Date.parse(first?.endedAt ?? ""));
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
     },
     timeout,
   );
@@ -748,7 +778,7 @@ USER qa
   );
 
   test(
-    "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, and a run fails when every block overlaps one",
+    "environments start in a block of the range that QA_INTERNS_SUBNET sets that no Docker network overlaps, a queued confirmation takes the one free block after the one before it, and a run fails when every block overlaps one",
     async () => {
       const third = await freeBlock(214);
       const subnet = `10.214.${third}.0/22`;
@@ -762,17 +792,18 @@ USER qa
       process.env.QA_INTERNS_SUBNET = subnet;
       try {
         await block(`10.214.${third}.0/25`);
-        const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude" }]);
+        const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude", second: true }]);
         const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
         const runDir = await run();
         const state = await readState(runDir);
         expect(state.phase).toBe("done");
         expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([
           ["i1", "done"],
+          ["judge", "done"],
           ["c1", "done"],
+          ["c2", "done"],
         ]);
-        expect(internalSubnet(runDir, "i1")).toBe(`10.214.${third + 2}.0/25`);
-        expect(internalSubnet(runDir, "c1")).toBe(`10.214.${third + 2}.0/25`);
+        for (const internId of ["i1", "judge", "c1", "c2"]) expect(internalSubnet(runDir, internId)).toBe(`10.214.${third + 2}.0/25`);
         expect(await leftovers(state.runId)).toEqual([]);
 
         await block(`10.214.${third + 3}.128/25`);
@@ -791,6 +822,8 @@ USER qa
     async () => {
       const runId = newRunId();
       const other = `qair-f-e2e-other-${runId}`;
+      const sibling = join(root, "asks", runId, "envs", "i1", `qa-${runId}-i1`, "marker");
+      await Bun.write(sibling, "sibling copy\n");
       await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${runId}-i1`, other]);
       try {
         expect(await ask(await askOptions(runId, "score"))).toEqual({ groups: [] });
@@ -800,6 +833,8 @@ USER qa
       }
       expect(await leftovers(runId)).toEqual([]);
       expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
+      expect(await readdir(join(root, "asks", runId, "envs", "score"))).not.toContain("tmp");
+      expect(await Bun.file(sibling).text()).toBe("sibling copy\n");
     },
     timeout,
   );
@@ -865,6 +900,32 @@ USER qa
       await Bun.write(file, JSON.stringify({ logins: [{ id: "claude-seatless", provider: "claude", seat: ["false"] }] }));
       await expect(ask({ ...seatless, loginsFile: file })).rejects.toThrow("No login has spare capacity for score");
       expect(await leftovers(seatless.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "two asks that share one login and the one free block of QA_INTERNS_SUBNET both run, the second once the first has removed its networks",
+    async () => {
+      const third = await freeBlock(215);
+      const blocker = `qair-f-e2e-${id}-shared`;
+      await execute(["docker", "network", "create", "--internal", "--subnet", `10.215.${third}.0/25`, blocker]);
+      const previous = process.env.QA_INTERNS_SUBNET;
+      process.env.QA_INTERNS_SUBNET = `10.215.${third}.0/22`;
+      try {
+        const first = await askOptions(newRunId(), "first");
+        const second = { ...(await askOptions(newRunId(), "second")), loginsFile: first.loginsFile };
+        expect(await Promise.allSettled([ask(first), ask(second)])).toEqual([
+          { status: "fulfilled", value: { groups: [] } },
+          { status: "fulfilled", value: { groups: [] } },
+        ]);
+        expect(await leftovers(first.runId)).toEqual([]);
+        expect(await leftovers(second.runId)).toEqual([]);
+      } finally {
+        if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+        else process.env.QA_INTERNS_SUBNET = previous;
+        await execute(["docker", "network", "rm", blocker]);
+      }
     },
     timeout,
   );
@@ -991,6 +1052,46 @@ USER qa
       const report = JSON.parse(text(["findings.json"]));
       expect(report.groups[0].findings[0].steps).toContain("Sign in as owner@acme.test with the password [redacted].");
       expect(text(["report.md"])).toContain("Sign in as owner@acme.test with the password \\[redacted\\].");
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "a run and ask replace the API key of an OpenCode login with [redacted] in the files they leave, the lines run prints, and the errors ask throws",
+    async () => {
+      const key = `sk-or-v1-${crypto.randomUUID()}`;
+      const loginsFile = await logins("login-key", [{ id: "opencode-1", provider: "opencode", openrouter: { type: "api", key } }]);
+      const lines: string[] = [];
+      const runDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+
+      const state = await readState(runDir);
+      expect(state.phase).toBe("done");
+      expect(intern(state, "i1").provider).toBe("opencode");
+      const options = { runDir, runId: state.runId, loginsFile, runnerImage: fakeImage };
+      expect(await ask({ ...options, name: "score", prompt: "Write /qa/out/groups.json.", file: "groups.json", parse: (raw) => JSON.parse(raw) })).toEqual({ groups: [] });
+      const failed = ask({
+        ...options,
+        name: "score-fail",
+        prompt: "Write /qa/out/evidence/auth.json.",
+        file: "evidence/auth.json",
+        parse: (raw) => {
+          throw new Error(`unreadable ${raw}`);
+        },
+      });
+      await expect(failed).rejects.toThrow('/qa/out/evidence/auth.json is still invalid after one correction: unreadable {"openrouter":{"type":"api","key":"[redacted]"}}');
+      expect(redact(key)).toBe(key);
+      const entries = await readdir(runDir, { recursive: true, withFileTypes: true });
+      const files = entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
+      for (const path of files) expect([path, readFileSync(path, "latin1").includes(key)]).toEqual([path, false]);
+      expect(lines.join("\n")).not.toContain(key);
+      for (const name of ["i1", "score", "score-fail"]) {
+        expect(readFileSync(join(runDir, "interns", name, "transcript.jsonl"), "utf8")).toContain('"text":"The login key is [redacted]."');
+        expect(JSON.parse(readFileSync(join(runDir, "interns", name, "out", "evidence", "auth.json"), "utf8"))).toEqual({ openrouter: { type: "api", key: "[redacted]" } });
+      }
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);

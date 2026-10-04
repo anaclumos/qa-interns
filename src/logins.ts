@@ -1,10 +1,10 @@
 import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
-import { closeSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, openSync, realpathSync, statSync, watch, writeFileSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
-import { providers } from "./providers.ts";
+import { opencodeAuthRule, opencodeLogin, providers } from "./providers.ts";
 import { readJson, stateDir } from "./state.ts";
 import { errorCode } from "./findings.ts";
 import { redact } from "./secrets.ts";
@@ -61,19 +61,6 @@ function resolveStore(provider: Provider, store: string): Store {
   return { store: realpathSync(store), credential: stat(credential)?.isFile() === true ? realpathSync(credential) : null };
 }
 
-const opencodeGoAuth = z.strictObject({ "opencode-go": z.object({ type: z.literal("api"), key: z.string().min(1) }) });
-
-function holdsOneOpencodeGoKey(file: string): boolean {
-  let value: unknown;
-  try {
-    value = JSON.parse(readFileSync(file, "utf8"));
-  } catch (error) {
-    if (error instanceof SyntaxError) return false;
-    throw error;
-  }
-  return opencodeGoAuth.safeParse(value).success;
-}
-
 function claudeConfigDirs(): string[] {
   return [...new Set([join(homedir(), ".claude"), process.env.CLAUDE_CONFIG_DIR ?? ""].filter(isDirectory).map((dir) => realpathSync(dir)))];
 }
@@ -86,7 +73,7 @@ function storeProblems(provider: Provider, path: string, found: Store, known: He
   }
   for (const other of known) {
     if (other.store === found.store) {
-      problems.push(`duplicate store ${path}, already used by ${other.where}; one store serves one process at a time`);
+      problems.push(`duplicate store ${path}, already used by ${other.where}; one store serves one login`);
     } else if (found.store.startsWith(`${other.store}/`) || other.store.startsWith(`${found.store}/`)) {
       problems.push(`store ${path} contains or is inside the store of ${other.where}; a runner mounting one could read or change the other`);
     }
@@ -95,9 +82,9 @@ function storeProblems(provider: Provider, path: string, found: Store, known: He
   if (found.credential === null) problems.push(`${provider} store ${path} has no ${name}`);
   else if (lstatSync(join(path, name)).isSymbolicLink()) {
     problems.push(`${join(path, name)} is a symbolic link; a runner can place a link in its own store to choose what another run mounts, so the credential is a regular file in the store`);
-  } else if (provider === "opencode" && !holdsOneOpencodeGoKey(found.credential)) {
+  } else if (provider === "opencode" && opencodeLogin(found.credential) === null) {
     problems.push(
-      `${join(path, name)} must hold one opencode-go API key and nothing else; a runner can read every credential in it, and OpenCode loads remote config, which can add MCP servers, for a wellknown entry`,
+      `${join(path, name)} ${opencodeAuthRule}; a runner can read every credential in it, and OpenCode loads remote config, which can add MCP servers, for a wellknown entry`,
     );
   }
   if (provider === "claude") {
@@ -139,13 +126,6 @@ export async function loadLogins(file: string): Promise<Login[]> {
       const found = resolveStore(entry.provider, entry.store);
       for (const problem of storeProblems(entry.provider, entry.store, found, known)) problems.push(`${where}: ${problem}`);
       if (!known.some((other) => other.store === found.store)) known.push({ ...found, where: `logins[${index}]` });
-    }
-    if (entry.provider === "codex" && entry.store !== undefined) {
-      if (entry.concurrency !== 1) {
-        problems.push(
-          `${where}: a codex store must have concurrency 1, because one auth.json copy serves one machine or one serialized job stream (https://learn.chatgpt.com/docs/auth/ci-cd-auth). Use a seat command to share a pool.`,
-        );
-      }
     }
     logins.push({
       id: entry.id,
@@ -243,6 +223,15 @@ function locksDir(): string {
   const dir = join(stateDir(), "locks");
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+const releasedFile = "released";
+
+export function watchReleases(wake: () => void): () => void {
+  const watcher = watch(locksDir(), (_event, name) => {
+    if (name === releasedFile) wake();
+  });
+  return () => watcher.close();
 }
 
 function lockFile(dir: string, path: string, kind: string): string {
@@ -405,13 +394,12 @@ export class Scheduler {
       else if (path !== null && !isDirectory(path)) refuse([`store ${path} is not an existing directory`]);
       else if (path !== null) {
         const found = resolveStore(login.provider, path);
-        const shares = login.provider !== "codex";
-        const known = [...this.slots.flatMap((other) => other.store ?? []), ...[...this.live].filter((other) => !shares || other.login !== login || other.store !== found.store)];
+        const known = [...this.slots.flatMap((other) => other.store ?? []), ...[...this.live].filter((other) => other.login !== login || other.store !== found.store)];
         const problems = storeProblems(login.provider, path, found, known);
         refuse(problems);
         if (problems.length === 0) {
           const mounted = mountedPath(login.provider, path);
-          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, shares ? login.concurrency : 1, keeper, unclaim);
+          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, login.concurrency, keeper, unclaim);
         }
       }
     } finally {
@@ -448,6 +436,7 @@ export class Scheduler {
         keeper?.kill();
         unlock();
         unclaim();
+        writeFileSync(join(locksDir(), releasedFile), `${process.pid}\n`, { mode: 0o600 });
       },
     };
   }
