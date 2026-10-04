@@ -72,6 +72,7 @@ type Work<T> = (session: Session, attempt: number, env: Environment, login: Logi
 type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "failed"; error: unknown };
 
 class NoQuota extends Error {}
+class Unanswered extends Error {}
 
 type Context = {
   runId: string;
@@ -212,7 +213,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
   };
 }
 
-async function attempt<T>(ctx: Context, id: string, count: number, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<{ value: T } | RequestError | NoQuota> {
+async function attempt<T>(ctx: Context, id: string, count: number, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<{ value: T } | RequestError | NoQuota | Unanswered> {
   const provider = providers[lease.login.provider];
   let session: Session | undefined;
   const done = new AbortController();
@@ -237,7 +238,7 @@ async function attempt<T>(ctx: Context, id: string, count: number, env: Environm
     await execute(["docker", "kill", env.runner]);
     throw new Error(`${result}, so its runner was stopped`);
   } catch (error) {
-    if (error instanceof NoQuota || (error instanceof RequestError && provider.isLoginFailure(error))) return error;
+    if (error instanceof NoQuota || error instanceof Unanswered || (error instanceof RequestError && provider.isLoginFailure(error))) return error;
     throw error;
   } finally {
     done.abort();
@@ -256,9 +257,12 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
   let slot: HeldSlot | undefined;
   let started = false;
   let unread = null as EnvironmentStats | null;
-  const release = () => {
+  const releaseSlot = () => {
     slot?.release();
     slot = undefined;
+  };
+  const release = () => {
+    releaseSlot();
     lease.release();
   };
   const teardown = async (removed: () => void) => {
@@ -284,10 +288,15 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
       });
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
       if (!(outcome instanceof Error)) return outcome;
-      ctx.scheduler.exhaust(lease);
+      const retry = outcome instanceof Unanswered;
+      if (!retry) ctx.scheduler.exhaust(lease);
       await note(outcome instanceof RequestError ? `login ${lease.login.id} failed with ${message(outcome)}` : outcome.message);
-      await teardown(release);
+      await teardown(retry ? releaseSlot : release);
       started = false;
+      if (retry) {
+        await ctx.update(id, { status: "starting" });
+        continue;
+      }
       await ctx.update(id, { status: "queued" });
       const next = await acquire(ctx, id);
       if (next === null) return null;
@@ -367,6 +376,7 @@ function promptEnvironment(target: Target, env: Environment, minutes: number): P
 }
 
 async function askWith<T>(ctx: Context, id: string, prompt: string, file: string, parse: (raw: string) => T): Promise<T> {
+  let unanswered = false;
   const outcome = await agentTask(ctx, id, null, () => {}, async (session, attempt) => {
     const path = join(ctx.runDir, outDir(id, attempt), file);
     await rm(path, { force: true });
@@ -389,7 +399,12 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
         throw new Error(`${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes: ${message(error)}`);
       }
     }
-    if (parsed === null) throw new Error(`${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes`);
+    if (parsed === null) {
+      const reason = `${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes`;
+      if (unanswered) throw new Error(reason);
+      unanswered = true;
+      throw new Unanswered(`${reason}; starting it again in a fresh environment`);
+    }
     return parsed.value;
   });
   if (outcome.status === "failed") throw outcome.error;
