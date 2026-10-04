@@ -48,6 +48,10 @@ const state: RunState = {
   ],
 };
 
+const runPath = "/home/owner/.local/state/qa-interns/runs/7c1e9a04";
+
+const replayPath = "/home/owner/.local/state/qa-interns/runs/9b4d2f61";
+
 function finding(id: string, title: string, observed: string, contradicts: string | null = null): Finding {
   const internId = id.slice(0, id.indexOf("/"));
   return {
@@ -141,7 +145,7 @@ describe("reproductions", () => {
 });
 
 describe("renderReport", () => {
-  const { markdown, json } = renderReport(state, [exportTotal, overlap, negative], rejected, egress, environments);
+  const { markdown, json } = renderReport(runPath, state, [exportTotal, overlap, negative], rejected, egress, environments);
 
   test("orders the sections: confirmed, not confirmed, rejected files, interns, egress connections, environments", () => {
     const headings = markdown.split("\n").filter((line) => line.startsWith("## "));
@@ -183,7 +187,7 @@ describe("renderReport", () => {
 
   test("the header names the commit, and the uncommitted changes when the run copied the working tree", () => {
     expect(markdown.split("\n")).toContain(`- Commit: \`${state.target.commit}\``);
-    const dirty = renderReport({ ...state, target: { ...state.target, dirty: true } }, [], [], none, []).markdown;
+    const dirty = renderReport(runPath, { ...state, target: { ...state.target, dirty: true } }, [], [], none, []).markdown;
     expect(dirty.split("\n")).toContain(`- Commit: \`${state.target.commit}\`, with the uncommitted changes and untracked files of the working tree`);
   });
 
@@ -196,9 +200,25 @@ describe("renderReport", () => {
     expect(confirmed).toContain("1. Sign in as owner@acme.test with the password acme-owner-pass.");
   });
 
+  test("each image among the evidence of a finding and of its confirmation is a Markdown image with its absolute path and its file name as alt text", () => {
+    const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Not confirmed"));
+    expect(imageTags(Bun.markdown.html(confirmed))).toEqual([
+      [`${runPath}/interns/i1/out/evidence/pagination-overlap.png`, "pagination-overlap.png"],
+      [`${runPath}/interns/c1/out/evidence/repeat.png`, "repeat.png"],
+    ]);
+    const hostile = "a](javascript:alert(1)) <b>*x*_[y]%20#z.PNG";
+    const shots = { ...overlap.findings[0]!, evidence: [`interns/i1/out/evidence/${hostile}`, "interns/i1/out/evidence/trace.har", "interns/i1/out/evidence/clip.webm", "interns/i1/out/evidence/shot.jpeg"] };
+    const html = Bun.markdown.html(renderReport("runs/7c1e9a04", state, [{ id: "g1", findings: [shots], confirmation: null }], [], none, []).markdown);
+    expect(imageTags(html)).toEqual([
+      [join(process.cwd(), "runs/7c1e9a04", shots.evidence[0]!), Bun.escapeHTML(hostile)],
+      [join(process.cwd(), "runs/7c1e9a04", shots.evidence[3]!), "shot.jpeg"],
+    ]);
+    for (const tag of ["<a ", "<b>", "<em>", "<strong>"]) expect(html).not.toContain(tag);
+  });
+
   test("a group that two testing interns reported is not confirmed when its confirmation shows the failure with the steps but not with the page's own task", () => {
     const wrongSteps: Group = { ...overlap, confirmation: { ...overlap.confirmation!, result: { ...overlap.confirmation!.result!, task: false } } };
-    const { markdown: text, json: data, tickets } = renderReport(state, [wrongSteps], [], none, []);
+    const { markdown: text, json: data, tickets } = renderReport(runPath, state, [wrongSteps], [], none, []);
     expect(reproductions(wrongSteps)).toEqual(["i1", "i2"]);
     expect((data as { groups: { id: string; confirmed: boolean }[] }).groups).toMatchObject([{ id: "g1", confirmed: false }]);
     expect(tickets).toEqual([]);
@@ -251,7 +271,7 @@ describe("renderReport", () => {
       confirmation: { intern: "c1", provider: "codex", result: null, error: "adapter said \u009bno" },
     };
     const relays = [{ intern: "i1", records: [record(1, "a\u001b[31m\u{202e}.example", "denied")] }];
-    const text = renderReport(state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }], { hosts: [], relays }, []).markdown;
+    const text = renderReport(runPath, state, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }], { hosts: [], relays }, []).markdown;
     for (const char of ["\u{202e}", "\u001b", "\u0007", "\u009b", "\u{2066}", "\u0000"]) expect(text.includes(char)).toBe(false);
     expect(text).toContain("### Totals disagree\n");
     expect(text).toContain("> Row \\[31mred\\[0m\n");
@@ -265,7 +285,7 @@ describe("renderReport", () => {
   test("agent text cannot add a heading or inline HTML", () => {
     const base = finding("i1/forged", "Totals disagree", "Row <script>alert(1)</script>\n## Interns");
     const forged: Group = { id: "g1", findings: [{ ...base, conditions: { ...base.conditions, account: "x\n\n## Interns" } }], confirmation: null };
-    const text = renderReport(state, [forged], [], none, []).markdown;
+    const text = renderReport(runPath, state, [forged], [], none, []).markdown;
     expect(text.split("\n").filter((line) => line.trimStart().startsWith("## Interns"))).toEqual(["## Interns"]);
     expect(text).not.toContain("<script>");
     expect(text).toContain("  - Account: x  \\#\\# Interns\n");
@@ -274,13 +294,13 @@ describe("renderReport", () => {
 
   test("agent text cannot add links or images", () => {
     const linked = finding("i1/linked", "See ![x](http://attacker.test/p.png)", "Click [here](http://attacker.test)");
-    const text = renderReport(state, [{ id: "g1", findings: [linked], confirmation: null }], [], none, []).markdown;
+    const text = renderReport(runPath, state, [{ id: "g1", findings: [linked], confirmation: null }], [], none, []).markdown;
     expect(text).toContain("### See \\!\\[x\\](http://attacker.test/p.png)\n");
     expect(text).toContain("> Click \\[here\\](http://attacker.test)\n");
   });
 
   test("a run with nothing to report still has a line in every section", () => {
-    const empty = renderReport({ ...state, interns: [] }, [], [], none, []).markdown;
+    const empty = renderReport(runPath, { ...state, interns: [] }, [], [], none, []).markdown;
     const lines = empty.split("\n");
     const headings = ["## Confirmed", "## Not confirmed", "## Rejected finding files", "## Interns", "## Egress connections", "## Environments"];
     for (const heading of headings) {
@@ -300,11 +320,22 @@ function codeBlocks(html: string): string[] {
     .map((part) => part.slice(0, part.indexOf("</code></pre>")));
 }
 
+function imageTags(html: string): [string, string][] {
+  const attribute = (tag: string, name: string) => {
+    const start = tag.indexOf(`${name}="`) + name.length + 2;
+    return tag.slice(start, tag.indexOf('"', start));
+  };
+  return html
+    .split("<img ")
+    .slice(1)
+    .map((tag) => [decodeURIComponent(attribute(tag, "src")), attribute(tag, "alt")]);
+}
+
 describe("ticket drafts", () => {
   const hostile = "Row <script>alert(1)</script> [here](http://attacker.test) @owner #12 *x_y*\n```\n## Interns\n`````";
   const base = finding("i1/hostile", "Total of *INV_0014* shows `NaN` <b>", hostile, "The list at /invoices shows \\$75.00.");
   const lead: Finding = { ...base, conditions: { ...base.conditions, account: hostile }, steps: ["Open http://web:3000/invoices.", `Type ${hostile}`] };
-  const { tickets } = renderReport(state, [exportTotal, { ...overlap, findings: [lead, overlap.findings[1]!] }, negative], rejected, none, []);
+  const { tickets } = renderReport(runPath, state, [exportTotal, { ...overlap, findings: [lead, overlap.findings[1]!] }, negative], rejected, none, []);
   const draft = tickets[0]!;
 
   test("a run has one draft per confirmed group, titled with the raw title of its first finding", () => {
@@ -329,7 +360,11 @@ describe("ticket drafts", () => {
       "<h2>Other reports</h2>",
       "<h2>Confirmation</h2>",
     ]);
-    for (const tag of ["<script", "<a ", "<em>", "<img"]) expect(html).not.toContain(tag);
+    for (const tag of ["<script", "<a ", "<em>"]) expect(html).not.toContain(tag);
+    expect(imageTags(html)).toEqual([
+      ["interns/i1/out/evidence/hostile.png", "hostile.png"],
+      ["interns/c1/out/evidence/repeat.png", "repeat.png"],
+    ]);
     expect(codeBlocks(html)).toEqual([
       `Account: ${escaped}\nData: freshly seeded\nViewport: 1280x720\nBrowser: one tab, signed in\nNetwork: online\n`,
       `1. Open http://web:3000/invoices.\n2. Type ${escaped.split("\n").join("\n   ")}\n`,
@@ -344,7 +379,7 @@ describe("ticket drafts", () => {
 
   test("a group that two testing interns reported gets a draft when its confirmation failed", () => {
     const failed: Group = { ...overlap, confirmation: { intern: "c3", provider: null, result: null, error: "no login with spare capacity" } };
-    const [only] = renderReport(state, [failed], [], none, []).tickets;
+    const [only] = renderReport(runPath, state, [failed], [], none, []).tickets;
     expect(only?.body).toContain("- Reproductions: 2 (i1, i2)\n");
     expect(only?.body).toEndWith("## Confirmation\n\nc3 failed:\n\n```\nno login with spare capacity\n```\n");
     expect(only?.evidence).toEqual(["interns/i1/out/evidence/pagination-overlap.png"]);
@@ -352,23 +387,24 @@ describe("ticket drafts", () => {
 
   test("control characters between backticks cannot close a code block", () => {
     const error = "has unknown fields x\n`\u0000`\u0000`\n![p](http://attacker.test/p.png)\n## Forged";
-    const [only] = renderReport(state, [{ ...overlap, confirmation: { intern: "c1", provider: "codex", result: null, error } }], [], none, []).tickets;
+    const [only] = renderReport(runPath, state, [{ ...overlap, confirmation: { intern: "c1", provider: "codex", result: null, error } }], [], none, []).tickets;
     const html = Bun.markdown.html(only!.body);
-    expect(html).not.toContain("<img");
+    expect(imageTags(html)).toEqual([["interns/i1/out/evidence/pagination-overlap.png", "pagination-overlap.png"]]);
     expect(html).not.toContain("<h2>Forged</h2>");
     expect(codeBlocks(html).at(-1)).toBe("has unknown fields x\n```\n![p](http://attacker.test/p.png)\n## Forged\n");
   });
 });
 
 describe("writeTickets", () => {
-  let root = "";
+  const roots: string[] = [];
 
   afterAll(async () => {
-    if (root !== "") await rm(root, { recursive: true, force: true });
+    for (const root of roots) await rm(root, { recursive: true, force: true });
   });
 
   test("links each evidence file into the draft folder and lists the files it did not link", async () => {
-    root = await mkdtemp(join(tmpdir(), "qa-interns-tickets-"));
+    const root = await mkdtemp(join(tmpdir(), "qa-interns-tickets-"));
+    roots.push(root);
     const runDir = join(root, "run");
     const evidence = (intern: string, name: string) => join(runDir, "interns", intern, "out", "evidence", name);
     await Bun.write(evidence("i1", "page.png"), new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]));
@@ -392,7 +428,7 @@ describe("writeTickets", () => {
         "interns/i1/out/../../../secret.txt",
       ],
     };
-    const { tickets } = renderReport(state, [{ ...overlap, findings: [lead, overlap.findings[1]!] }], [], none, []);
+    const { tickets } = renderReport(runPath, state, [{ ...overlap, findings: [lead, overlap.findings[1]!] }], [], none, []);
     await writeTickets(runDir, tickets);
 
     const dir = join(runDir, "tickets", "g1");
@@ -421,6 +457,22 @@ describe("writeTickets", () => {
       ].join("\n"),
     );
   });
+
+  test("each image in body.md names, relative to the draft folder, the hard link of its evidence file", async () => {
+    const root = await mkdtemp(join(tmpdir(), "qa-interns-tickets-"));
+    roots.push(root);
+    const runDir = join(root, "run");
+    const files = ["interns/i1/out/evidence/shot (1) [a]#b%20 <c>.png", "interns/i1/out/evidence/trace.har", "interns/c1/out/evidence/repeat.webp"];
+    for (const file of files) await Bun.write(join(runDir, file), file);
+    const lead = { ...overlap.findings[0]!, evidence: files.slice(0, 2) };
+    const confirmation = { ...overlap.confirmation!, result: { ...overlap.confirmation!.result!, evidence: files.slice(2) } };
+    const { tickets } = renderReport(runDir, state, [{ ...overlap, findings: [lead, overlap.findings[1]!], confirmation }], [], none, []);
+    await writeTickets(runDir, tickets);
+    const dir = join(runDir, "tickets", "g1");
+    const shown = imageTags(Bun.markdown.html(await Bun.file(join(dir, "body.md")).text())).map(([src]) => src);
+    expect(shown).toEqual([files[0]!, files[2]!]);
+    for (const file of shown) expect((await stat(join(dir, file))).ino).toBe((await stat(join(runDir, file))).ino);
+  });
 });
 
 describe("renderReplay", () => {
@@ -434,7 +486,7 @@ describe("renderReplay", () => {
   const replay = { runId: state.runId, target: state.target, groups: [exportTotal, overlap, negative] };
   const replayEgress: Egress = { hosts: ["api.pwnedpasswords.com"], relays: [{ intern: "c1", records: [record(1, "api.pwnedpasswords.com", "failed", "ECONNREFUSED")] }] };
   const replayEnvironments = [{ ...environments[0]!, intern: "c1" }];
-  const { markdown, json } = renderReplay(replayState, replay, replayEgress, replayEnvironments);
+  const { markdown, json } = renderReplay(replayPath, replayState, replay, replayEgress, replayEnvironments);
   const between = (text: string, start: string, end: string) => text.slice(text.indexOf(start), text.indexOf(end));
 
   test("sorts the groups into reproduced, not reproduced, and not checked, under the ids of the earlier run", () => {
@@ -450,6 +502,7 @@ describe("renderReplay", () => {
     expect(reproduced).toContain("Confirmation: c1 (codex) reproduced it: the steps showed the failure, and the task done through the page's own controls showed it.");
     expect(reproduced).not.toContain("i2/page-two-repeats");
     expect(reproduced).not.toContain("interns/i1/out/evidence/pagination-overlap.png");
+    expect(imageTags(Bun.markdown.html(reproduced))).toEqual([[`${replayPath}/interns/c1/out/evidence/repeat.png`, "repeat.png"]]);
     const notReproduced = between(markdown, "## Not reproduced", "## Not checked");
     expect(notReproduced).toContain(`### ${exportTotal.findings[0]!.title}`);
     expect(notReproduced).toContain("> The detail page at /invoices/2 shows €5,770.60.");
@@ -502,7 +555,7 @@ describe("renderReplay", () => {
     }
 
     test("reads the confirmed groups of a run's findings.json, or the ones named, without their confirmations", async () => {
-      const dir = await runDir(state, renderReport(state, [exportTotal, overlap, negative], rejected, egress, environments).json);
+      const dir = await runDir(state, renderReport(runPath, state, [exportTotal, overlap, negative], rejected, egress, environments).json);
       expect(await readReplay(dir, [])).toEqual({ runId: state.runId, target: state.target, groups: [{ ...overlap, confirmation: null }] });
       expect((await readReplay(dir, ["g1", "g1"])).groups.map((group) => group.id)).toEqual(["g1"]);
       await expect(readReplay(dir, ["g1", "g2"])).rejects.toThrow("Run 7c1e9a04 has no confirmed group g2. Its confirmed groups are g1.");
@@ -510,20 +563,20 @@ describe("renderReplay", () => {
 
     test("rejects a replay and a run without a confirmed group", async () => {
       await expect(readReplay(await runDir(replayState, json), [])).rejects.toThrow("Run 9b4d2f61 is a replay of run 7c1e9a04. Replay run 7c1e9a04 instead.");
-      const unconfirmed = await runDir(state, renderReport(state, [exportTotal], [], none, []).json);
+      const unconfirmed = await runDir(state, renderReport(runPath, state, [exportTotal], [], none, []).json);
       await expect(readReplay(unconfirmed, [])).rejects.toThrow("Run 7c1e9a04 has no confirmed group to replay.");
       await expect(readReplay(unconfirmed, ["g1"])).rejects.toThrow("Run 7c1e9a04 has no confirmed group g1. Its confirmed groups are none.");
     });
   });
 
   test("names the uncommitted changes of an earlier run that copied the working tree", () => {
-    const dirty = renderReplay(replayState, { ...replay, target: { ...state.target, dirty: true } }, none, []);
+    const dirty = renderReplay(replayPath, replayState, { ...replay, target: { ...state.target, dirty: true } }, none, []);
     expect(dirty.markdown).toContain(`- Replay of: run \`7c1e9a04\` at commit \`${state.target.commit}\`, with the uncommitted changes and untracked files of the working tree\n`);
     expect((dirty.json as { run: unknown }).run).toMatchObject({ replay: { runId: "7c1e9a04", commit: state.target.commit, dirty: true } });
   });
 
   test("a group without a confirmation is not checked", () => {
-    const text = renderReplay(replayState, { ...replay, groups: [{ ...overlap, confirmation: null }] }, none, []).markdown;
+    const text = renderReplay(replayPath, replayState, { ...replay, groups: [{ ...overlap, confirmation: null }] }, none, []).markdown;
     expect(between(text, "## Reproduced", "## Not reproduced")).toContain("No group was reproduced.");
     expect(between(text, "## Not reproduced", "## Not checked")).toContain("No intern reported a group as not reproduced.");
     expect(between(text, "## Not checked", "## Interns")).toContain("Confirmation: not attempted.");

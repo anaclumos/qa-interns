@@ -742,8 +742,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const environments = redactJson(ctx.environments);
     const report =
       opts.replay === null
-        ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
-        : { ...renderReplay(redactJson(state), redactJson(opts.replay), traffic, environments), tickets: [] };
+        ? renderReport(runDir, redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
+        : { ...renderReplay(runDir, redactJson(state), redactJson(opts.replay), traffic, environments), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await writeTickets(runDir, report.tickets);

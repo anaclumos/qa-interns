@@ -120,6 +120,7 @@ ${findingFormat}
 - The steps start from a freshly seeded environment, so another intern can follow them with no other context. Name every account, URL, and value you use.
 - Browser state includes the time zone, the tabs, and whether you are signed in.
 - Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.
+- \`evidence\` includes at least one screenshot that shows the observed result whenever a page shows it. Take it while the page shows the result. Leave screenshots out only when no page shows the result, such as a failure that only an HTTP response or the console shows.
 - A file that breaks this format is rejected, and a later message names it with the reason. Rewrite a rejected file to fix it.
 
 A complete finding, from a different application:
@@ -202,6 +203,7 @@ Confirmation:
 - \`task\` is true when an attempt at the task through the page's controls shows the same failure, and false when neither attempt does. When the steps are the task, \`task\` has the value of \`steps\`.
 - \`observed\` states what your attempts showed, for the steps and for the task.
 - Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.
+- \`evidence\` includes at least one screenshot that shows what your attempts showed whenever a page shows it. Take it while the page shows the result. Leave screenshots out only when no page shows the result, such as a failure that only an HTTP response or the console shows.
 - The session ends when the time box ends. Write the file before then.`;
 }
 
