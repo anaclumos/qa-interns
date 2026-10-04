@@ -413,17 +413,9 @@ export async function sweepImages(): Promise<void> {
   const uses = imageUses();
   const listed = await imageList();
   const held = new Set(listed.filter(({ name }) => name.startsWith("qa-") && !name.startsWith(imagePrefix)).map(({ id }) => id));
-  const keys = new Map<string, { names: string[]; held: boolean }>();
-  for (const { id, name } of listed.filter((image) => image.name.startsWith(imagePrefix))) {
-    const key = name.slice(imagePrefix.length, imagePrefix.length + keyLength);
-    const entry = keys.get(key) ?? { names: [], held: false };
-    entry.names.push(name);
-    entry.held ||= held.has(id);
-    keys.set(key, entry);
-  }
+  const keys = Map.groupBy(listed.filter(({ name }) => name.startsWith(imagePrefix)), ({ name }) => name.slice(imagePrefix.length, imagePrefix.length + keyLength));
   const errors: string[] = [];
-  for (const [key, entry] of keys) {
-    if (entry.held) continue;
+  for (const [key, images] of keys) {
     const use = join(uses, key);
     const used = await stat(use).then(
       (info) => info.mtimeMs,
@@ -434,10 +426,12 @@ export async function sweepImages(): Promise<void> {
     );
     if (used === null) await Bun.write(use, "");
     if (used === null || Date.now() - used < keepImages) continue;
-    const cmd = ["docker", "image", "rm", ...entry.names];
+    const names = images.filter(({ id }) => !held.has(id)).map(({ name }) => name);
+    if (names.length === 0) continue;
+    const cmd = ["docker", "image", "rm", ...names];
     const result = await capture(cmd);
-    if (result.code !== 0 && (await imageList()).some(({ name }) => entry.names.includes(name))) errors.push(failure(cmd, result.code, result.stderr).message);
-    else await rm(use, { force: true });
+    if (result.code !== 0 && (await imageList()).some(({ name }) => names.includes(name))) errors.push(failure(cmd, result.code, result.stderr).message);
+    else if (names.length === images.length) await rm(use, { force: true });
   }
   if (errors.length > 0) throw new Error(`Removing shared images failed:\n${errors.join("\n")}`);
 }

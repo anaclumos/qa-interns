@@ -724,10 +724,12 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     }
   });
 
-  test("remove a shared image only when no run names it and the last run that used it released it 30 minutes ago", async () => {
+  test("remove a shared image only when no run names it and the last run that used it released it 30 minutes ago, and keep each image that a run of another key names", async () => {
     const source = await scratch();
     const runId = crypto.randomUUID().slice(0, 8);
+    const other = `qa-${crypto.randomUUID().slice(0, 8)}-api:latest`;
     await Bun.write(join(source, "Dockerfile"), "FROM scratch\nCOPY build.txt /build.txt\n");
+    await Bun.write(join(source, "api.Dockerfile"), "FROM scratch\nCOPY build.txt /api.txt\n");
     await Bun.write(join(source, "build.txt"), runId);
     await Bun.write(
       join(source, ".devcontainer", "devcontainer.json"),
@@ -737,32 +739,39 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
         customizations: { "qa-interns": { urls: { app: "http://web:3000" }, ready: "http://web:3000/health", seed: "node seed.mjs" } },
       }),
     );
-    await Bun.write(join(source, ".devcontainer", "compose.yml"), "services:\n  web:\n    build: ..\n");
+    await Bun.write(join(source, ".devcontainer", "compose.yml"), "services:\n  web:\n    build: ..\n  api:\n    build:\n      context: ..\n      dockerfile: api.Dockerfile\n");
     const { images, release } = await buildImages(runId, await loadTarget(ref, source), source);
-    const own = images.web ?? "";
-    const [shared = ""] = await sharedTags([own]);
-    const use = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "images", shared.slice("qa-build-".length).split("-")[0] ?? "");
+    const own = [images.web ?? "", images.api ?? ""];
+    const [web = "", api = ""] = await Promise.all(own.map(async (name) => (await sharedTags([name]))[0] ?? ""));
+    const use = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "images", web.slice("qa-build-".length).split("-")[0] ?? "");
     const released = async (minutes: number) => {
       const then = new Date(Date.now() - minutes * 60_000);
       await utimes(use, then, then);
     };
-    const exists = async () => (await imageIds()).has(shared);
+    const left = async () => {
+      const ids = await imageIds();
+      return [web, api].filter((name) => ids.has(name));
+    };
     try {
       await released(31);
       await sweepImages();
-      expect(await exists()).toBe(true);
+      expect(await left()).toEqual([web, api]);
       await release();
       await released(29);
-      await execute(["docker", "image", "rm", own]);
+      await execute(["docker", "tag", api, other]);
+      await execute(["docker", "image", "rm", ...own]);
       await sweepImages();
-      expect(await exists()).toBe(true);
+      expect(await left()).toEqual([web, api]);
       await released(31);
       await sweepImages();
-      expect(await exists()).toBe(false);
+      expect(await left()).toEqual([api]);
+      await execute(["docker", "image", "rm", other]);
+      await sweepImages();
+      expect(await left()).toEqual([]);
     } finally {
       const ids = await imageIds();
-      const left = [own, shared].filter((name) => ids.has(name));
-      if (left.length > 0) await execute(["docker", "image", "rm", ...left]);
+      const names = [...own, other, web, api].filter((name) => ids.has(name));
+      if (names.length > 0) await execute(["docker", "image", "rm", ...names]);
     }
   });
 
