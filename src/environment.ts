@@ -632,8 +632,9 @@ export async function removeCopy(runDir: string, runId: string, name: string, im
   if (paths.length > 0) await removeAsRoot(dir, image, paths);
 }
 
-export async function stopEnvironment(runDir: string, name: string, project: string, image: string): Promise<void> {
+export async function stopEnvironment(runDir: string, name: string, project: string, image: string, removed?: () => void): Promise<void> {
   await down(project, join(runDir, "interns", name));
+  removed?.();
   await saveDisks(runDir, name, project, image);
 }
 

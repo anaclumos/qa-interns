@@ -23,7 +23,7 @@ import {
   type HeldSlot,
 } from "./environment.ts";
 import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
-import { loadLogin, Scheduler, type Lease } from "./logins.ts";
+import { loadLogin, Scheduler, watchReleases, type Lease } from "./logins.ts";
 import { credentialRule, pi, readKey } from "./pi.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
@@ -65,7 +65,7 @@ export type AskOptions = {
 };
 
 type Turn = Awaited<ReturnType<Session["prompt"]>>;
-type Limit = <T>(task: () => Promise<T>) => Promise<T>;
+type Limit = <T>(task: (free: () => void) => Promise<T>) => Promise<T>;
 type Note = (text: string) => Promise<void>;
 type Work<T> = (session: Session, env: Environment, note: Note) => Promise<T>;
 type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "failed"; error: unknown };
@@ -100,15 +100,21 @@ function now(): string {
 function limit(size: number): Limit {
   let active = 0;
   const queue: (() => void)[] = [];
-  return async <T>(task: () => Promise<T>): Promise<T> => {
+  return async <T>(task: (free: () => void) => Promise<T>): Promise<T> => {
     if (active < size) active += 1;
     else await new Promise<void>((resolve) => queue.push(resolve));
-    try {
-      return await task();
-    } finally {
+    let held = true;
+    const free = () => {
+      if (!held) return;
+      held = false;
       const next = queue.shift();
       if (next === undefined) active -= 1;
       else next();
+    };
+    try {
+      return await task(free);
+    } finally {
+      free();
     }
   };
 }
@@ -157,33 +163,26 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
 async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null> {
   for (;;) {
     checkStopping(ctx);
-    const leased = scheduler.leased();
-    const lease = scheduler.acquire();
-    if (lease !== null) {
-      let released = false;
-      return {
-        ...lease,
-        release: () => {
-          if (released) return;
-          released = true;
-          lease.release();
-          for (const wake of ctx.waiting) wake();
-        },
-      };
+    const released = Promise.withResolvers<void>();
+    const wake = () => released.resolve();
+    const unwatch = watchReleases(wake);
+    ctx.waiting.add(wake);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const leased = scheduler.leased();
+      const lease = scheduler.acquire();
+      if (lease !== null) return lease;
+      if (!scheduler.leased()) {
+        if (!leased) return null;
+        continue;
+      }
+      timer = setTimeout(wake, loginWaitMs);
+      await released.promise;
+    } finally {
+      clearTimeout(timer);
+      ctx.waiting.delete(wake);
+      unwatch();
     }
-    if (!scheduler.leased()) {
-      if (!leased) return null;
-      continue;
-    }
-    await new Promise<void>((resolve) => {
-      const wake = () => {
-        clearTimeout(timer);
-        ctx.waiting.delete(wake);
-        resolve();
-      };
-      const timer = setTimeout(wake, loginWaitMs);
-      ctx.waiting.add(wake);
-    });
   }
 }
 
@@ -241,14 +240,15 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
   }
 }
 
-async function leased<T>(ctx: Context, id: string, target: Target | null, work: Work<T>, note: Note): Promise<{ value: T } | null> {
-  if (ctx.scheduler === null) throw new Error(`Run ${ctx.runId} has no login`);
-  const lease = await acquire(ctx, ctx.scheduler);
-  if (lease === null) return null;
+async function leased<T>(ctx: Context, id: string, target: Target | null, free: () => void, work: Work<T>, note: Note): Promise<{ value: T } | null> {
   const project = `qa-${ctx.runId}-${id}`;
+  let lease: Lease | null = null;
   let slot: HeldSlot | undefined;
   let environment: EnvironmentStats | null = null;
   try {
+    if (ctx.scheduler === null) throw new Error(`Run ${ctx.runId} has no login`);
+    lease = await acquire(ctx, ctx.scheduler);
+    if (lease === null) return null;
     await ctx.update(id, { status: "starting", login: lease.login.id, project, startedAt: now() });
     checkStopping(ctx);
     slot = await freeSlot();
@@ -259,26 +259,34 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, work: 
       started.readyAt = now();
     });
     return { value: await withSession(ctx, id, env, lease, work, note) };
+  } catch (error) {
+    await note(ctx.stopping ? "interrupted" : message(error));
+    throw error;
   } finally {
+    const handOff = () => {
+      slot?.release();
+      slot = undefined;
+      lease?.release();
+      free();
+    };
     try {
       if (environment !== null) {
         try {
           environment.containers = await containerStats(project);
         } finally {
-          await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage);
+          await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage, handOff);
         }
       }
     } catch (error) {
       ctx.teardowns.push(`${id}: ${message(error)}`);
       await note(`teardown failed: ${message(error)}`);
     } finally {
-      slot?.release();
-      lease.release();
+      handOff();
     }
   }
 }
 
-async function agentTask<T>(ctx: Context, id: string, target: Target | null, work: Work<T>): Promise<Outcome<T>> {
+async function agentTask<T>(ctx: Context, id: string, target: Target | null, free: () => void, work: Work<T>): Promise<Outcome<T>> {
   const notes: string[] = [];
   const detail = () => (notes.length === 0 ? null : stripControl(notes.join("; ")));
   const note = async (text: string) => {
@@ -287,11 +295,10 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, wor
   };
   let outcome: Outcome<T>;
   try {
-    const result = await leased(ctx, id, target, work, note);
+    const result = await leased(ctx, id, target, free, work, note);
     outcome = result === null ? { status: "limited" } : { status: "done", value: result.value };
     if (result === null) notes.push(noLogin);
   } catch (error) {
-    notes.push(ctx.stopping ? "interrupted" : message(error));
     outcome = { status: "failed", error };
   }
   await ctx.update(id, { status: outcome.status, detail: detail(), endedAt: now() });
@@ -334,7 +341,7 @@ function promptEnvironment(target: Target, env: Environment, minutes: number): P
 }
 
 async function askWith<T>(ctx: Context, id: string, prompt: string, file: string, parse: (raw: string) => T): Promise<T> {
-  const outcome = await agentTask(ctx, id, null, async (session) => {
+  const outcome = await agentTask(ctx, id, null, () => {}, async (session) => {
     const path = join(ctx.runDir, outDir(id), file);
     await rm(path, { force: true });
     let parsed = null as { value: T } | null;
@@ -364,9 +371,9 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
   return outcome.value;
 }
 
-async function explore(ctx: Context, intern: InternState, target: Target, minutes: number): Promise<{ outcome: Outcome<void>; findings: Finding[]; rejected: Rejected[] }> {
+async function explore(ctx: Context, intern: InternState, target: Target, minutes: number, free: () => void): Promise<{ outcome: Outcome<void>; findings: Finding[]; rejected: Rejected[] }> {
   let environment: FindingEnvironment | null = null;
-  const outcome = await agentTask(ctx, intern.id, target, async (session, env, note) => {
+  const outcome = await agentTask(ctx, intern.id, target, free, async (session, env, note) => {
     const found = { commit: target.commit, dirty: target.dirty, environment: env.project, model: session.model };
     environment = found;
     const start = Date.now();
@@ -388,7 +395,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
   return { outcome, findings, rejected };
 }
 
-async function reproduce(ctx: Context, intern: InternState, group: Group, target: Target, minutes: number): Promise<void> {
+async function reproduce(ctx: Context, intern: InternState, group: Group, target: Target, minutes: number, free: () => void): Promise<void> {
   const finding = lead(group);
   const check = async (): Promise<{ result: Confirmation | null; error: string | null }> => {
     try {
@@ -398,7 +405,7 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     }
   };
   let ran = false;
-  const outcome = await agentTask(ctx, intern.id, target, async (session, env, note) => {
+  const outcome = await agentTask(ctx, intern.id, target, free, async (session, env, note) => {
     ran = true;
     const out = outDir(intern.id);
     const file = join(ctx.runDir, out, "confirmation.json");
@@ -733,7 +740,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     if (groups === null) {
       await phase("testing");
       const testing = limit(state.options.concurrency);
-      const results = await settle(state.interns.map((intern) => testing(() => explore(ctx, intern, target, opts.minutes))));
+      const results = await settle(state.interns.map((intern) => testing((free) => explore(ctx, intern, target, opts.minutes, free))));
       findings = results.flatMap((result) => result.findings);
       rejected = results.flatMap((result) => result.rejected);
       if (results.every((result) => result.outcome.status !== "done")) {
@@ -766,7 +773,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     state.interns.push(...confirmations.map((entry) => entry.intern));
     await save();
     const confirming = limit(state.options.confirmConcurrency);
-    await settle(confirmations.map(({ group, intern }) => confirming(() => reproduce(ctx, intern, group, target, opts.confirmMinutes))));
+    await settle(confirmations.map(({ group, intern }) => confirming((free) => reproduce(ctx, intern, group, target, opts.confirmMinutes, free))));
     if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null)) {
       throw new Error(`No confirming intern recorded a result: ${confirmations.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
     }

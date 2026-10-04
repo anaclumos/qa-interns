@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { chmod, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadLogin, Scheduler, type Lease } from "../src/logins.ts";
+import { loadLogin, Scheduler, watchReleases, type Lease } from "../src/logins.ts";
 import type { Login } from "../src/types.ts";
 
 const holders = new Set<Subprocess>();
@@ -33,6 +33,7 @@ beforeAll(async () => {
       "for (let index = 0; index < Number(process.argv[3]); index++) leases.push(scheduler.acquire());",
       "console.log(leases.filter((lease) => lease !== null).length);",
       "for await (const _ of Bun.stdin.stream()) {}",
+      "for (const lease of leases) lease?.release();",
       "",
     ].join("\n"),
   );
@@ -232,6 +233,22 @@ describe("Scheduler", () => {
     const two = held(wider.acquire());
     one.release();
     two.release();
+  });
+
+  test("a lease that another process releases wakes a release watcher in this process", async () => {
+    const other = await holder(login(1), 1);
+    expect(other.count).toBe(1);
+    const scheduler = new Scheduler(login(1));
+    expect(scheduler.acquire()).toBeNull();
+    const woken = Promise.withResolvers<void>();
+    const unwatch = watchReleases(() => woken.resolve());
+    try {
+      other.child.stdin.end();
+      await woken.promise;
+      held(scheduler.acquire()).release();
+    } finally {
+      unwatch();
+    }
   });
 
   test("a lease that this or another process holds counts as leased until it ends", async () => {
