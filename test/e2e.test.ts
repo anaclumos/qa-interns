@@ -14,6 +14,7 @@ import { newRunId, readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
 import type { EnvironmentStats, Finding, Provider, RunState } from "../src/types.ts";
 import { freeBlock } from "./subnet.ts";
+import { suiteLabel } from "./suite-lock.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -559,7 +560,7 @@ USER qa
           const [dir] = lines;
           if (dir === undefined || line !== "i1 starting on claude-confirm-limit (claude)") return;
           first = internalSubnet(dir, "i1");
-          blocked = Bun.spawnSync(["docker", "network", "create", "--internal", "--subnet", first, blocker], { stdout: "ignore" }).exitCode;
+          blocked = Bun.spawnSync(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", first, blocker], { stdout: "ignore" }).exitCode;
         },
       }).finally(async () => {
         if (blocked === 0) await execute(["docker", "network", "rm", blocker]);
@@ -759,8 +760,8 @@ USER qa
           const [dir] = lines;
           if (dir === undefined || line !== "i1 starting on claude-limit (claude)") return;
           held = `qair-f-e2e-held-${basename(dir)}`;
-          Bun.spawnSync(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${basename(dir)}-i1`, held], { stdout: "ignore" });
-          Bun.spawnSync(["docker", "run", "-d", "--rm", "--name", held, "--network", held, fakeImage], { stdout: "ignore" });
+          Bun.spawnSync(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${basename(dir)}-i1`, "--label", suiteLabel, held], { stdout: "ignore" });
+          Bun.spawnSync(["docker", "run", "-d", "--rm", "--label", suiteLabel, "--name", held, "--network", held, fakeImage], { stdout: "ignore" });
         },
       });
 
@@ -792,7 +793,7 @@ USER qa
       const blockers: string[] = [];
       const block = async (range: string) => {
         const name = `qair-f-e2e-${id}-range-${blockers.length}`;
-        await execute(["docker", "network", "create", "--internal", "--subnet", range, name]);
+        await execute(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", range, name]);
         blockers.push(name);
       };
       const previous = process.env.QA_INTERNS_SUBNET;
@@ -831,7 +832,7 @@ USER qa
       const other = `qair-f-e2e-other-${runId}`;
       const sibling = join(root, "asks", runId, "envs", "i1", `qa-${runId}-i1`, "marker");
       await Bun.write(sibling, "sibling copy\n");
-      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${runId}-i1`, other]);
+      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${runId}-i1`, "--label", suiteLabel, other]);
       try {
         expect(await ask(await askOptions(runId, "score"))).toEqual({ groups: [] });
         expect((await capture(["docker", "network", "inspect", other])).code).toBe(0);
@@ -852,9 +853,9 @@ USER qa
       const runId = newRunId();
       const project = `qa-${runId}-score`;
       const held = `qair-f-e2e-held-${runId}`;
-      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=${project}`, held]);
+      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=${project}`, "--label", suiteLabel, held]);
       try {
-        await execute(["docker", "run", "-d", "--rm", "--name", held, "--network", held, fakeImage]);
+        await execute(["docker", "run", "-d", "--rm", "--label", suiteLabel, "--name", held, "--network", held, fakeImage]);
         await expect(ask(await askOptions(runId, "score"))).rejects.toThrow(`Teardown of ${project} failed: score: docker compose down left objects of ${project} behind`);
       } finally {
         await execute(["docker", "rm", "-f", held]);
@@ -916,7 +917,7 @@ USER qa
     async () => {
       const third = await freeBlock(215);
       const blocker = `qair-f-e2e-${id}-shared`;
-      await execute(["docker", "network", "create", "--internal", "--subnet", `10.215.${third}.0/25`, blocker]);
+      await execute(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", `10.215.${third}.0/25`, blocker]);
       const previous = process.env.QA_INTERNS_SUBNET;
       process.env.QA_INTERNS_SUBNET = `10.215.${third}.0/22`;
       try {

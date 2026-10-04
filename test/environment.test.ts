@@ -29,6 +29,7 @@ import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 import type { RelayRecord } from "../src/types.ts";
 import { freeBlock } from "./subnet.ts";
+import { suiteLabel } from "./suite-lock.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -168,7 +169,7 @@ describe.skipIf(!dockerAvailable)("slots", () => {
 
   async function withNetwork(subnet: string, check: () => Promise<void>): Promise<void> {
     const name = `qa-btest-${crypto.randomUUID().slice(0, 8)}`;
-    const proc = Bun.spawnSync(["docker", "network", "create", "--internal", "--subnet", subnet, name], { stderr: "pipe" });
+    const proc = Bun.spawnSync(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", subnet, name], { stderr: "pipe" });
     if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
     try {
       await check();
