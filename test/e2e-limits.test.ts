@@ -5,6 +5,7 @@ import { readState } from "../src/state.ts";
 import { execute } from "../src/target.ts";
 import type { EnvironmentStats, Finding } from "../src/types.ts";
 import { disks, dockerAvailable, endToEnd, intern, internalSubnet, leftovers, timeout, workspaces } from "./e2e.ts";
+import { freeBlock } from "./subnet.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   const { id, root, target, fakeImage, logins } = endToEnd();
@@ -16,6 +17,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const blocker = `qair-f-e2e-${id}-slot`;
       let first = null as string | null;
       let blocked = null as number | null;
+      const previous = process.env.QA_INTERNS_SUBNET;
+      process.env.QA_INTERNS_SUBNET = `10.214.${await freeBlock(214)}.0/22`;
       const runDir = await runQa({
         dir: target,
         rev: "HEAD",
@@ -38,9 +41,12 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           blocked = Bun.spawnSync(["docker", "network", "create", "--internal", "--subnet", first, blocker], { stdout: "ignore" }).exitCode;
         },
       }).finally(async () => {
+        if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+        else process.env.QA_INTERNS_SUBNET = previous;
         if (blocked === 0) await execute(["docker", "network", "rm", blocker]);
       });
 
+      expect(blocked).toBe(0);
       expect(lines).toContain("i1 starting on claude-charter-limit (claude)");
       expect(lines).toContain("i1 starting on claude-confirm-limit (claude)");
       const queued = lines.indexOf(`i1 queued: login claude-charter-limit failed with -32603: Internal error: You've hit your limit: {"errorKind":"rate_limit"}`);
