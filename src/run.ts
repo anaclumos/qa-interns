@@ -30,7 +30,7 @@ import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, ju
 import { providers } from "./providers.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
-import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
+import { newRunId, processStart, replaceFile, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Confirmation, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Login, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
@@ -737,8 +737,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
       opts.replay === null
         ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
         : { ...renderReplay(redactJson(state), redactJson(opts.replay), traffic, environments), tickets: [] };
-    await Bun.write(join(runDir, "report.md"), report.markdown);
-    await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
+    replaceFile(join(runDir, "report.md"), report.markdown);
+    replaceFile(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     return report.tickets;
   };
 

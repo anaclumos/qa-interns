@@ -106,11 +106,14 @@ export async function readState(runDir: string): Promise<RunState> {
   return readJson(file, stateSchema, `No run state at ${file}`);
 }
 
-export async function writeState(runDir: string, state: RunState): Promise<void> {
-  const file = join(runDir, "state.json");
+export function replaceFile(file: string, text: string): void {
   const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`);
+  writeFileSync(temp, text);
   renameSync(temp, file);
+}
+
+export async function writeState(runDir: string, state: RunState): Promise<void> {
+  replaceFile(join(runDir, "state.json"), `${JSON.stringify(state, null, 2)}\n`);
 }
 
 export function formatStatus(state: RunState): string {
