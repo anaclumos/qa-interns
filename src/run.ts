@@ -31,7 +31,7 @@ import { confirms, lead, renderReplay, renderReport, writeTickets } from "./repo
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
-import type { Confirmation, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Login, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
+import type { Answer, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Login, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
   dir: string;
@@ -427,7 +427,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
 
 async function reproduce(ctx: Context, intern: InternState, group: Group, target: Target, minutes: number, free: () => void): Promise<void> {
   const finding = lead(group);
-  const check = async (attempt: number): Promise<{ result: Confirmation | null; error: string | null }> => {
+  const check = async (attempt: number): Promise<Answer> => {
     try {
       return { result: await readConfirmation(ctx.runDir, intern.id, attempt), error: null };
     } catch (error) {
@@ -440,7 +440,7 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     const out = outDir(intern.id, attempt);
     const file = join(ctx.runDir, out, "confirmation.json");
     const deadline = Date.now() + minutes * minute;
-    let answer: { result: Confirmation | null; error: string | null } = { result: null, error: "no confirmation.json written" };
+    let answer: Answer = { result: null, error: "no confirmation.json written" };
     let corrected = false;
     const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);

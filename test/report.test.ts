@@ -133,8 +133,8 @@ describe("reproductions", () => {
   test("counts distinct reporters plus the confirming intern only when both its steps and its task showed the failure", () => {
     expect(reproductions(overlap)).toEqual(["i1", "i2", "c1"]);
     expect(reproductions(exportTotal)).toEqual(["i3"]);
-    expect(reproductions({ ...exportTotal, confirmation: { ...exportTotal.confirmation!, result: { ...exportTotal.confirmation!.result!, steps: false, task: true } } })).toEqual(["i3"]);
-    expect(reproductions({ ...exportTotal, confirmation: { ...exportTotal.confirmation!, result: { ...exportTotal.confirmation!.result!, task: true } } })).toEqual(["i3", "c2"]);
+    expect(reproductions({ ...exportTotal, confirmation: { ...exportTotal.confirmation!, result: { ...exportTotal.confirmation!.result!, steps: false, task: true }, error: null } })).toEqual(["i3"]);
+    expect(reproductions({ ...exportTotal, confirmation: { ...exportTotal.confirmation!, result: { ...exportTotal.confirmation!.result!, task: true }, error: null } })).toEqual(["i3", "c2"]);
     expect(reproductions(negative)).toEqual(["i3"]);
     expect(reproductions({ ...overlap, findings: [overlap.findings[0]!, { ...overlap.findings[0]!, id: "i1/again" }], confirmation: null })).toEqual(["i1"]);
   });
@@ -197,7 +197,7 @@ describe("renderReport", () => {
   });
 
   test("a group that two testing interns reported is not confirmed when its confirmation shows the failure with the steps but not with the page's own task", () => {
-    const wrongSteps: Group = { ...overlap, confirmation: { ...overlap.confirmation!, result: { ...overlap.confirmation!.result!, task: false } } };
+    const wrongSteps: Group = { ...overlap, confirmation: { ...overlap.confirmation!, result: { ...overlap.confirmation!.result!, task: false }, error: null } };
     const { markdown: text, json: data, tickets } = renderReport(state, [wrongSteps], [], none, []);
     expect(reproductions(wrongSteps)).toEqual(["i1", "i2"]);
     expect((data as { groups: { id: string; confirmed: boolean }[] }).groups).toMatchObject([{ id: "g1", confirmed: false }]);
