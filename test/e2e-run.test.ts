@@ -27,7 +27,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         ]),
         replay: null,
         onEnd: `test -f "$QA_INTERNS_RUN_DIR/report.md" && printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'`,
-        runnerImage: async () => fakeImage, admit: () => () => {},
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -134,7 +135,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           { id: "claude-wide-2", provider: "claude", second: true },
         ]),
         replay: null,
-        runnerImage: async () => fakeImage, admit: () => () => {},
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: () => {},
       });
 
@@ -164,7 +166,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         confirmMinutes: 0.5,
         loginsFile: await logins("handoff", [{ id: "claude-handoff", provider: "claude", second: true }]),
         replay: null,
-        runnerImage: async () => fakeImage, admit: () => () => {},
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: () => {},
       });
 

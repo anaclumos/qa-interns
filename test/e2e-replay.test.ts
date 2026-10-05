@@ -45,7 +45,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         confirmMinutes: 0.5,
         loginsFile,
         replay,
-        runnerImage: async () => fakeImage, admit: () => () => {},
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -103,7 +104,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           confirmMinutes: 0.5,
           loginsFile: await logins("replay-silent", [{ id: "claude-no-confirm", provider: "claude", confirms: false }]),
           replay,
-          runnerImage: async () => fakeImage, admit: () => () => {},
+          runnerImage: async () => fakeImage,
+          admit: () => () => {},
           print: (line) => failedLines.push(line),
         }),
       ).rejects.toThrow("No confirming intern recorded a result: c1 done: confirmation failed: no confirmation.json written");
@@ -132,7 +134,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         confirmMinutes: 0.5,
         loginsFile: await logins("replay-late", [{ id: "claude-late", provider: "claude", late: true }]),
         replay,
-        runnerImage: async () => fakeImage, admit: () => () => {},
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: () => {},
       });
       const late = await readState(lateDir);
@@ -167,7 +170,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           confirmMinutes: 0.5,
           loginsFile: await logins("replay-deaf", [{ id: "claude-deaf", provider: "claude", late: true, deaf: true }]),
           replay,
-          runnerImage: async () => fakeImage, admit: () => () => {},
+          runnerImage: async () => fakeImage,
+          admit: () => () => {},
           print: (line) => deafLines.push(line),
         }),
       ).rejects.toThrow("No confirming intern recorded a result: c1 done: confirmation failed: no confirmation.json written");

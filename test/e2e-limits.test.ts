@@ -32,7 +32,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           { id: "claude-no-confirm", provider: "claude", confirms: false, model: "fake-model-c" },
         ]),
         replay: null,
-        runnerImage: async () => fakeImage, admit: () => () => {},
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
@@ -124,7 +125,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           { id: "claude-next", provider: "claude", model: "fake-model-b" },
         ]),
         replay: null,
-        runnerImage: async () => fakeImage, admit: () => () => {},
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 

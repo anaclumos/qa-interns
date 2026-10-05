@@ -41,7 +41,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         confirmMinutes: 0.5,
         loginsFile: await logins("relayed", [{ id: "claude-1", provider: "claude" }]),
         replay: null,
-        runnerImage: async () => fakeImage, admit: () => () => {},
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: () => {},
       });
 
@@ -155,7 +156,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
         replay: null,
         onEnd: `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; exit 3`,
-        runnerImage: async () => fakeImage, admit: () => () => {},
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -212,7 +214,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         confirmMinutes: 0.5,
         loginsFile: await logins("dirty", [{ id: "claude-1", provider: "claude" }]),
         replay: null,
-        runnerImage: async () => fakeImage, admit: () => () => {},
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
