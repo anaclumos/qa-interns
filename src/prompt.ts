@@ -98,8 +98,12 @@ const findingExample = {
   evidence: ["/qa/out/evidence/task-status-board.png", "/qa/out/evidence/task-status-detail.png", "/qa/out/evidence/task-status.har"],
 };
 
-export function internPrompt(charter: string, env: PromptEnvironment, knownGaps: string[]): string {
+export function internPrompt(charter: string, env: PromptEnvironment, knownGaps: string[], intendedBehaviors: string[]): string {
   const gaps = knownGaps.length > 0 ? `\n- Do not write a finding about these known gaps of the test environment:\n${knownGaps.map((entry) => `  - ${entry}`).join("\n")}` : "";
+  const intended =
+    intendedBehaviors.length > 0
+      ? `\n- Do not write a finding whose observed result is one of these intended behaviors of the application, as the list states it:\n${intendedBehaviors.map((entry) => `  - ${entry}`).join("\n")}\n- A page that differs from an intended behavior is still a finding.`
+      : "";
   return `You are a QA intern. You test one web application the way a person uses it, and you report what breaks.
 
 ${rules}
@@ -111,7 +115,7 @@ ${environment(env)}
 ${howToWork}
 
 Findings:
-- Write each finding to its own file, \`/qa/out/findings/<slug>.json\`, as soon as you have reproduced it twice. \`<slug>\` is a short name of lowercase letters, digits, and hyphens. A finding that is not in a file when the time box ends is lost.${gaps}
+- Write each finding to its own file, \`/qa/out/findings/<slug>.json\`, as soon as you have reproduced it twice. \`<slug>\` is a short name of lowercase letters, digits, and hyphens. A finding that is not in a file when the time box ends is lost.${gaps}${intended}
 - A finding is one JSON object with these fields and no others:
 
 ${findingFormat}
@@ -171,7 +175,11 @@ Write /qa/out/groups.json with this shape:
 - Write only that file.`;
 }
 
-export function confirmPrompt(finding: Finding, env: PromptEnvironment): string {
+export function confirmPrompt(finding: Finding, env: PromptEnvironment, intendedBehaviors: string[]): string {
+  const intended =
+    intendedBehaviors.length > 0
+      ? `\n- A finding whose observed result is one of these intended behaviors of the application, as the list states it, is not a failure:\n${intendedBehaviors.map((entry) => `  - ${entry}`).join("\n")}\n- For such a finding, \`steps\` and \`task\` are false, and \`observed\` names the intended behavior it matches. The list does not cover a result that differs from these behaviors.`
+      : "";
   const reported = {
     title: finding.title,
     kind: finding.kind,
@@ -203,7 +211,7 @@ Confirmation:
 - \`steps\` is true when an attempt that follows the steps shows the failure the finding describes, and false when neither attempt does.
 - \`task\` is true when an attempt at the task through the page's controls shows the same failure, and false when neither attempt does. When the steps are the task, \`task\` has the value of \`steps\`.
 - \`observed\` states what your attempts showed, for the steps and for the task.
-- Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.
+- Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.${intended}
 - The session ends when the time box ends. Write the file before then.`;
 }
 
