@@ -13,8 +13,16 @@ export const charters: readonly string[] = [
   "HTTP surface: the endpoints the pages call, sent directly with malformed, missing, and wrongly typed fields and wrong methods.",
 ];
 
-export function deck(focus: string[]): string[] {
-  return [...focus.map((entry) => `Project focus: ${entry}`), ...charters];
+export function deck(focus: string[], picks: number[] = []): string[] {
+  const entries =
+    picks.length === 0
+      ? focus
+      : picks.map((pick) => {
+          const entry = focus[pick - 1];
+          if (entry === undefined) throw new Error(`--focus ${pick} names no entry of the target's focus list, which has ${focus.length} ${focus.length === 1 ? "entry" : "entries"}`);
+          return entry;
+        });
+  return [...entries.map((entry) => `Project focus: ${entry}`), ...charters];
 }
 
 export type PromptEnvironment = { urls: Record<string, string>; seed: unknown; minutes: number; offLimits: string[] };

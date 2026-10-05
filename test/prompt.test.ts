@@ -51,6 +51,18 @@ describe("deck", () => {
     expect(cards.slice(focus.length)).toEqual([...charters]);
     expect(deck([])).toEqual([...charters]);
   });
+
+  test("puts only the focus entries that the picks name, in the order of the picks, before the charters", () => {
+    const focus = ["Search and threads.", "The staff app.", "The proposal form."];
+    expect(deck(focus, [3, 1])).toEqual(["Project focus: The proposal form.", "Project focus: Search and threads.", ...charters]);
+    expect(deck(focus, [2, 2])).toEqual(["Project focus: The staff app.", "Project focus: The staff app.", ...charters]);
+  });
+
+  test("reject a pick past the end of the focus list", () => {
+    expect(() => deck(["Search and threads.", "The staff app."], [1, 3])).toThrow("--focus 3 names no entry of the target's focus list, which has 2 entries");
+    expect(() => deck(["Search and threads."], [2])).toThrow("--focus 2 names no entry of the target's focus list, which has 1 entry");
+    expect(() => deck([], [1])).toThrow("--focus 1 names no entry of the target's focus list, which has 0 entries");
+  });
 });
 
 describe("internPrompt", () => {

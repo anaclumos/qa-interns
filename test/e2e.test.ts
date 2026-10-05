@@ -266,6 +266,38 @@ USER qa
   );
 
   test(
+    "a run whose --focus names a position past the end of the focus list fails before it builds images",
+    async () => {
+      const lines: string[] = [];
+      let runnerImage = false;
+      const run = runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        focus: [2, 3],
+        loginsFile: await logins("focus", [{ id: "claude-1", provider: "claude" }]),
+        replay: null,
+        runnerImage: async () => {
+          runnerImage = true;
+          return fakeImage;
+        },
+        print: (line) => lines.push(line),
+      });
+
+      const error = "--focus 3 names no entry of the target's focus list, which has 2 entries";
+      await expect(run).rejects.toThrow(error);
+      const [runDir = ""] = lines;
+      expect(lines).toEqual([runDir, "phase preparing"]);
+      expect(runnerImage).toBe(false);
+      expect(await readState(runDir)).toMatchObject({ phase: "failed", error, interns: [] });
+    },
+    timeout,
+  );
+
+  test(
     "the confirming phase runs one confirmation per group at once, more than the run has testing interns",
     async () => {
       const runDir = await runQa({
