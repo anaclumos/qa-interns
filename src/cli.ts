@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { doctor } from "./doctor.ts";
-import { imageBuilders, removeCopies, stopRun } from "./environment.ts";
+import { imageBuilders, removeCopies, stopRun, sweepImages } from "./environment.ts";
 import { errorCode, message, stripControl } from "./findings.ts";
 import { defaultLoginsPath } from "./logins.ts";
 import { readReplay } from "./report.ts";
@@ -213,6 +213,11 @@ async function main(args: string[]): Promise<number> {
       }
       await stopRun(dir, state.runId);
       await removeCopies(dir, state.runId, await runnerImage());
+      try {
+        await sweepImages();
+      } catch (error) {
+        print(message(error));
+      }
       const after = await readState(dir);
       const live = after.interns.filter((intern) => intern.status === "queued" || intern.status === "starting" || intern.status === "testing");
       if ((after.phase !== "done" && after.phase !== "failed") || live.length > 0) {

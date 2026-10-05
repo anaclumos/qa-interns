@@ -17,6 +17,7 @@ import {
   stopEnvironment,
   stopProject,
   stopRun,
+  sweepImages,
   watchOut,
   writeChromePolicy,
   type Environment,
@@ -660,7 +661,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
         await phase("building");
-        const images = await buildImages(runId, target, source);
+        const { images } = await buildImages(runId, target, source);
         await phase("starting");
         slot = await freeSlot();
         const env = await startEnvironment({
@@ -718,12 +719,16 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let rejected: Rejected[] = [];
   let groups: Group[] | null = opts.replay?.groups ?? null;
   let egress: string[] = [];
+  let releaseImages = async () => {};
 
-  const write = async (error: string | null, teardowns: string[]) => {
+  const record = (error: string | null, teardowns: string[]) => {
     const problems = [error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
+  };
+
+  const write = async () => {
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
     const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
     const traffic = redactJson({ hosts: egress, relays: logs.flat() });
@@ -738,7 +743,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
   };
 
   const snapshot = once(async (error: string | null) => {
-    await write(error, ctx.teardowns);
+    if (error !== null) record(error, ctx.teardowns);
+    await write();
     await save();
   });
 
@@ -762,7 +768,21 @@ export async function runQa(opts: RunOptions): Promise<string> {
         teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}: ${message(reason)}`);
       }
     }
-    await writeTickets(runDir, await write(error, teardowns));
+    try {
+      await releaseImages();
+      await sweepImages();
+    } catch (reason) {
+      opts.print(redact(message(reason)));
+    }
+    try {
+      record(error, teardowns);
+      await writeTickets(runDir, await write());
+    } catch (reason) {
+      const failed = [error, `writing the report failed: ${message(reason)}`].filter((entry) => entry !== null).join("; ");
+      record(failed, teardowns);
+      await save();
+      throw new Error(redact(failed));
+    }
     await save();
     return teardowns.length === 0 ? null : teardowns.join("; ");
   });
@@ -787,7 +807,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await save();
 
     await phase("building");
-    ctx.images = await buildImages(runId, target, source);
+    const built = await buildImages(runId, target, source);
+    releaseImages = built.release;
+    ctx.images = built.images;
 
     if (groups === null) {
       await phase("testing");
