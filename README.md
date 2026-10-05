@@ -9,6 +9,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 - Linux 5.19 or later on x86-64, with cgroup v2. Chrome for Testing has no Linux ARM64 build. QA Interns reads the peak memory of each container from the `memory.peak` file of its cgroup, which older kernels and cgroup v1 do not have. `qa-interns doctor` checks that it can read that file.
 - Docker Engine with Compose 5.0 or later, the `isolated` bridge gateway mode, and privileged containers that can use loop devices. QA Interns mounts each intern's output disk from such a container, so the state directory must be on a mount with shared propagation, which is the systemd default. `qa-interns doctor` checks all of these. Compose 2 drops `env_file` paths from `docker compose config --no-env-resolution`, which the target checks read.
 - Bun 1.4 or later, Git, and `flock` and `findmnt` from util-linux.
+- For `prune` only, the GitHub CLI `gh`, signed in to an account that can read the target repositories, or with `GH_TOKEN` set.
 - `XDG_RUNTIME_DIR` set to a directory that only you can use, as a systemd login session sets it. QA Interns keeps the locks of its network blocks there.
 - At least one agent login: Claude Code, Codex, Cursor, Grok, or OpenCode with an OpenCode Go or OpenRouter API key (see [Logins](#logins)).
 - Memory for the environments you run at once. QA Interns does not check free memory before it starts an environment. An environment caps its runner at 4 GiB, its proxy at 128 MiB, its relay at 128 MiB when the target lists `egress` hosts, and each container of a service at the service's `mem_limit`, or 1 GiB when the service sets none. Docker also lets each of these containers use as much swap as its memory cap.
@@ -46,6 +47,7 @@ qa-interns doctor
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
 | `qa-interns report [<run>]` | Prints `report.md`. |
 | `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when that process, matched by its pid and start time, is still running. Then tears down every environment the run still has, saves the relay log of each of those environments and each output disk the run left into its folder, and deletes the run's leftover workspace copies, with containers of the current runner image. When disks or copies are left and that image does not exist, it fails; build the image with `qa-interns doctor` and run `down` again. |
+| `qa-interns prune` | Deletes the run directory of each run whose job has shipped. See [Prune](#prune). |
 
 `<run>` is a run id or a run directory. Without it, the command uses the most recent run.
 
@@ -224,6 +226,19 @@ A signal to `run` while the command runs after a done or failed run, such as the
 
 A replay is a run of its own, with its own run directory, and `status`, `report`, and `down` work on it. Its `report.md` lists the groups that the interns reproduced, then the groups that they did not reproduce, then the groups that no intern checked. It ends with the interns, the connections through the relay, and the environments, as the report of a run does. Each group keeps the id it has in the earlier run and shows the finding the intern followed and the intern's confirmation. `findings.json` carries the same data. Each finding in it is as the earlier run recorded it, so its evidence paths are relative to the earlier run's directory. A replay writes no ticket drafts. A replay cannot be replayed; replay the earlier run again.
 
+## Prune
+
+Nothing else deletes a run directory, so run `qa-interns prune` on a schedule, such as from a systemd timer, on every host that runs QA Interns. It deletes the directory of each run whose job has shipped, and keeps a run directory while any of these is true:
+
+- The run's orchestrator, matched by its pid and start time, still runs, or the run's `state.json` changed in the last 24 hours. The process that started a run reads its report after the run ends, and a run at a commit of the default branch has shipped as soon as it ends.
+- The run used `--dirty`. No commit holds the uncommitted changes it tested, so no pull request shows whether they shipped.
+- The run's teardown left a container, network, volume, or image of the run, a disk helper, a mounted output disk or a disk image, or a workspace copy. `qa-interns down` removes these, and it needs the run directory to do so.
+- The run's job has not shipped.
+
+A run's job has shipped when one or more pull requests hold the commit the run tested and none of them is open. A pull request holds a commit when the commit is one of its commits or its merge commit, including the commit of a squash merge. A commit that no pull request holds and that has two or more parents, such as a batch commit that merges several pull request heads, has shipped when each of its parents has shipped. `prune` reads those parents from the run's target repository, so such a run stays once that repository or the commit is gone from the host.
+
+`prune` finds the pull requests that hold a commit with GitHub search through `gh api graphql`, in every repository the account can read, so a pull request in a fork also counts. It deletes the files of a run directory before its `state.json`, so a `prune` that stops partway leaves a run directory that the next `prune` deletes. It prints a line for each run directory it deletes, then the number it deleted and the number it kept for each reason above.
+
 ## Isolation
 
 - Every environment is its own Compose project with its networks in its own `/23` block of the range that the `QA_INTERNS_SUBNET` environment variable sets, `10.213.0.0/16` when it is not set. The range is an IPv4 network address with a prefix length from 16 to 23, such as `10.100.0.0/20`, and holds one environment per `/23` block. A command that starts an environment skips a block that overlaps a Docker network or a host route. It also skips a block that another QA Interns process of the same user holds. A process locks the block it picks with a file in `$XDG_RUNTIME_DIR/qa-interns/slots/` and holds the lock until the teardown has removed the environment's containers and networks, or, for `up`, until the environment has started. The lock ends when the process exits. That command and `doctor` fail when `QA_INTERNS_SUBNET` is set to anything else. The target services and the runner share one internal network, and the runner and the proxy share a second internal network. An environment that `up` starts has no proxy and no second network. When the target lists `egress` hosts, the target services and the relay share a third internal network. Only the proxy and the relay join the network that reaches the internet. The internal networks have no gateway address, so containers on them reach neither the host nor other environments.
@@ -265,6 +280,8 @@ A replay is a run of its own, with its own run directory, and `status`, `report`
 - A replay intern follows the steps as the earlier run wrote them, with the seed output of the replayed commit. When a change alters the seed output, the steps can name accounts or data that the seed no longer creates, and the intern reports what it saw.
 - A replay reads the earlier run's `findings.json`, so a value that `secrets` named there reads `[redacted]` in the steps a replay intern follows. The intern still gets the seed output of the replayed commit unchanged.
 - A replay hands each group to one intern, so a failure that shows only some of the time can land under Not reproduced.
+- `prune` keeps a run that used `--dirty`, and a run whose commit has one parent and no pull request, such as a commit pushed straight to the default branch or a commit that was never pushed. Delete those run directories by hand.
+- GitHub search can miss a pull request for a short time after it opens or after a push to it. When a merged or closed pull request holds a commit and an open pull request that also holds it is missing from the search, `prune` deletes the run. When more than 100 pull requests hold a commit, the run stays.
 - The login store of a Claude, Cursor, or Grok intern is a host directory outside the output disk. The runner can write any number of files there, each up to 1 GiB. The Codex credential file and the generated Codex configuration file are single host files, each capped at 1 GiB.
 
 ## Evaluation target

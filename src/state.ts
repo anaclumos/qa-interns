@@ -4,7 +4,7 @@ import { readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
-import { oneLine } from "./findings.ts";
+import { errorCode, oneLine } from "./findings.ts";
 import { internStatuses, providerNames, roles, runPhases, type RunState } from "./types.ts";
 
 export const stateSchema = z.object({
@@ -52,6 +52,15 @@ export function processStart(pid: number): number {
   const start = Number(stat.slice(stat.lastIndexOf(")") + 1).trim().split(" ")[19]);
   if (!Number.isSafeInteger(start)) throw new Error(`${file} has no start time in field 22`);
   return start;
+}
+
+export function running(pid: number, start: number): boolean {
+  try {
+    return processStart(pid) === start;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT" || errorCode(error) === "ESRCH") return false;
+    throw error;
+  }
 }
 
 export function newRunId(): string {

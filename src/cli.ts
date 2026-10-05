@@ -8,10 +8,11 @@ import { doctor } from "./doctor.ts";
 import { imageBuilders, removeCopies, stopRun } from "./environment.ts";
 import { errorCode, message, stripControl } from "./findings.ts";
 import { defaultLoginsPath } from "./logins.ts";
+import { prune } from "./prune.ts";
 import { readReplay } from "./report.ts";
 import { runQa, startCopy } from "./run.ts";
 import { ensureRunnerImage, runnerImage } from "./runner.ts";
-import { formatStatus, processStart, readState, resolveRunDir, writeState } from "./state.ts";
+import { formatStatus, readState, resolveRunDir, running, writeState } from "./state.ts";
 import { exportTree, loadTarget, resolveTarget } from "./target.ts";
 
 const usage = `Usage: qa-interns <command> [options]
@@ -50,6 +51,12 @@ Commands:
       Stop the run's orchestrator with SIGTERM when it is still running, then
       tear down every environment the run still has and delete its leftover
       workspace copies.
+  prune
+      Delete the directory of each run whose job has shipped: its orchestrator
+      ended, its state.json has not changed for 24 hours, it ran without
+      --dirty, its teardown left nothing, and a merged or closed pull request
+      and no open one hold its commit, or each parent of a merge commit that no
+      pull request holds. Needs the GitHub CLI, signed in.
   help
       Print this help.
 
@@ -68,15 +75,6 @@ function numberOption(schema: z.ZodType<number>, value: string, option: string):
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error(`--${option} ${parsed.error.issues[0]?.message}, got ${value}`);
   return parsed.data;
-}
-
-function running(pid: number, start: number): boolean {
-  try {
-    return processStart(pid) === start;
-  } catch (error) {
-    if (errorCode(error) === "ENOENT" || errorCode(error) === "ESRCH") return false;
-    throw error;
-  }
 }
 
 function runArg(command: string, args: string[]): string | undefined {
@@ -218,6 +216,11 @@ async function main(args: string[]): Promise<number> {
         await writeState(dir, { ...after, phase: "done", updatedAt: ended, endedAt: ended });
       }
       print(`Run ${state.runId} has no environments left.`);
+      return 0;
+    }
+    case "prune": {
+      parseArgs({ args: rest, options: {} });
+      await prune(print);
       return 0;
     }
     case "help":
