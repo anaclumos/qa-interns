@@ -30,4 +30,4 @@ jobs:
       - run: |
           bunx @anthropic-ai/claude-code@2.1.283 plugin validate .
           bunx @anthropic-ai/claude-code@2.1.283 plugin validate skills
-      - run: bun test --timeout 1200000
+      - run: bun run test --timeout 1200000
