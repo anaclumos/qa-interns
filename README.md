@@ -268,6 +268,7 @@ A replay is a run of its own, with its own run directory, and `status`, `report`
 - A replay intern follows the steps as the earlier run wrote them, with the seed output of the replayed commit. When a change alters the seed output, the steps can name accounts or data that the seed no longer creates, and the intern reports what it saw.
 - A replay reads the earlier run's `findings.json`, so a value that `secrets` named there reads `[redacted]` in the steps a replay intern follows. The intern still gets the seed output of the replayed commit unchanged.
 - A replay hands each group to one intern, so a failure that shows only some of the time can land under Not reproduced.
+- A finding that two testing interns reported is confirmed even when its confirming intern names an intended behavior in `observed`, because a confirmation that does not reproduce a finding outweighs no reporter. The testing intern prompt tells each intern not to write such a finding.
 - The login store of a Claude, Cursor, or Grok intern is a host directory outside the output disk. The runner can write any number of files there, each up to 1 GiB. The Codex credential file and the generated Codex configuration file are single host files, each capped at 1 GiB.
 
 ## Evaluation target
