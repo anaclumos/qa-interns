@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processStart, runDirFor, writeState } from "../src/state.ts";
@@ -76,6 +76,11 @@ async function saveRun(runId: string, target: { repo: string; commit: string; di
   return dir;
 }
 
+async function replays(runId: string, source: string, commit: string): Promise<void> {
+  const run = { runId, replay: { runId: source, commit, dirty: false }, phase: "done", reproducedGroups: 1, notReproducedGroups: 0, uncheckedGroups: 0 };
+  await Bun.write(join(runDirFor(runId), "findings.json"), JSON.stringify({ run, groups: [], interns: [], egress: [], environments: [] }));
+}
+
 describe.skipIf(!dockerAvailable)("prune", () => {
   test("deletes the run directories of shipped jobs and keeps every other run", async () => {
     const repo = join(home, "repo");
@@ -112,10 +117,20 @@ describe.skipIf(!dockerAvailable)("prune", () => {
 
     const gone = join(home, "removed-worktree");
     const now = new Date().toISOString();
-    const shipped = [await saveRun("a0000001", { repo: gone, commit: squashed }), await saveRun("a0000002", { repo, commit: shippedBatch })];
+    const abandoned = runDirFor("a0000012");
+    await mkdir(abandoned, { recursive: true });
+    await Bun.write(join(abandoned, `state.json.${process.pid}.tmp`), "");
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60_000);
+    await utimes(abandoned, twoDaysAgo, twoDaysAgo);
+    const shipped = [await saveRun("a0000001", { repo: gone, commit: squashed }), await saveRun("a0000002", { repo, commit: shippedBatch }), abandoned];
+    await replays("a0000002", "a0000001", shippedBatch);
     const leftover = await saveRun("a0000009", { repo: gone, commit: squashed });
     await mkdir(join(leftover, "envs", "i1", "qa-a0000009-i1"), { recursive: true });
+    const starting = runDirFor("a0000013");
+    await mkdir(starting);
     const kept = [
+      await saveRun("a0000011", { repo: gone, commit: squashed }),
+      starting,
       await saveRun("a0000003", { repo: gone, commit: reopened }),
       await saveRun("a0000004", { repo, commit: openBatch }),
       await saveRun("a0000005", { repo, commit: unpushed }),
@@ -125,6 +140,7 @@ describe.skipIf(!dockerAvailable)("prune", () => {
       await saveRun("a0000010", { repo: gone, commit: squashed }, { pid: process.pid, pidStart: processStart(process.pid), phase: "testing", endedAt: null }),
       leftover,
     ];
+    await replays("a0000003", "a0000011", reopened);
 
     const env = { ...process.env, PATH: `${join(home, "bin")}:${process.env.PATH}`, FAKE_GH_PULLS: join(home, "pulls.json") };
     const pruned = await capture(["bun", cliScript, "prune"], { env });
@@ -135,7 +151,7 @@ describe.skipIf(!dockerAvailable)("prune", () => {
     expect((await readdir(join(home, "state", "qa-interns", "runs"))).sort()).toEqual(kept.map((dir) => dir.slice(-8)).sort());
     expect(lines.slice(0, -1).sort()).toEqual(shipped.map((dir) => `Removed run ${dir.slice(-8)}.`));
     expect(lines.at(-1)).toBe(
-      "Removed 2 of 10 run directories. Kept 2 running or changed within 24 hours, 1 run with --dirty, 1 with teardown leftovers that qa-interns down removes, and 4 whose job has not shipped.",
+      "Removed 3 of 13 run directories. Kept 3 running or changed within 24 hours, 1 run with --dirty, 1 with teardown leftovers that qa-interns down removes, 4 whose job has not shipped, and 1 whose findings a kept run replays.",
     );
   });
 });

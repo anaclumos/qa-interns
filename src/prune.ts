@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
-import { readdir, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir, rm, stat } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { z } from "zod";
 import { hostObjects, leftBehind } from "./environment.ts";
+import { storedRunSchema } from "./report.ts";
 import { readJson, running, runsDir, stateSchema } from "./state.ts";
 import { capture, execute, failure } from "./target.ts";
 
@@ -81,31 +82,54 @@ async function removeRun(dir: string): Promise<void> {
   await rm(dir, { recursive: true, force: true });
 }
 
+async function replaySource(dir: string): Promise<string | null> {
+  const file = join(dir, "findings.json");
+  return existsSync(file) ? ((await readJson(file, storedRunSchema)).run.replay?.runId ?? null) : null;
+}
+
+type Candidate = { dir: string; runId: string; target: { repo: string; commit: string } | null; source: string | null };
+
 export async function prune(print: (line: string) => void): Promise<void> {
   const root = runsDir();
   const dirs = existsSync(root) ? (await readdir(root)).map((name) => join(root, name)) : [];
   const host = await hostObjects();
-  const kept = { active: 0, dirty: 0, leftovers: 0, unshipped: 0 };
-  const candidates: { dir: string; runId: string; repo: string; commit: string }[] = [];
+  const kept = { active: 0, dirty: 0, leftovers: 0, unshipped: 0, replayed: 0 };
+  const sources = new Set<string>();
+  const candidates: Candidate[] = [];
   for (const dir of dirs) {
     const file = join(dir, "state.json");
-    const { runId, pid, pidStart, updatedAt, target } = await readJson(file, pruneSchema, `No run state at ${file}`);
-    if (running(pid, pidStart) || Date.now() - Date.parse(updatedAt) < settleMs) kept.active++;
-    else if (target.dirty) kept.dirty++;
+    const state = existsSync(file) ? await readJson(file, pruneSchema) : null;
+    if (state !== null && running(state.pid, state.pidStart)) {
+      kept.active++;
+      continue;
+    }
+    const runId = state?.runId ?? basename(dir);
+    const source = await replaySource(dir);
+    const changed = state === null ? (await stat(dir)).mtimeMs : Date.parse(state.updatedAt);
+    if (Date.now() - changed < settleMs) kept.active++;
+    else if (state?.target.dirty === true) kept.dirty++;
     else if (await leftBehind(host, dir, runId)) kept.leftovers++;
-    else candidates.push({ dir, runId, repo: target.repo, commit: target.commit });
+    else {
+      candidates.push({ dir, runId, target: state?.target ?? null, source });
+      continue;
+    }
+    if (source !== null) sources.add(source);
   }
-  const shipped = await shippedCommits(new Map(candidates.map(({ commit, repo }) => [commit, repo])));
-  for (const { dir, runId, commit } of candidates) {
-    if (!shipped.has(commit)) {
-      kept.unshipped++;
+  const shipped = await shippedCommits(new Map(candidates.flatMap(({ target }) => (target === null ? [] : [[target.commit, target.repo] as const]))));
+  const unshipped = candidates.filter(({ target }) => target !== null && !shipped.has(target.commit));
+  for (const { source } of unshipped) if (source !== null) sources.add(source);
+  kept.unshipped = unshipped.length;
+  let removed = 0;
+  for (const { dir, runId } of candidates.filter((candidate) => !unshipped.includes(candidate))) {
+    if (sources.has(runId)) {
+      kept.replayed++;
       continue;
     }
     await removeRun(dir);
+    removed++;
     print(`Removed run ${runId}.`);
   }
-  const removed = candidates.length - kept.unshipped;
   print(
-    `Removed ${removed} of ${dirs.length} run directories. Kept ${kept.active} running or changed within 24 hours, ${kept.dirty} run with --dirty, ${kept.leftovers} with teardown leftovers that qa-interns down removes, and ${kept.unshipped} whose job has not shipped.`,
+    `Removed ${removed} of ${dirs.length} run directories. Kept ${kept.active} running or changed within 24 hours, ${kept.dirty} run with --dirty, ${kept.leftovers} with teardown leftovers that qa-interns down removes, ${kept.unshipped} whose job has not shipped, and ${kept.replayed} whose findings a kept run replays.`,
   );
 }

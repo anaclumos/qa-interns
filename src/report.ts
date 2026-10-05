@@ -407,7 +407,7 @@ export function renderReplay(state: RunState, replay: Replay, egress: Egress, en
   };
 }
 
-const storedRunSchema = z.object({ run: z.object({ replay: z.object({ runId: z.string() }).optional() }) });
+export const storedRunSchema = z.object({ run: z.object({ replay: z.object({ runId: z.string() }).optional() }) });
 
 export const storedFindingSchema = z.object({
   id: z.string(),

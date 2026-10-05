@@ -54,9 +54,11 @@ Commands:
   prune
       Delete the directory of each run whose job has shipped: its orchestrator
       ended, its state.json has not changed for 24 hours, it ran without
-      --dirty, its teardown left nothing, and a merged or closed pull request
-      and no open one hold its commit, or each parent of a merge commit that no
-      pull request holds. Needs the GitHub CLI, signed in.
+      --dirty, its teardown left nothing, no run that prune keeps replays its
+      findings, and a merged or closed pull request and no open one hold its
+      commit, or each parent of a merge commit that no pull request holds. A
+      directory without state.json goes once it has not changed for 24 hours
+      and its teardown left nothing. Needs the GitHub CLI, signed in.
   help
       Print this help.
 
