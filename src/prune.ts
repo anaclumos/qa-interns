@@ -1,9 +1,10 @@
-import { existsSync } from "node:fs";
+import { closeSync, existsSync } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { z } from "zod";
 import { hostObjects, leftBehind } from "./environment.ts";
-import { storedRunSchema } from "./report.ts";
+import { flock } from "./logins.ts";
+import { replayLock, storedRunSchema } from "./report.ts";
 import { readJson, running, runsDir, stateSchema } from "./state.ts";
 import { capture, execute, failure } from "./target.ts";
 
@@ -91,7 +92,9 @@ type Candidate = { dir: string; runId: string; target: { repo: string; commit: s
 
 export async function prune(print: (line: string) => void): Promise<void> {
   const root = runsDir();
-  const dirs = existsSync(root) ? (await readdir(root)).map((name) => join(root, name)) : [];
+  const dirs = existsSync(root)
+    ? (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => join(root, entry.name))
+    : [];
   const host = await hostObjects();
   const kept = { active: 0, dirty: 0, leftovers: 0, unshipped: 0, replayed: 0 };
   const sources = new Set<string>();
@@ -121,11 +124,16 @@ export async function prune(print: (line: string) => void): Promise<void> {
   kept.unshipped = unshipped.length;
   let removed = 0;
   for (const { dir, runId } of candidates.filter((candidate) => !unshipped.includes(candidate))) {
-    if (sources.has(runId)) {
+    const lock = sources.has(runId) ? null : flock(replayLock(dir), "--exclusive", "--nonblock");
+    if (lock === null) {
       kept.replayed++;
       continue;
     }
-    await removeRun(dir);
+    try {
+      await removeRun(dir);
+    } finally {
+      closeSync(lock);
+    }
     removed++;
     print(`Removed run ${runId}.`);
   }

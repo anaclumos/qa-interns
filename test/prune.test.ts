@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readdir, rm, utimes } from "node:fs/promises";
+import { closeSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readdir, rm, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { flock } from "../src/logins.ts";
+import { replayLock } from "../src/report.ts";
 import { processStart, runDirFor, writeState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
 import type { RunState } from "../src/types.ts";
@@ -141,17 +144,29 @@ describe.skipIf(!dockerAvailable)("prune", () => {
       leftover,
     ];
     await replays("a0000003", "a0000011", reopened);
+    const replayed = await saveRun("a0000014", { repo: gone, commit: squashed });
+    kept.push(replayed);
+    const outside = join(home, "outside");
+    await mkdir(outside);
+    await Bun.write(join(outside, "notes.txt"), "kept\n");
+    await utimes(outside, twoDaysAgo, twoDaysAgo);
+    const linked = join(home, "state", "qa-interns", "runs", "a0000015");
+    await symlink(outside, linked);
+    kept.push(linked);
 
     const env = { ...process.env, PATH: `${join(home, "bin")}:${process.env.PATH}`, FAKE_GH_PULLS: join(home, "pulls.json") };
-    const pruned = await capture(["bun", cliScript, "prune"], { env });
+    const lock = flock(replayLock(replayed), "--shared");
+    if (lock === null) throw new Error(`flock on ${replayLock(replayed)} returned no lock`);
+    const pruned = await capture(["bun", cliScript, "prune"], { env }).finally(() => closeSync(lock));
     expect(pruned.stderr).toBe("");
     expect(pruned.code).toBe(0);
 
     const lines = pruned.stdout.trimEnd().split("\n");
     expect((await readdir(join(home, "state", "qa-interns", "runs"))).sort()).toEqual(kept.map((dir) => dir.slice(-8)).sort());
+    expect(await readdir(outside)).toEqual(["notes.txt"]);
     expect(lines.slice(0, -1).sort()).toEqual(shipped.map((dir) => `Removed run ${dir.slice(-8)}.`));
     expect(lines.at(-1)).toBe(
-      "Removed 3 of 13 run directories. Kept 3 running or changed within 24 hours, 1 run with --dirty, 1 with teardown leftovers that qa-interns down removes, 4 whose job has not shipped, and 1 whose findings a kept run replays.",
+      "Removed 3 of 14 run directories. Kept 3 running or changed within 24 hours, 1 run with --dirty, 1 with teardown leftovers that qa-interns down removes, 4 whose job has not shipped, and 2 whose findings a kept run replays.",
     );
   });
 });

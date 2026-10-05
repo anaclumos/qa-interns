@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { closeSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,9 +8,9 @@ import { z } from "zod";
 import { doctor } from "./doctor.ts";
 import { imageBuilders, removeCopies, stopRun, sweepImages } from "./environment.ts";
 import { errorCode, message, stripControl } from "./findings.ts";
-import { defaultLoginsPath } from "./logins.ts";
+import { defaultLoginsPath, flock } from "./logins.ts";
 import { prune } from "./prune.ts";
-import { readReplay } from "./report.ts";
+import { readReplay, replayLock } from "./report.ts";
 import { runQa, startCopy } from "./run.ts";
 import { ensureRunnerImage, runnerImage } from "./runner.ts";
 import { formatStatus, readState, resolveRunDir, running, writeState } from "./state.ts";
@@ -54,11 +55,13 @@ Commands:
   prune
       Delete the directory of each run whose job has shipped: its orchestrator
       ended, its state.json has not changed for 24 hours, it ran without
-      --dirty, its teardown left nothing, no run that prune keeps replays its
-      findings, and a merged or closed pull request and no open one hold its
-      commit, or each parent of a merge commit that no pull request holds. A
-      directory without state.json goes once it has not changed for 24 hours
-      and its teardown left nothing. Needs the GitHub CLI, signed in.
+      --dirty, its teardown left nothing, no run that prune keeps and no
+      running replay replays its findings, and a merged or closed pull
+      request and no open one hold its commit, or each parent of a merge
+      commit that no pull request holds. A directory without state.json goes
+      once it has not changed for 24 hours and its teardown left nothing.
+      Files and symbolic links in the runs directory stay. Needs the GitHub
+      CLI, signed in.
   help
       Print this help.
 
@@ -155,19 +158,26 @@ async function main(args: string[]): Promise<number> {
       const [run, ...extra] = positionals;
       if (run === undefined || extra.length > 0) throw new Error("replay takes exactly one run id or run directory. Run qa-interns help for usage.");
       const confirmMinutes = numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes");
-      const replay = await readReplay(await resolveRunDir(run), values.group);
-      await runQa({
-        dir: join(replay.target.repo, replay.target.path),
-        rev: values.commit,
-        dirty: false,
-        interns: 0,
-        minutes: 0,
-        confirmMinutes,
-        loginsFile: values.logins,
-        replay,
-        runnerImage: ensureRunnerImage,
-        print,
-      });
+      const runDir = await resolveRunDir(run);
+      const lock = flock(replayLock(runDir), "--shared");
+      if (lock === null) throw new Error(`flock on ${replayLock(runDir)} returned no lock`);
+      try {
+        const replay = await readReplay(runDir, values.group);
+        await runQa({
+          dir: join(replay.target.repo, replay.target.path),
+          rev: values.commit,
+          dirty: false,
+          interns: 0,
+          minutes: 0,
+          confirmMinutes,
+          loginsFile: values.logins,
+          replay,
+          runnerImage: ensureRunnerImage,
+          print,
+        });
+      } finally {
+        closeSync(lock);
+      }
       return 0;
     }
     case "up": {

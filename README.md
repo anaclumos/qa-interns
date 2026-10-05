@@ -180,6 +180,7 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 - Each transcript and error log stops growing at 64 MiB. Later traffic and output are not recorded.
 - `interns/<id>/relay-<container>.jsonl`: the log of the relay container of one of the intern's environments, saved after the environment's containers stop and before they are removed. It has one JSON line for each connection that a target service opened through that relay, with `n`, the line's position in the relay's log, and `host`, `outcome`, and `error`.
 - `state.json`: the run's phase and every intern's status. `options.concurrency` and `options.confirmConcurrency` hold the most interns that the testing phase and the confirming phase run at once.
+- `replay.lock`: the lock that `qa-interns replay` holds on the run it replays. It exists once the run has been replayed. See [Prune](#prune).
 
 A finding is confirmed when two or more interns reproduced it, unless its confirmation shows the failure with the steps but not with the task through the page's own controls. A confirming intern reproduced it when both of its results show the failure. The report names both results.
 
@@ -234,9 +235,9 @@ Nothing else deletes a run directory, so run `qa-interns prune` on a schedule, s
 - The run used `--dirty`. No commit holds the uncommitted changes it tested, so no pull request shows whether they shipped.
 - The run's teardown left a container, network, volume, or image of the run, a disk helper, a mounted output disk or a disk image, or a workspace copy. `qa-interns down` removes these, and it needs the run directory to do so.
 - The run's job has not shipped.
-- A run that `prune` keeps replays the run's findings. The replay's report cites the evidence in the run's directory, and `qa-interns replay` takes the run, never its replay.
+- A run that `prune` keeps, or a replay that still runs, replays the run's findings. The replay's report cites the evidence in the run's directory, and `qa-interns replay` takes the run, never its replay. A replay holds a shared lock on the run's `replay.lock` from before it reads the run until it ends, and `prune` deletes a run only while it holds that lock exclusively.
 
-A run directory without `state.json`, such as one whose run failed to start on a full disk, has no job. `prune` deletes it once the directory has not changed for 24 hours and its teardown left nothing.
+A run directory without `state.json`, such as one whose run failed to start on a full disk, has no job. `prune` deletes it once the directory has not changed for 24 hours and its teardown left nothing. `prune` reads and deletes only directories in `runs/`. It leaves a file or a symbolic link there, and what the link points to.
 
 A run's job has shipped when one or more pull requests hold the commit the run tested and none of them is open. A pull request holds a commit when the commit is one of its commits or its merge commit, including the commit of a squash merge. A commit that no pull request holds and that has two or more parents, such as a batch commit that merges several pull request heads, has shipped when each of its parents has shipped. `prune` reads those parents from the run's target repository, so such a run stays once that repository or the commit is gone from the host.
 
@@ -287,7 +288,6 @@ A run's job has shipped when one or more pull requests hold the commit the run t
 - A replay hands each group to one intern, so a failure that shows only some of the time can land under Not reproduced.
 - `prune` keeps a run that used `--dirty`, and a run whose commit has one parent and no pull request, such as a commit pushed straight to the default branch or a commit that was never pushed. Delete those run directories by hand.
 - GitHub search can miss a pull request for a short time after it opens or after a push to it. When a merged or closed pull request holds a commit and an open pull request that also holds it is missing from the search, `prune` deletes the run. When more than 100 pull requests hold a commit, the run stays.
-- A replay records the run it replays in its `findings.json`, which it writes when it ends. `prune` can therefore delete a run while a replay of it still runs, and that replay's report then cites evidence that is gone.
 - The login store of a Claude, Cursor, or Grok intern is a host directory outside the output disk. The runner can write any number of files there, each up to 1 GiB. The Codex credential file and the generated Codex configuration file are single host files, each capped at 1 GiB.
 
 ## Evaluation target

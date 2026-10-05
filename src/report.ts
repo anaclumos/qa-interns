@@ -432,6 +432,10 @@ const storedGroupsSchema = z.object({
   groups: z.array(z.object({ id: z.string().min(1), confirmed: z.boolean(), findings: z.array(storedFindingSchema).min(1) })),
 });
 
+export function replayLock(runDir: string): string {
+  return join(runDir, "replay.lock");
+}
+
 export async function readReplay(runDir: string, only: string[]): Promise<Replay> {
   const state = await readState(runDir);
   const file = join(runDir, "findings.json");
