@@ -81,7 +81,7 @@ USER qa
       if (Number.isSafeInteger(owner) && existsSync(join("/proc", String(owner)))) continue;
       if ((await execute(["docker", "ps", "-aq", "--filter", `ancestor=${image}`])) === "") unused.push(image);
     }
-    if (unused.length > 0) await execute(["docker", "image", "rm", ...unused]);
+    if (unused.length > 0) await execute(["docker", "image", "rm", "-f", ...unused]);
   }, timeout);
 
   async function logins(name: string, entries: FakeLogin[]): Promise<string> {
