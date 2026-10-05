@@ -17,6 +17,7 @@ import {
   stopEnvironment,
   stopProject,
   stopRun,
+  sweepImages,
   watchOut,
   writeChromePolicy,
   type Environment,
@@ -25,7 +26,7 @@ import {
 } from "./environment.ts";
 import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
 import { hasQuota, loadLogins, Scheduler, watchReleases, type Lease } from "./logins.ts";
-import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "./prompt.ts";
+import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
@@ -91,6 +92,7 @@ const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
+const writeUpMs = 2 * minute;
 const stopWaitMs = 30_000;
 const loginWaitMs = 30_000;
 const noLogin = "no login has spare capacity";
@@ -331,31 +333,30 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, fre
   return outcome;
 }
 
-async function turnUntil(session: Session, text: string, deadline: number): Promise<Turn | null> {
-  if (Date.now() >= deadline) return null;
+async function turnUntil(session: Session, text: string, deadline: number): Promise<Turn | "ended" | "running"> {
+  if (Date.now() >= deadline) return "ended";
   const turn = session.prompt(text);
   const result = await within(turn, deadline - Date.now());
   if (result !== null) return result;
   const settled = turn.then(
-    () => undefined,
-    () => undefined,
+    () => "ended" as const,
+    () => "ended" as const,
   );
   await session.cancel();
-  await within(settled, settleMs);
-  return null;
+  return (await within(settled, settleMs)) ?? "running";
 }
 
-async function converse(session: Session, first: string, deadline: number, next: (turn: Turn, idle: boolean) => Promise<string | null>): Promise<boolean> {
+async function converse(session: Session, first: string, deadline: number, next: (turn: Turn, idle: boolean) => Promise<string | null>): Promise<"done" | "ended" | "running"> {
   let text: string | null = first;
   let quiet = false;
   while (text !== null) {
     const turn = await turnUntil(session, text, deadline);
-    if (turn === null) return false;
+    if (typeof turn === "string") return turn;
     const idle = quiet && turn.toolCalls === 0;
     quiet = turn.toolCalls === 0;
     text = await next(turn, idle);
   }
-  return true;
+  return "done";
 }
 
 function minutesLeft(deadline: number): number {
@@ -442,13 +443,14 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     const deadline = Date.now() + minutes * minute;
     let answer: { result: Confirmation | null; error: string | null } = { result: null, error: "no confirmation.json written" };
     let corrected = false;
-    await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
+    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
       answer = await check(attempt);
       if (answer.error === null || corrected) return null;
       corrected = true;
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
+    if (end === "ended" && !(await Bun.file(file).exists())) await turnUntil(session, timeUpPrompt(), Date.now() + writeUpMs);
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check(attempt);
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
@@ -654,7 +656,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
         await phase("building");
-        const images = await buildImages(runId, target, source);
+        const { images } = await buildImages(runId, target, source);
         await phase("starting");
         slot = await freeSlot();
         const env = await startEnvironment({
@@ -712,6 +714,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let rejected: Rejected[] = [];
   let groups: Group[] | null = opts.replay?.groups ?? null;
   let egress: string[] = [];
+  let releaseImages = async () => {};
 
   const finish = once(async (error: string | null): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
@@ -731,6 +734,12 @@ export async function runQa(opts: RunOptions): Promise<string> {
       } catch (reason) {
         teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}: ${message(reason)}`);
       }
+    }
+    try {
+      await releaseImages();
+      await sweepImages();
+    } catch (reason) {
+      opts.print(redact(message(reason)));
     }
     const problems = [error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
@@ -771,7 +780,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await save();
 
     await phase("building");
-    ctx.images = await buildImages(runId, target, source);
+    const built = await buildImages(runId, target, source);
+    releaseImages = built.release;
+    ctx.images = built.images;
 
     if (groups === null) {
       await phase("testing");

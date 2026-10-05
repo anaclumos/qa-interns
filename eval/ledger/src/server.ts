@@ -314,7 +314,9 @@ const server = Bun.serve({
       GET: page(async (req, ctx) => {
         if (ctx.role === "viewer") return forbidden(ctx, "Viewers cannot edit invoices.");
         const invoice = await teamInvoice(req.params.id, ctx);
-        return invoice ? html(invoiceFormPage(ctx, invoice)) : notFound(ctx);
+        if (!invoice) return notFound(ctx);
+        if (invoice.status === "paid") return html(messagePage("Invoice is paid", "Paid invoices cannot be edited.", ctx), 409);
+        return html(invoiceFormPage(ctx, invoice));
       }),
     },
     "/invoices/:id/status": {
@@ -436,7 +438,7 @@ const server = Bun.serve({
           throw err;
         }
         if (typeof input === "string") return apiError(400, input);
-        await updateInvoice(invoice.id, input);
+        if (!(await updateInvoice(invoice.id, input))) return apiError(409, "Paid invoices cannot be edited");
         return Response.json(await loadInvoice(invoice.id));
       }),
       DELETE: api(async (req, ctx) => {
