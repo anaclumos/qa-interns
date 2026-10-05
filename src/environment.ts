@@ -1,5 +1,5 @@
 import { closeSync, existsSync, mkdirSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, statfs } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +40,10 @@ const fullBelow = 16 * mib;
 const diskSuffix = ".img";
 const diskLabel = "qa-interns.disk";
 const helperTimeout = 10 * minute;
+const buildProject = "qa-build";
+const imagePrefix = `${buildProject}-`;
+const keyLength = 12;
+const keepImages = 30 * minute;
 const createDiskScript =
   'if [ -e "$2" ] || mountpoint -q "$1"; then echo "$1 already has an output disk" >&2; exit 1; fi; { truncate -s "$4" "$2.new" && mkfs.ext4 -q -F -m 0 -E root_owner="$3" "$2.new" && mount -o loop "$2.new" /mnt && rmdir /mnt/lost+found && umount /mnt && mv "$2.new" "$2" && mount -o loop,nosuid,nodev "$2" "$1"; } || { rm -f "$2.new"; exit 1; }';
 const saveDiskScript =
@@ -134,10 +138,10 @@ export async function freeSlots(): Promise<number> {
   return openSlots(await usedBlocks()).length;
 }
 
-function slotLocks(): string {
+function runtimeDir(name: string, what: string): string {
   const runtime = process.env.XDG_RUNTIME_DIR;
-  if (runtime === undefined || runtime === "") throw new Error("XDG_RUNTIME_DIR is not set, and QA Interns keeps the locks of its network slots there");
-  const dir = join(runtime, "qa-interns", "slots");
+  if (runtime === undefined || runtime === "") throw new Error(`XDG_RUNTIME_DIR is not set, and QA Interns keeps ${what} there`);
+  const dir = join(runtime, "qa-interns", name);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
 }
@@ -145,7 +149,7 @@ function slotLocks(): string {
 export type HeldSlot = { slot: number; release: () => void };
 
 export async function freeSlot(): Promise<HeldSlot> {
-  const dir = slotLocks();
+  const dir = runtimeDir("slots", "the locks of its network slots");
   for (const slot of openSlots(await usedBlocks())) {
     const fd = flock(join(dir, `${slotAddress(slot, 0)}.lock`), "--exclusive", "--nonblock");
     if (fd === null) continue;
@@ -340,23 +344,108 @@ export function imageBuilders(target: Target): Record<string, string> {
   return sources;
 }
 
-export async function buildImages(runId: string, target: Target, sourceDir: string): Promise<Record<string, string>> {
-  const images = Object.fromEntries(Object.entries(imageBuilders(target)).map(([name, builder]) => [name, `qa-${runId}-${builder.toLowerCase()}:latest`]));
+export type BuiltImages = { images: Record<string, string>; release: () => Promise<void> };
+
+const buildConfigSchema = z.object({
+  services: z.record(z.string(), z.object({ build: z.looseObject({ pull: z.boolean().optional(), no_cache: z.boolean().optional() }).optional(), platform: z.string().optional() })),
+});
+const buildCode = [import.meta.path, fileURLToPath(import.meta.resolve("./target.ts"))];
+
+async function hashTree(hasher: Bun.CryptoHasher, root: string, entry = ""): Promise<void> {
+  const path = join(root, entry);
+  const info = await lstat(path);
+  hasher.update(JSON.stringify([entry, info.mode, info.isFile() ? info.size : 0]));
+  if (info.isFile()) for await (const chunk of Bun.file(path).stream()) hasher.update(chunk);
+  else if (info.isSymbolicLink()) hasher.update(JSON.stringify(await readlink(path)));
+  else if (info.isDirectory()) for (const name of (await readdir(path)).toSorted()) await hashTree(hasher, root, join(entry, name));
+}
+
+async function imageList(): Promise<{ id: string; name: string }[]> {
+  const lines = (await execute(["docker", "image", "ls", "--format", "{{.ID}} {{.Repository}}:{{.Tag}}"])).split("\n").filter((line) => line !== "");
+  return lines.map((line) => ({ id: line.slice(0, line.indexOf(" ")), name: line.slice(line.indexOf(" ") + 1) }));
+}
+
+function imageUses(): string {
+  return runtimeDir("images", "the last use of each shared image");
+}
+
+async function tagShared(pairs: [string, string][]): Promise<boolean> {
+  const names = new Set((await imageList()).map(({ name }) => name));
+  if (pairs.some(([shared]) => !names.has(shared))) return false;
+  for (const [shared, own] of pairs) {
+    const cmd = ["docker", "tag", shared, own];
+    const result = await capture(cmd);
+    if (result.code === 0) continue;
+    if ((await imageList()).some(({ name }) => name === shared)) throw failure(cmd, result.code, result.stderr);
+    return false;
+  }
+  return true;
+}
+
+export async function buildImages(runId: string, target: Target, sourceDir: string): Promise<BuiltImages> {
+  const own = (builder: string) => `qa-${runId}-${builder.toLowerCase()}:latest`;
+  const images = Object.fromEntries(Object.entries(imageBuilders(target)).map(([name, builder]) => [name, own(builder)]));
   const services = Object.entries(target.services).filter(([, service]) => service.build && service.active).map(([name]) => name);
-  if (services.length === 0) return images;
+  if (services.length === 0) return { images, release: async () => {} };
   const dir = await mkdtemp(join(tmpdir(), "qa-interns-tags-"));
   try {
-    const tags = join(dir, "tags.yml");
-    const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(images[name])}`, "    build:", "      tags: !reset []"]);
-    await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
-    await execute(["docker", "compose", "-p", projectName(runId, "build"), ...sourceComposeArgs(target, sourceDir), "-f", tags, "build", ...services], {
-      env: await targetEnv(target.settings.hostEnv, dir),
-      timeout: 30 * minute,
+    const env = await targetEnv(target.settings.hostEnv, dir);
+    const compose = ["docker", "compose", "-p", buildProject, ...sourceComposeArgs(target, sourceDir)];
+    const config = buildConfigSchema.parse(JSON.parse(await execute([...compose, "config", "--format", "json", "--no-env-resolution", ...services], { env })));
+    const builds = services.map((name) => {
+      const service = config.services[name];
+      if (service?.build === undefined) throw new Error(`docker compose config renders no build for service ${name} from the Compose files of ${sourceDir}`);
+      return { name, build: service.build, platform: service.platform ?? null };
     });
+    const hasher = new Bun.CryptoHasher("sha256");
+    for (const file of buildCode) hasher.update(await readFile(file));
+    const hostValues = target.settings.hostEnv.filter((name) => !target.settings.secrets.hostEnv.includes(name)).map((name) => [name, env[name] ?? null]);
+    hasher.update(JSON.stringify([builds, hostValues]).replaceAll(sourceDir, ""));
+    await hashTree(hasher, sourceDir);
+    const key = hasher.digest("hex").slice(0, keyLength);
+    const shared = (name: string) => `${imagePrefix}${key}-${name.toLowerCase()}:latest`;
+    const use = join(imageUses(), key);
+    const release = async () => {
+      await Bun.write(use, "");
+    };
+    await release();
+    const fresh = builds.some(({ build }) => build.pull === true || build.no_cache === true);
+    if (!fresh && (await tagShared(services.map((name) => [shared(name), own(name)])))) return { images, release };
+    const tags = join(dir, "tags.yml");
+    const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(own(name))}`, "    build:", `      tags: !override ${JSON.stringify([shared(name)])}`]);
+    await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
+    await execute([...compose, "-f", tags, "build", ...services], { env, timeout: 30 * minute });
+    return { images, release };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
-  return images;
+}
+
+export async function sweepImages(): Promise<void> {
+  const uses = imageUses();
+  const listed = await imageList();
+  const held = new Set(listed.filter(({ name }) => name.startsWith("qa-") && !name.startsWith(imagePrefix)).map(({ id }) => id));
+  const keys = Map.groupBy(listed.filter(({ name }) => name.startsWith(imagePrefix)), ({ name }) => name.slice(imagePrefix.length, imagePrefix.length + keyLength));
+  const errors: string[] = [];
+  for (const [key, images] of keys) {
+    const use = join(uses, key);
+    const used = await stat(use).then(
+      (info) => info.mtimeMs,
+      (error: unknown) => {
+        if (errorCode(error) === "ENOENT") return null;
+        throw error;
+      },
+    );
+    if (used === null) await Bun.write(use, "");
+    if (used === null || Date.now() - used < keepImages) continue;
+    const names = images.filter(({ id }) => !held.has(id)).map(({ name }) => name);
+    if (names.length === 0) continue;
+    const cmd = ["docker", "image", "rm", ...names];
+    const result = await capture(cmd);
+    if (result.code !== 0 && (await imageList()).some(({ name }) => names.includes(name))) errors.push(failure(cmd, result.code, result.stderr).message);
+    else if (names.length === images.length) await rm(use, { force: true });
+  }
+  if (errors.length > 0) throw new Error(`Removing shared images failed:\n${errors.join("\n")}`);
 }
 
 function composeFiles(spec: EnvironmentSpec): string[] {
