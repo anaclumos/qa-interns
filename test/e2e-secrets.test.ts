@@ -6,7 +6,7 @@ import { ask, runQa } from "../src/run.ts";
 import { redact } from "../src/secrets.ts";
 import { readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
-import { disks, dockerAvailable, endToEnd, intern, leftovers, timeout, workspaces } from "./e2e.ts";
+import { disks, dockerAvailable, endToEnd, leftovers, timeout, workspaces } from "./e2e.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   const { root, target, fakeImage, logins } = endToEnd();
