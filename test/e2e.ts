@@ -1,0 +1,154 @@
+import { afterAll, beforeAll } from "bun:test";
+import { readFileSync } from "node:fs";
+import { cp, mkdir, readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { removeDir, writeChromePolicy } from "../src/environment.ts";
+import type { AskOptions } from "../src/run.ts";
+import { ensureRunnerImage } from "../src/runner.ts";
+import { execute } from "../src/target.ts";
+import type { Provider, RunState } from "../src/types.ts";
+
+export const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
+export const timeout = 20 * 60_000;
+export const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
+export const title = "Home page shows the fake defect";
+export const knownGap = "The environment has no video model.";
+
+type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; late?: true; deaf?: true; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
+
+export function endToEnd() {
+  const id = crypto.randomUUID().slice(0, 8);
+  const root = join(tmpdir(), `qair-f-e2e-${id}`);
+  const fakeImage = `qair-f-e2e-runner:${id}`;
+  const target = join(root, "repo", "eval", "ledger");
+  let previousStateHome: string | undefined;
+  let built = false;
+
+  beforeAll(async () => {
+    previousStateHome = process.env.XDG_STATE_HOME;
+    await mkdir(root);
+    await cp(join(import.meta.dir, "..", "eval", "ledger"), target, { recursive: true, filter: (source) => basename(source) !== "node_modules" });
+    const feature = join(target, ".devcontainer", "probe-feature");
+    await mkdir(feature);
+    await Bun.write(join(feature, "devcontainer-feature.json"), JSON.stringify({ id: "probe-feature", version: "1.0.0", name: "Probe feature" }));
+    await Bun.write(join(feature, "install.sh"), "#!/bin/sh\nset -e\n");
+    const devcontainerFile = join(target, ".devcontainer", "devcontainer.json");
+    const ledger = await Bun.file(devcontainerFile).json();
+    const customizations = { "qa-interns": { ...ledger.customizations["qa-interns"], knownGaps: [knownGap] } };
+    await Bun.write(devcontainerFile, JSON.stringify({ ...ledger, customizations, features: { "./probe-feature": {} } }));
+    const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
+    await execute([...git, "init", "-q"]);
+    await execute([...git, "add", "-A"]);
+    await execute([...git, "commit", "-q", "-m", "Ledger"]);
+
+    const base = await ensureRunnerImage();
+    const context = join(root, "image");
+    await mkdir(context);
+    await cp(join(import.meta.dir, "fake-agent.mjs"), join(context, "fake-agent.mjs"));
+    await Bun.write(
+      join(context, "Dockerfile"),
+      `FROM ${base}
+USER root
+COPY fake-agent.mjs /opt/qa-fake/fake-agent.mjs
+RUN rm /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok /usr/local/bin/opencode \\
+ && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$CLAUDE_SECURESTORAGE_CONFIG_DIR/.credentials.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/claude-agent-acp \\
+ && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$XDG_CONFIG_HOME/cursor/auth.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/cursor-agent \\
+ && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$GROK_AUTH_PATH" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/grok \\
+ && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$XDG_DATA_HOME/opencode/auth.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/opencode \\
+ && chmod 755 /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok /usr/local/bin/opencode
+USER qa
+`,
+    );
+    await execute(["docker", "build", "-q", "-t", fakeImage, context]);
+    built = true;
+    process.env.XDG_STATE_HOME = join(root, "state");
+  }, timeout);
+
+  afterAll(async () => {
+    if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = previousStateHome;
+    try {
+      await removeDir(root, fakeImage, `qair-f-e2e-${id}`);
+    } finally {
+      if (built) await execute(["docker", "image", "rm", "-f", fakeImage]);
+    }
+  }, timeout);
+
+  async function logins(name: string, entries: FakeLogin[]): Promise<string> {
+    const list = [];
+    for (const { id: login, provider, quota, ...credentials } of entries) {
+      const store = join(root, "stores", name, login);
+      await mkdir(store, { recursive: true });
+      await Bun.write(join(store, provider === "claude" ? ".credentials.json" : "auth.json"), JSON.stringify(credentials));
+      list.push({ id: login, provider, store, quota });
+    }
+    const file = join(root, `${name}-logins.json`);
+    await Bun.write(file, JSON.stringify({ logins: list }));
+    return file;
+  }
+
+  async function askOptions(runId: string, name: string): Promise<AskOptions> {
+    const runDir = join(root, "asks", runId);
+    await mkdir(runDir, { recursive: true });
+    await writeChromePolicy(runDir, {});
+    return {
+      runDir,
+      runId,
+      name,
+      loginsFile: await logins(`ask-${runId}`, [{ id: "claude-1", provider: "claude" }]),
+      runnerImage: fakeImage,
+      prompt: "Write /qa/out/groups.json.",
+      file: "groups.json",
+      parse: (raw) => JSON.parse(raw),
+    };
+  }
+
+  return { id, root, fakeImage, target, logins, askOptions };
+}
+
+export async function leftovers(runId: string): Promise<string[]> {
+  const prefixes = [`qa-${runId}-`, `vsc-qa-${runId}-`];
+  const listings = await Promise.all([
+    execute(["docker", "ps", "-a", "--format", "{{.Names}}"]),
+    execute(["docker", "network", "ls", "--format", "{{.Name}}"]),
+    execute(["docker", "volume", "ls", "--format", "{{.Name}}"]),
+    execute(["docker", "images", "--format", "{{.Repository}}:{{.Tag}}"]),
+  ]);
+  return listings
+    .join("\n")
+    .split("\n")
+    .filter((name) => prefixes.some((prefix) => name.startsWith(prefix)));
+}
+
+export async function workspaces(runDir: string, state: RunState): Promise<string[]> {
+  const names = await Promise.all(state.interns.map(async (intern) => (await readdir(join(runDir, "envs", intern.id))).filter((entry) => entry === `qa-${state.runId}-${intern.id}` || entry === "tmp")));
+  return names.flat();
+}
+
+export async function disks(runDir: string, state: RunState): Promise<string[]> {
+  const images = await Promise.all(state.interns.map(async (intern) => (await readdir(join(runDir, "interns", intern.id))).filter((entry) => entry.endsWith(".img") || entry.endsWith(".img.new"))));
+  const mounts = readFileSync("/proc/self/mountinfo", "utf8").split("\n").filter((line) => line.includes(runDir));
+  return [...images.flat(), ...mounts];
+}
+
+export function intern(state: RunState, internId: string) {
+  const found = state.interns.find((entry) => entry.id === internId);
+  if (found === undefined) throw new Error(`state has no intern ${internId}`);
+  return found;
+}
+
+export async function firstPrompt(runDir: string, internId: string): Promise<string> {
+  const lines = (await Bun.file(join(runDir, "interns", internId, "transcript.jsonl")).text()).split("\n").filter((line) => line !== "");
+  const prompt = lines.map((line) => JSON.parse(line)).find((line) => line.from === "client" && line.message.method === "session/prompt");
+  if (prompt === undefined) throw new Error(`transcript of ${internId} has no session/prompt`);
+  return prompt.message.params.prompt.map((block: { text: string }) => block.text).join("\n");
+}
+
+export function internalSubnet(runDir: string, internId: string): string {
+  const network = readFileSync(join(runDir, "envs", internId, "compose.qa.yml"), "utf8")
+    .split("\n")
+    .find((entry) => entry.startsWith("  qa_internal: !override "));
+  if (network === undefined) throw new Error(`compose.qa.yml of ${internId} has no qa_internal network`);
+  return JSON.parse(network.slice("  qa_internal: !override ".length)).ipam.config[0].subnet;
+}
