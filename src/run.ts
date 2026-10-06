@@ -174,13 +174,9 @@ async function acquire(ctx: Context, id: string): Promise<Lease | null> {
     ctx.waiting.add(wake);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const leased = ctx.scheduler.leased();
       const lease = await ctx.scheduler.acquire(id);
       if (lease !== null) return lease;
-      if (!ctx.scheduler.leased()) {
-        if (!leased) return null;
-        continue;
-      }
+      if (!ctx.scheduler.lost(id) && !ctx.scheduler.leased()) return null;
       timer = setTimeout(wake, loginWaitMs);
       await released.promise;
     } finally {
