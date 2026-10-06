@@ -12,10 +12,8 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 
 ## Gates
 
-- `bun run typecheck` and `bun run test` pass before every commit.
-- One exclusive `flock` on `$XDG_RUNTIME_DIR/qa-interns/suite.lock` covers each suite, so the suites of one user on one host run one at a time. `bun run test` runs `test/suite-lock.ts` as a script, which takes the lock and then starts `bun test --parallel=2`. `bunfig.toml` preloads the same file into every `bun test` process: a serial `bun test` takes the lock itself, and a `--parallel` worker fails unless it or a process above it holds the lock, because the workers of one suite are separate processes and a lock that one worker takes blocks the others. A process under a lock holder, such as a `git push` run inside one, takes no second lock.
-- `claude plugin validate .` and `claude plugin validate skills` pass after any change to `.claude-plugin/` or `skills/`.
-- The lefthook `pre-push` hook in `lefthook.yml` runs the install, typecheck, plugin validate, and test commands of the `ci.yml` `test` job, after it checks for a clean tree and a running Docker daemon. `bun install` installs the hook. A change to one of those commands in one file makes the same change in the other. A job that runs git in another repository first runs `unset $(git rev-parse --local-env-vars)`: git exports `GIT_DIR` to hooks, and without the unset the test fixtures commit into this repository and set its `core.bare`.
+- The `ci.yml` `test` job passes on a change's head commit before the change merges. It runs `docker info`, `bun run typecheck`, `claude plugin validate .` and `claude plugin validate skills`, and `bun run test`. A session pushes the branch and reads that job's result instead of running these commands on the development host.
+- One exclusive `flock` on `$XDG_RUNTIME_DIR/qa-interns/suite.lock` covers each suite, so the suites of one user on one host run one at a time. `bun run test` runs `test/suite-lock.ts` as a script, which takes the lock and then starts `bun test --parallel=2`. `bunfig.toml` preloads the same file into every `bun test` process: a serial `bun test` takes the lock itself, and a `--parallel` worker fails unless it or a process above it holds the lock, because the workers of one suite are separate processes and a lock that one worker takes blocks the others. A process under a lock holder takes no second lock.
 
 ## Invariants
 
