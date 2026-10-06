@@ -170,4 +170,48 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     },
     timeout,
   );
+
+  test(
+    "a run whose output disk is busy at an intern's teardown is done when the run's teardown saves the disk",
+    async () => {
+      const lines: string[] = [];
+      let holder: ReturnType<typeof Bun.spawn> | undefined;
+      try {
+        const runDir = await runQa({
+          dir: target,
+          rev: "HEAD",
+          dirty: false,
+          interns: 1,
+          minutes: 0.5,
+          confirmMinutes: 0.5,
+          loginsFile: await logins("busy", [{ id: "grok-busy", provider: "grok" }]),
+          replay: null,
+          runnerImage: async () => fakeImage,
+          print: (line) => {
+            lines.push(line);
+            const [dir] = lines;
+            if (dir === undefined) return;
+            if (line === "i1 testing on grok-busy (grok)") holder = Bun.spawn(["sleep", "infinity"], { cwd: join(dir, "interns", "i1", "out") });
+            if (line.startsWith("i1 done")) holder?.kill();
+          },
+        });
+
+        const state = await readState(runDir);
+        expect(state).toMatchObject({ phase: "done", error: null });
+        expect(intern(state, "i1").detail).toContain(`; teardown failed: docker run --rm --name qa-${state.runId}-i1-disk-`);
+        expect(intern(state, "i1").detail).toEndWith(`umount: ${join(runDir, "interns", "i1", "out")}: target is busy.`);
+        expect(intern(state, "i1").findings).toBe(1);
+        const report = await Bun.file(join(runDir, "findings.json")).json();
+        expect(report.groups).toHaveLength(1);
+        expect(report.groups[0]).toMatchObject({ confirmed: true, reproductions: ["i1", "c1"] });
+        expect(await leftovers(state.runId)).toEqual([]);
+        expect(await workspaces(runDir, state)).toEqual([]);
+        expect(await disks(runDir, state)).toEqual([]);
+      } finally {
+        holder?.kill();
+        await holder?.exited;
+      }
+    },
+    timeout,
+  );
 });
