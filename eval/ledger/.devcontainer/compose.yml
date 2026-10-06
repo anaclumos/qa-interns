@@ -24,7 +24,7 @@ services:
       POSTGRES_PASSWORD: ledger
       POSTGRES_DB: ledger
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ledger -d ledger"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ledger -d ledger"]
       interval: 2s
       timeout: 5s
       retries: 30
