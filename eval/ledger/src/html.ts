@@ -242,7 +242,8 @@ export function invoiceDetailPage(ctx: Ctx, invoice: Invoice & { lines: Line[] }
 </table></div>
 <script>
 const due = document.getElementById("due-date");
-due.textContent = new Date(due.dateTime).toLocaleDateString();
+const date = new Date(due.dateTime);
+due.textContent = date.getFullYear() + "-" + String(date.getMonth() + 1).padStart(2, "0") + "-" + String(date.getDate()).padStart(2, "0");
 </script>
 ${
   canEdit
