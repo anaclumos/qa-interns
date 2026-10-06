@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import { createHash } from "node:crypto";
-import { closeSync, lstatSync, mkdirSync, openSync, realpathSync, statSync, watch, writeFileSync, type Stats } from "node:fs";
+import { closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync, type Stats } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
@@ -312,12 +312,80 @@ function lock(mounted: string, provider: Provider, slots: number): (() => void) 
   });
 }
 
+const startingPrefix = "starting-";
+const reserveFraction = 1 / 8;
+
+function meminfo(field: string): number {
+  const line = readFileSync("/proc/meminfo", "utf8")
+    .split("\n")
+    .find((entry) => entry.startsWith(`${field}:`));
+  const [value, unit] = (line ?? "")
+    .slice(field.length + 1)
+    .split(" ")
+    .filter((part) => part !== "");
+  const kib = Number(value);
+  if (unit !== "kB" || !Number.isSafeInteger(kib)) throw new Error(`/proc/meminfo has no ${field} line in kB, and QA Interns starts an environment only when MemAvailable has room for it`);
+  return kib * 1024;
+}
+
+export function hostMemory(): { total: number; available: number; reserve: number } {
+  const total = meminfo("MemTotal");
+  return { total, available: meminfo("MemAvailable"), reserve: Math.floor(total * reserveFraction) };
+}
+
+export const cpuPressureLimit = 40;
+
+export function cpuPressure(): number {
+  const line = readFileSync("/proc/pressure/cpu", "utf8")
+    .split("\n")
+    .find((entry) => entry.startsWith("some "));
+  const field = line?.split(" ").find((part) => part.startsWith("avg60="));
+  const value = Number(field?.slice("avg60=".length));
+  if (!Number.isFinite(value)) throw new Error(`/proc/pressure/cpu has no "some" avg60 value, and QA Interns starts an environment only while that CPU pressure is at most ${cpuPressureLimit}`);
+  return value;
+}
+
+export function admit(memory: number, pressureLimit = cpuPressureLimit): (() => void) | null {
+  const dir = locksDir();
+  return exclusive(dir, () => {
+    const { total, reserve } = hostMemory();
+    if (memory + reserve > total) {
+      const gib = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+      throw new Error(`An environment of this target can use ${gib(memory)} GiB, which with the reserve of ${gib(reserve)} GiB is more than the ${gib(total)} GiB of memory this host has`);
+    }
+    if (cpuPressure() > pressureLimit) return null;
+    let starting = 0;
+    for (const name of readdirSync(dir).filter((entry) => entry.startsWith(startingPrefix))) {
+      const file = join(dir, name);
+      const fd = flock(file, "--exclusive", "--nonblock");
+      if (fd === null) {
+        const bytes = Number(name.slice(startingPrefix.length).split("-")[0]);
+        if (!Number.isSafeInteger(bytes)) throw new Error(`${file} does not name the memory of a starting environment`);
+        starting += bytes;
+        continue;
+      }
+      rmSync(file, { force: true });
+      closeSync(fd);
+    }
+    if (hostMemory().available - reserve - starting < memory) return null;
+    const file = join(dir, `${startingPrefix}${memory}-${crypto.randomUUID()}`);
+    const fd = take(dir, file, "--exclusive", "--nonblock");
+    let started = false;
+    return () => {
+      if (started) return;
+      started = true;
+      rmSync(file);
+      closeSync(fd);
+    };
+  });
+}
+
 export class Scheduler {
   private readonly slots: Slot[];
   private readonly exhaustedMounts = new Set<string>();
   private readonly live = new Set<Held & { login: Login }>();
   private readonly refused = new Map<string, string[]>();
-  private readonly held = new Set<string>();
+  private readonly contended = new Set<string>();
 
   constructor(logins: Login[]) {
     const known: Held[] = [];
@@ -348,7 +416,7 @@ export class Scheduler {
     const tried = new Set<Slot>();
     const refused: string[] = [];
     this.refused.set(intern, refused);
-    this.held.delete(intern);
+    this.contended.delete(intern);
     while (true) {
       const slot = this.next(tried);
       if (slot === undefined) return null;
@@ -379,8 +447,8 @@ export class Scheduler {
     return this.refused.get(intern) ?? [];
   }
 
-  contended(intern: string): boolean {
-    return this.held.has(intern);
+  lost(intern: string): boolean {
+    return this.contended.has(intern);
   }
 
   private async lease(slot: Slot, intern: string, refused: string[], unclaim: () => void): Promise<Lease | null> {
@@ -417,7 +485,7 @@ export class Scheduler {
   private grant(slot: Slot, intern: string, grant: Grant, slots: number, keeper: Subprocess | null, unclaim: () => void): Lease | null {
     const unlock = lock(grant.mounted, slot.login.provider, slots);
     if (unlock === null) {
-      this.held.add(intern);
+      this.contended.add(intern);
       return null;
     }
     try {
