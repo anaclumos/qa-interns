@@ -14,6 +14,7 @@ export const timeout = 20 * 60_000;
 export const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
 export const title = "Home page shows the fake defect";
 export const knownGap = "The environment has no video model.";
+export const runLocks = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs");
 export const intendedBehavior = "The invoices table scrolls sideways at narrow viewports instead of clipping its columns.";
 
 type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; late?: true; deaf?: true; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
