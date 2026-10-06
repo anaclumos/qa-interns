@@ -105,8 +105,7 @@ function verdict(result: Confirmation) {
 function confirmation(group: Group) {
   const outcome = group.confirmation;
   if (outcome === null) return ["Confirmation: not attempted."];
-  if (outcome.error !== null) return [`Confirmation: ${who(outcome)} failed: ${inline(outcome.error)}`];
-  if (outcome.result === null) return [`Confirmation: ${who(outcome)} recorded no result.`];
+  if (outcome.result === null) return [`Confirmation: ${who(outcome)} failed: ${inline(outcome.error)}`];
   return [
     `Confirmation: ${who(outcome)} ${verdict(outcome.result)}.`,
     "",
@@ -199,8 +198,7 @@ function ticket(state: RunState, browserVersion: string | null, group: Group, in
   lines.push("## Confirmation", "");
   const outcome = group.confirmation;
   if (outcome === null) lines.push("Not attempted.", "");
-  else if (outcome.error !== null) lines.push(`${who(outcome)} failed:`, "", ...block(outcome.error), "");
-  else if (outcome.result === null) lines.push(`${who(outcome)} recorded no result.`, "");
+  else if (outcome.result === null) lines.push(`${who(outcome)} failed:`, "", ...block(outcome.error), "");
   else {
     lines.push(`${who(outcome)} ${verdict(outcome.result)}.`, "", ...block(outcome.result.observed), "");
     lines.push("Confirmation evidence:", "", ...files(outcome.result.evidence), "");
