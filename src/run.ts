@@ -28,6 +28,7 @@ import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation,
 import { hasQuota, loadLogins, Scheduler, watchReleases, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
+import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
@@ -92,7 +93,7 @@ const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
-const writeUpMs = 2 * minute;
+const writeUpMs = 4 * minute;
 const stopWaitMs = 30_000;
 const loginWaitMs = 30_000;
 const noLogin = "no login has spare capacity";
@@ -405,7 +406,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
-    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
+    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
       if (idle) {
         const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
         const quota = await hasQuota(login);
@@ -443,7 +444,7 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     const deadline = Date.now() + minutes * minute;
     let answer: { result: Confirmation | null; error: string | null } = { result: null, error: "no confirmation.json written" };
     let corrected = false;
-    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
+    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
       answer = await check(attempt);
       if (answer.error === null || corrected) return null;
@@ -714,10 +715,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let rejected: Rejected[] = [];
   let groups: Group[] | null = opts.replay?.groups ?? null;
   let egress: string[] = [];
+  let browser: string | null = null;
   let releaseImages = async () => {};
 
   const finish = once(async (error: string | null): Promise<string | null> => {
-    const teardowns = [...ctx.teardowns];
+    const teardowns: string[] = [];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
         await step();
@@ -726,7 +728,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
       }
     }
     const dirs = [join(runDir, "envs"), join(runDir, "interns")];
-    if (teardowns.length > ctx.teardowns.length) {
+    if (teardowns.length > 0) {
+      teardowns.unshift(...ctx.teardowns);
       if (hasSecrets()) teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}`);
     } else {
       try {
@@ -751,8 +754,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const environments = redactJson(ctx.environments);
     const report =
       opts.replay === null
-        ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
-        : { ...renderReplay(redactJson(state), redactJson(opts.replay), traffic, environments), tickets: [] };
+        ? renderReport(redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
+        : { ...renderReplay(redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await writeTickets(runDir, report.tickets);
@@ -764,6 +767,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const source = join(runDir, "source");
     await exportTree(ref, source);
     ctx.runnerImage = await opts.runnerImage();
+    browser = await browserVersion(ctx.runnerImage);
     const target = await loadTarget(ref, source);
     egress = target.settings.egress;
     const slots = await freeSlots();
