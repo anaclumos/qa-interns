@@ -713,7 +713,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let releaseImages = async () => {};
 
   const finish = once(async (error: string | null): Promise<string | null> => {
-    const teardowns = [...ctx.teardowns];
+    const teardowns: string[] = [];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
         await step();
@@ -722,7 +722,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
       }
     }
     const dirs = [join(runDir, "envs"), join(runDir, "interns")];
-    if (teardowns.length > ctx.teardowns.length) {
+    if (teardowns.length > 0) {
+      teardowns.unshift(...ctx.teardowns);
       if (hasSecrets()) teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}`);
     } else {
       try {
