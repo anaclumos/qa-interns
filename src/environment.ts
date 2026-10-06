@@ -44,7 +44,7 @@ const keepImages = 30 * minute;
 const createDiskScript =
   'if [ -e "$2" ] || mountpoint -q "$1"; then echo "$1 already has an output disk" >&2; exit 1; fi; { truncate -s "$4" "$2.new" && mkfs.ext4 -q -F -m 0 -E root_owner="$3" "$2.new" && mount -o loop "$2.new" /mnt && rmdir /mnt/lost+found && umount /mnt && mv "$2.new" "$2" && mount -o loop,nosuid,nodev "$2" "$1"; } || { rm -f "$2.new"; exit 1; }';
 const saveDiskScript =
-  'rm -f "$2.new"; [ -e "$2" ] || exit 0; if mountpoint -q "$1"; then umount "$1"; fi && mount -o loop "$2" /mnt && find "$1" -mindepth 1 -delete && cp -a /mnt/. "$1" && umount /mnt && rm "$2"';
+  'rm -f "$2.new"; [ -e "$2" ] || exit 0; mkdir /under && mount --bind "${1%/*}" /under && { if mountpoint -q "$1"; then src="$1"; else mount -o loop "$2" /mnt && src=/mnt; fi; } && find "/under/${1##*/}" -mindepth 1 -delete && cp -a "$src/." "/under/${1##*/}" && umount "$src" && umount /under && rm "$2"';
 
 const defaultSubnet = "10.213.0.0/16";
 const slotBits = 23;
@@ -717,14 +717,15 @@ async function removeImages(prefixes: string[]): Promise<void> {
   if (images.length > 0) await execute(["docker", "image", "rm", ...images]);
 }
 
-async function removeAsRoot(dir: string, image: string, paths: string[]): Promise<void> {
-  await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
+async function removeAsRoot(dir: string, image: string, owner: string, paths: string[]): Promise<void> {
+  const name = `${owner}-remove-${crypto.randomUUID().slice(0, 8)}`;
+  await execute(["docker", "run", "--rm", "--name", name, "--label", `${diskLabel}=${owner}`, "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
 }
 
 export async function removeCopy(runDir: string, runId: string, name: string, image: string): Promise<void> {
   const dir = join(runDir, "envs", name);
   const paths = [projectName(runId, name), "tmp"].filter((path) => existsSync(join(dir, path)));
-  if (paths.length > 0) await removeAsRoot(dir, image, paths);
+  if (paths.length > 0) await removeAsRoot(dir, image, projectName(runId, name), paths);
 }
 
 export async function stopEnvironment(runDir: string, name: string, project: string, image: string, removed?: () => void): Promise<void> {
@@ -750,7 +751,7 @@ async function settleDiskHelpers(runId: string): Promise<void> {
   if (created.length > 0) await execute(["docker", "rm", "-f", ...created]);
   const deadline = Date.now() + helperTimeout;
   for (let running = await diskHelpers(runId, "running"); running.length > 0; running = await diskHelpers(runId, "running")) {
-    if (Date.now() >= deadline) throw new Error(`The disk helpers ${running.join(", ")} of run ${runId} still run after ${helperTimeout / minute} minutes`);
+    if (Date.now() >= deadline) throw new Error(`The helper containers ${running.join(", ")} of run ${runId} still run after ${helperTimeout / minute} minutes`);
     await Bun.sleep(1000);
   }
 }
@@ -766,7 +767,7 @@ export async function removeCopies(runDir: string, runId: string, image: string)
     const left = [...paths.map((path) => join(envs, path)), ...disks.map((disk) => `the output disk of ${disk.out}`)];
     throw new Error(`${runDir} still holds ${left.join(", ")}, which only a container of the runner image can save or remove, and the runner image ${image} does not exist. Build it with qa-interns doctor, then run qa-interns down again.`);
   }
-  if (paths.length > 0) await removeAsRoot(envs, image, paths);
+  if (paths.length > 0) await removeAsRoot(envs, image, projectName(runId, "envs"), paths);
   const errors: string[] = [];
   for (const { out, owner } of disks) {
     try {

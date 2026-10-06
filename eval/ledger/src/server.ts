@@ -118,7 +118,11 @@ async function loadContext(req: { cookies: CookieMap }): Promise<Ctx | undefined
   if (!user) return undefined;
   let teams = await teamsOf(user.id);
   if (teams.length === 0) {
-    await createTeam(sql, user.id, `${user.display_name}'s team`);
+    await sql.begin(async (tx) => {
+      const [locked] = await tx`select display_name from users where id = ${user.id} for update`;
+      const [member] = await tx`select 1 from memberships where user_id = ${user.id} limit 1`;
+      if (!member) await createTeam(tx, user.id, `${locked.display_name}'s team`);
+    });
     teams = await teamsOf(user.id);
   }
   const team = teams.find((row: any) => row.id === user.current_team_id) ?? teams[0];
