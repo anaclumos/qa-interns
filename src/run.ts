@@ -635,8 +635,8 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
     opts.print(`phase ${next}`);
     await save();
   };
-  const finish = finisher(ctx, async (error: string): Promise<void> => {
-    const problems = [error];
+  const finish = finisher(ctx, async (error: string | null): Promise<void> => {
+    const problems: string[] = [];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
         await step();
@@ -644,7 +644,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         problems.push(`teardown failed: ${message(reason)}`);
       }
     }
-    if (problems.length > 1) {
+    if (problems.length > 0) {
       if (hasSecrets()) problems.push(`secret values stay in the files under ${dirs.join(" and ")}`);
     } else {
       try {
@@ -654,7 +654,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
       }
     }
     state.phase = "failed";
-    state.error = stripControl(problems.join("; "));
+    state.error = stripControl([ctx.stopping ? "interrupted" : null, error, ...problems].filter((entry) => entry !== null).join("; "));
     state.endedAt = now();
     await save();
   });
@@ -698,7 +698,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
       }
       return runDir;
     },
-    () => finish("interrupted"),
+    () => finish(null),
   );
 }
 
@@ -754,7 +754,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
-    const problems = [error ?? (ctx.stopping ? "interrupted" : null), ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+    const problems = [ctx.stopping ? "interrupted" : null, error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
@@ -872,7 +872,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     },
     async () => {
       try {
-        await finish("interrupted");
+        await finish(null);
       } finally {
         const hook = await ended("failed");
         if (hook !== null) process.stderr.write(`${hook}\n`);
