@@ -184,4 +184,35 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     },
     timeout,
   );
+
+  test(
+    "a replay rejects a confirmation whose evidence the runner swaps for a link outside /qa/out before teardown",
+    async () => {
+      const replay = await readReplay(sourceDir, []);
+      const swappedLines: string[] = [];
+      const outside = "evidence path evidence/reproduction.txt resolves outside /qa/out";
+      await expect(
+        runQa({
+          dir: join(replay.target.repo, replay.target.path),
+          rev: next,
+          dirty: false,
+          interns: 0,
+          minutes: 0,
+          confirmMinutes: 0.5,
+          loginsFile: await logins("replay-swap", [{ id: "claude-swap", provider: "claude", swap: true }]),
+          replay,
+          runnerImage: async () => fakeImage,
+          print: (line) => swappedLines.push(line),
+        }),
+      ).rejects.toThrow(`No confirming intern recorded a result: c1 done: reproduced; confirmation failed after teardown: ${outside}`);
+      const swappedDir = swappedLines[0] ?? "";
+      const swapped = await readState(swappedDir);
+      const swappedReport = await Bun.file(join(swappedDir, "findings.json")).json();
+      expect(swappedReport.groups[0]).toMatchObject({ id: "g1", reproduced: null, confirmation: { intern: "c1", result: null, error: outside } });
+      expect(await Bun.file(join(swappedDir, "report.md")).text()).not.toContain("interns/c1/out/evidence/reproduction.txt");
+
+      await clean(swappedDir, swapped);
+    },
+    timeout,
+  );
 });

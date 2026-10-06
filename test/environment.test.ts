@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, stat, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -10,11 +10,13 @@ import {
   createDisk,
   freeSlot,
   freeSlots,
+  holdRun,
   readRelayLogs,
   removeCopies,
   removeDir,
   renderOverride,
   runnerEnv,
+  saveDisk,
   slotSubnets,
   startEnvironment,
   stopEnvironment,
@@ -30,6 +32,7 @@ import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 import type { RelayRecord } from "../src/types.ts";
 import { freeBlock } from "./subnet.ts";
+import { suiteLabel } from "./suite-lock.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -118,6 +121,35 @@ async function normalize(runDir: string, composeFiles: string[], override: strin
   return JSON.parse(proc.stdout.toString());
 }
 
+describe("run locks", () => {
+  test("refuse a run that another process holds, keep the file of a run whose process ended, and delete only a file the holder wrote", async () => {
+    const runId = `qair-t-hold-${crypto.randomUUID().slice(0, 8)}`;
+    const locks = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs");
+    const module = join(import.meta.dir, "..", "src", "environment.ts");
+    const holder = Bun.spawn([process.execPath, "-e", `const { holdRun } = await import(${JSON.stringify(module)}); holdRun(${JSON.stringify(runId)}, "/runs/original"); console.log("held"); await Bun.sleep(600000);`], {
+      env: { ...process.env },
+      stdout: "pipe",
+    });
+    try {
+      await holder.stdout.getReader().read();
+      expect(() => holdRun(runId, "/runs/score")).toThrow(`Another process holds run ${runId}`);
+      holder.kill("SIGKILL");
+      await holder.exited;
+      holdRun(runId, "/runs/score").end();
+      expect(readFileSync(join(locks, runId), "utf8")).toBe("/runs/original");
+      const own = holdRun(`${runId}-own`, "/runs/own");
+      expect(readFileSync(join(locks, `${runId}-own`), "utf8")).toBe("/runs/own");
+      own.end();
+      expect(existsSync(join(locks, `${runId}-own`))).toBe(false);
+      expect((await readdir(locks)).filter((name) => name.includes(runId))).toEqual([runId]);
+    } finally {
+      holder.kill("SIGKILL");
+      await holder.exited;
+      rmSync(join(locks, runId), { force: true });
+    }
+  });
+});
+
 describe.skipIf(!dockerAvailable)("slots", () => {
   test("map a slot to its internal, relay, agent, and egress subnets", () => {
     expect(slotSubnets(0)).toEqual({ internal: "10.213.0.0/25", relay: "10.213.0.128/25", agent: "10.213.1.0/25", egress: "10.213.1.128/25" });
@@ -180,7 +212,7 @@ describe.skipIf(!dockerAvailable)("slots", () => {
 
   async function withNetwork(subnet: string, check: () => Promise<void>): Promise<void> {
     const name = `qa-btest-${crypto.randomUUID().slice(0, 8)}`;
-    const proc = Bun.spawnSync(["docker", "network", "create", "--internal", "--subnet", subnet, name], { stderr: "pipe" });
+    const proc = Bun.spawnSync(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", subnet, name], { stderr: "pipe" });
     if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
     try {
       await check();
@@ -871,6 +903,34 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     },
     20 * 60_000,
   );
+
+  test(
+    "a save of an output disk that a process holds fails and keeps the disk's files readable, and a later save copies them into the folder",
+    async () => {
+      const root = await scratch();
+      const image = await ensureRunnerImage();
+      const out = join(root, "interns", "i1", "out");
+      await mkdir(out, { recursive: true });
+      await createDisk(out, image, "qair-t-busy");
+      await mkdir(join(out, "findings"));
+      await Bun.write(join(out, "findings", "a.json"), "{}\n");
+      const mounted = () => readFileSync("/proc/self/mountinfo", "utf8").includes(` ${out} `);
+      const holder = Bun.spawn(["sleep", "infinity"], { cwd: out });
+      try {
+        await expect(saveDisk(out, image, "qair-t-busy")).rejects.toThrow(`exited with 32: umount: ${out}: target is busy.`);
+        expect(mounted()).toBe(true);
+        expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
+      } finally {
+        holder.kill();
+        await holder.exited;
+      }
+      await saveDisk(out, image, "qair-t-busy");
+      expect(mounted()).toBe(false);
+      expect(await readdir(dirname(out))).toEqual(["out"]);
+      expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
+    },
+    20 * 60_000,
+  );
 });
 
 describe.skipIf(!dockerAvailable)("startEnvironment", () => {
@@ -1286,6 +1346,19 @@ function clientHello(name: Buffer): Buffer {
   return Buffer.concat([Buffer.from([22, 3, 1]), u16(handshake.length), handshake]);
 }
 
+async function labelOverride(runDir: string): Promise<string> {
+  const file = join(runDir, "compose.label.yml");
+  const labels = [suiteLabel];
+  await Bun.write(
+    file,
+    JSON.stringify({
+      services: { app: { labels }, upstream: { labels }, "qa-relay": { labels } },
+      networks: { qa_internal: { labels }, qa_relay: { labels }, qa_egress: { labels } },
+    }),
+  );
+  return file;
+}
+
 describe.skipIf(!dockerAvailable)("qa-relay", () => {
   test(
     "carry HTTPS from a target service to its egress hosts and to no other host, and record each connection's outcome through teardown",
@@ -1322,7 +1395,7 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         JSON.stringify({ services: { upstream: { image, command: ["node", "-e", server], volumes: [`${certs}:/certs:ro`], networks: { qa_egress: { aliases: ["api.example.test", "blocked.example.test"] } } } } }),
       );
       const project = `qair-relay-${crypto.randomUUID().slice(0, 8)}`;
-      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream, "-f", await labelOverride(runDir)];
       const saved = join(runDir, "interns", "i1");
       try {
         await execute([...compose, "up", "-d", "--wait", "app", "upstream", "qa-relay"]);
@@ -1395,7 +1468,7 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         JSON.stringify({ services: { upstream: { image, command: ["node", "-e", server], volumes: [`${certs}:/certs:ro`], networks: { qa_egress: { aliases: ["limited.example.test", "rate.example.test"] } } } } }),
       );
       const project = `qair-relay-${crypto.randomUUID().slice(0, 8)}`;
-      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream, "-f", await labelOverride(runDir)];
       const saved = join(runDir, "interns", "i1");
       const probe = `
 const tls = require("node:tls");

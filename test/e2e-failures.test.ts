@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { basename } from "node:path";
+import { existsSync, rmSync } from "node:fs";
+import { basename, join } from "node:path";
 import { stopRun } from "../src/environment.ts";
 import { runQa } from "../src/run.ts";
 import { readState } from "../src/state.ts";
 import { capture } from "../src/target.ts";
-import { disks, dockerAvailable, endToEnd, intern, leftovers, timeout, workspaces } from "./e2e.ts";
+import { disks, dockerAvailable, endToEnd, intern, leftovers, runLocks, timeout, workspaces } from "./e2e.ts";
+import { suiteLabel } from "./suite-lock.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   const { target, fakeImage, logins } = endToEnd();
@@ -94,8 +96,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           const [dir] = lines;
           if (dir === undefined || line !== "i1 starting on claude-limit (claude)") return;
           held = `qair-f-e2e-held-${basename(dir)}`;
-          Bun.spawnSync(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${basename(dir)}-i1`, held], { stdout: "ignore" });
-          Bun.spawnSync(["docker", "run", "-d", "--rm", "--name", held, "--network", held, fakeImage], { stdout: "ignore" });
+          Bun.spawnSync(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${basename(dir)}-i1`, "--label", suiteLabel, held], { stdout: "ignore" });
+          Bun.spawnSync(["docker", "run", "-d", "--rm", "--label", suiteLabel, "--name", held, "--network", held, fakeImage], { stdout: "ignore" });
         },
       });
 
@@ -115,6 +117,52 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(intern(state, "i1")).toMatchObject({ login: "claude-limit", status: "failed" });
       expect(intern(state, "i1").detail).toStartWith(`${failure}; teardown failed: docker compose down left objects of qa-${state.runId}-i1 behind`);
       expect(await leftovers(state.runId)).toEqual([]);
+      expect(existsSync(join(runLocks, state.runId))).toBe(true);
+      rmSync(join(runLocks, state.runId));
+    },
+    timeout,
+  );
+
+  test(
+    "a run whose output disk is busy at an intern's teardown is done when the run's teardown saves the disk",
+    async () => {
+      const lines: string[] = [];
+      let holder: ReturnType<typeof Bun.spawn> | undefined;
+      try {
+        const runDir = await runQa({
+          dir: target,
+          rev: "HEAD",
+          dirty: false,
+          interns: 1,
+          minutes: 0.5,
+          confirmMinutes: 0.5,
+          loginsFile: await logins("busy", [{ id: "grok-busy", provider: "grok" }]),
+          replay: null,
+          runnerImage: async () => fakeImage,
+          print: (line) => {
+            lines.push(line);
+            const [dir] = lines;
+            if (dir === undefined) return;
+            if (line === "i1 testing on grok-busy (grok)") holder = Bun.spawn(["sleep", "infinity"], { cwd: join(dir, "interns", "i1", "out") });
+            if (line.startsWith("i1 done")) holder?.kill();
+          },
+        });
+
+        const state = await readState(runDir);
+        expect(state).toMatchObject({ phase: "done", error: null });
+        expect(intern(state, "i1").detail).toContain(`; teardown failed: docker run --rm --name qa-${state.runId}-i1-disk-`);
+        expect(intern(state, "i1").detail).toEndWith(`umount: ${join(runDir, "interns", "i1", "out")}: target is busy.`);
+        expect(intern(state, "i1").findings).toBe(1);
+        const report = await Bun.file(join(runDir, "findings.json")).json();
+        expect(report.groups).toHaveLength(1);
+        expect(report.groups[0]).toMatchObject({ confirmed: true, reproductions: ["i1", "c1"] });
+        expect(await leftovers(state.runId)).toEqual([]);
+        expect(await workspaces(runDir, state)).toEqual([]);
+        expect(await disks(runDir, state)).toEqual([]);
+      } finally {
+        holder?.kill();
+        await holder?.exited;
+      }
     },
     timeout,
   );

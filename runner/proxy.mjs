@@ -27,7 +27,7 @@ server.on("connect", (req, socket, head) => {
     return;
   }
   console.log(`allow ${req.url}`);
-  upstream = connect(443, host, () => {
+  upstream = connect(443, `${host}.`, () => {
     socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
     upstream.write(head);
     upstream.pipe(socket);

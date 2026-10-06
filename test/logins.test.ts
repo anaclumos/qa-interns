@@ -839,6 +839,24 @@ describe("Scheduler", () => {
     expect(lent.leased()).toBe(false);
   });
 
+  test("an acquire that finds every slot of a login locked by a lease counts as lost until that intern acquires again", async () => {
+    const codex = login("codex-1", "codex", 1);
+    const other = await holder([codex], 1);
+    expect(other.count).toBe(1);
+    const scheduler = new Scheduler([codex]);
+    expect(await scheduler.acquire("l1")).toBeNull();
+    expect(scheduler.lost("l1")).toBe(true);
+    expect(scheduler.lost("l2")).toBe(false);
+    const exhausted = new Scheduler([codex]);
+    exhausted.exhaust({ login: codex, store: codexStore, mounted: codexStore, release: () => {} });
+    expect(await exhausted.acquire("l3")).toBeNull();
+    expect(exhausted.lost("l3")).toBe(false);
+    other.child.kill("SIGKILL");
+    await other.child.exited;
+    held(await scheduler.acquire("l1")).release();
+    expect(scheduler.lost("l1")).toBe(false);
+  });
+
   test("another process's lease blocks a lease whose mounted path contains or sits inside its own until that process ends", async () => {
     const outer = join(dir, "nested", "outer");
     const inner = join(outer, "inner");
