@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { createDisk, devcontainer, freeSlot, memoryPeak, removeDir, saveDisk, slotSubnets } from "./environment.ts";
 import { message, oneLine } from "./findings.ts";
-import { loadLogins, Scheduler } from "./logins.ts";
+import { cpuPressure, cpuPressureLimit, hostMemory, loadLogins, Scheduler } from "./logins.ts";
 import { ensureRunnerImage } from "./runner.ts";
 import { runsDir } from "./state.ts";
 import { composeVersion, execute } from "./target.ts";
@@ -154,5 +154,11 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
     const scheduler = new Scheduler(logins);
     return `${loginsFile}: ${logins.length} ${logins.length === 1 ? "login" : "logins"}, providers ${scheduler.providers().join(", ")}, capacity ${scheduler.capacity()}`;
   });
+  await check("memory", async () => {
+    const { total, available, reserve } = hostMemory();
+    const gib = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+    return `${gib(available)} GiB of ${gib(total)} GiB available, reserve ${gib(reserve)} GiB`;
+  });
+  await check("cpu pressure", async () => `some avg60 ${cpuPressure().toFixed(2)}, limit ${cpuPressureLimit}`);
   return passed;
 }
