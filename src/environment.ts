@@ -1,4 +1,4 @@
-import { closeSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -796,6 +796,12 @@ export async function stopRun(runDir: string, runId: string): Promise<void> {
 
 export type HeldRun = { end: () => void };
 
+function locksEntry(fd: number, entry: string): boolean {
+  const current = statSync(entry, { throwIfNoEntry: false });
+  const locked = fstatSync(fd);
+  return current !== undefined && current.dev === locked.dev && current.ino === locked.ino;
+}
+
 export function holdRun(runId: string, runDir: string): HeldRun {
   const dir = runtimeDir("runs", "the locks of its runs");
   const entry = join(dir, runId);
@@ -812,6 +818,10 @@ export function holdRun(runId: string, runDir: string): HeldRun {
     if (errorCode(error) !== "EEXIST") throw error;
     const existing = flock(entry, "--exclusive", "--nonblock");
     if (existing === null) throw new Error(`Another process holds run ${runId}`);
+    if (!locksEntry(existing, entry)) {
+      closeSync(existing);
+      throw new Error(`Another process replaced the file of run ${runId} while this process locked it`);
+    }
     fd = existing;
     created = readFileSync(entry, "utf8") === "";
     if (created) writeSync(fd, runDir);
@@ -838,6 +848,7 @@ export async function sweepRuns(image: string): Promise<string[]> {
       const fd = flock(entry, "--exclusive", "--nonblock");
       if (fd === null) return [];
       try {
+        if (!locksEntry(fd, entry)) return [];
         const runDir = readFileSync(entry, "utf8");
         if (runDir !== "") {
           await stopRun(runDir, runId);
