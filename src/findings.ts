@@ -172,7 +172,12 @@ async function evidence(runDir: string, out: string, list: string[]) {
       problems.push(`evidence path ${entry} is not a file`);
       continue;
     }
-    resolved.push(path.join(out, path.relative(realOut, real)));
+    const within = path.relative(realOut, real);
+    if ([...within].some(control)) {
+      problems.push(`evidence path ${entry} resolves to a path with a control character`);
+      continue;
+    }
+    resolved.push(path.join(out, within));
   }
   if (problems.length > 0) throw new Invalid(problems.join("; "));
   return resolved;
@@ -219,7 +224,7 @@ export async function readFindings(
           steps: data.steps,
           observed: data.observed,
           contradicts,
-          evidence: (await evidence(runDir, out, data.evidence)).map(stripControl),
+          evidence: await evidence(runDir, out, data.evidence),
           environment,
         });
       } catch (err) {
@@ -250,7 +255,7 @@ export function parseGroups(raw: string, ids: string[]): string[][] {
 export async function readConfirmation(runDir: string, intern: string, attempt: number): Promise<Confirmation> {
   const out = outDir(intern, attempt);
   const data = parse(confirmationSchema, await readAgentFile(path.join(runDir, out, "confirmation.json")));
-  return { steps: data.steps, task: data.task, observed: data.observed, evidence: (await evidence(runDir, out, data.evidence)).map(stripControl) };
+  return { steps: data.steps, task: data.task, observed: data.observed, evidence: await evidence(runDir, out, data.evidence) };
 }
 
 const linkFailures = new Map([
