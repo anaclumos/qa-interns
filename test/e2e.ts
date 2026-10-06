@@ -1,7 +1,7 @@
 import { afterAll, beforeAll } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { removeDir, writeChromePolicy } from "../src/environment.ts";
 import type { AskOptions } from "../src/run.ts";
@@ -14,13 +14,16 @@ export const timeout = 20 * 60_000;
 export const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
 export const title = "Home page shows the fake defect";
 export const knownGap = "The environment has no video model.";
+export const runLocks = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs");
+export const intendedBehavior = "The invoices table scrolls sideways at narrow viewports instead of clipping its columns.";
 
 type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; late?: true; deaf?: true; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
 
 export function endToEnd() {
   const id = crypto.randomUUID().slice(0, 8);
   const root = join(tmpdir(), `qair-f-e2e-${id}`);
-  const fakeImage = `qair-f-e2e-runner:${id}`;
+  const fakeRepo = `qair-f-e2e-runner-${userInfo().uid}`;
+  const fakeImage = `${fakeRepo}:${process.pid}-${id}`;
   const target = join(root, "repo", "eval", "ledger");
   let previousStateHome: string | undefined;
   let built = false;
@@ -35,7 +38,7 @@ export function endToEnd() {
     await Bun.write(join(feature, "install.sh"), "#!/bin/sh\nset -e\n");
     const devcontainerFile = join(target, ".devcontainer", "devcontainer.json");
     const ledger = await Bun.file(devcontainerFile).json();
-    const customizations = { "qa-interns": { ...ledger.customizations["qa-interns"], knownGaps: [knownGap] } };
+    const customizations = { "qa-interns": { ...ledger.customizations["qa-interns"], knownGaps: [knownGap], intendedBehaviors: [intendedBehavior] } };
     await Bun.write(devcontainerFile, JSON.stringify({ ...ledger, customizations, features: { "./probe-feature": {} } }));
     const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
     await execute([...git, "init", "-q"]);
@@ -73,6 +76,14 @@ USER qa
     } finally {
       if (built) await execute(["docker", "image", "rm", "-f", fakeImage]);
     }
+    const earlier = (await execute(["docker", "image", "ls", "--filter", `reference=${fakeRepo}`, "--format", "{{.Repository}}:{{.Tag}}"])).split("\n").filter((image) => image !== "");
+    const unused = [];
+    for (const image of earlier) {
+      const owner = Number(image.slice(image.indexOf(":") + 1).split("-")[0]);
+      if (Number.isSafeInteger(owner) && existsSync(join("/proc", String(owner)))) continue;
+      if ((await execute(["docker", "ps", "-aq", "--filter", `ancestor=${image}`])) === "") unused.push(image);
+    }
+    if (unused.length > 0) await execute(["docker", "image", "rm", "-f", ...unused]);
   }, timeout);
 
   async function logins(name: string, entries: FakeLogin[]): Promise<string> {

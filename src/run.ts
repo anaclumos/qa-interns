@@ -7,6 +7,7 @@ import {
   containerStats,
   freeSlot,
   freeSlots,
+  holdRun,
   networkRange,
   readRelayLogs,
   removeCopies,
@@ -18,6 +19,7 @@ import {
   stopProject,
   stopRun,
   sweepImages,
+  sweepRuns,
   watchOut,
   writeChromePolicy,
   type Environment,
@@ -28,11 +30,12 @@ import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation,
 import { hasQuota, loadLogins, Scheduler, watchReleases, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
+import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeAtomic, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
-import type { Confirmation, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Login, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
+import type { Answer, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Login, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
   dir: string;
@@ -92,7 +95,7 @@ const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
-const writeUpMs = 2 * minute;
+const writeUpMs = 4 * minute;
 const stopWaitMs = 30_000;
 const loginWaitMs = 30_000;
 const noLogin = "no login has spare capacity";
@@ -177,7 +180,7 @@ async function acquire(ctx: Context, id: string): Promise<Lease | null> {
       const leased = ctx.scheduler.leased();
       const lease = await ctx.scheduler.acquire(id);
       if (lease !== null) return lease;
-      if (!ctx.scheduler.leased()) {
+      if (!ctx.scheduler.lost(id) && !ctx.scheduler.leased()) {
         if (!leased) return null;
         continue;
       }
@@ -405,7 +408,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     attempts.push({ attempt, environment });
     const start = Date.now();
     const deadline = start + minutes * minute;
-    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
+    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
       if (idle) {
         const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
         const quota = await hasQuota(login);
@@ -428,7 +431,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
 
 async function reproduce(ctx: Context, intern: InternState, group: Group, target: Target, minutes: number, free: () => void): Promise<void> {
   const finding = lead(group);
-  const check = async (attempt: number): Promise<{ result: Confirmation | null; error: string | null }> => {
+  const check = async (attempt: number): Promise<Answer> => {
     try {
       return { result: await readConfirmation(ctx.runDir, intern.id, attempt), error: null };
     } catch (error) {
@@ -441,9 +444,9 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     const out = outDir(intern.id, attempt);
     const file = join(ctx.runDir, out, "confirmation.json");
     const deadline = Date.now() + minutes * minute;
-    let answer: { result: Confirmation | null; error: string | null } = { result: null, error: "no confirmation.json written" };
+    let answer: Answer = { result: null, error: "no confirmation.json written" };
     let corrected = false;
-    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
+    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
       answer = await check(attempt);
       if (answer.error === null || corrected) return null;
@@ -546,12 +549,14 @@ export async function ask(opts: AskOptions): Promise<unknown> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
   const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, async () => {});
   const project = `qa-${opts.runId}-${opts.name}`;
+  const held = holdRun(opts.runId, opts.runDir);
   const finish = once(async (): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     try {
       await stopProject(project, join(opts.runDir, "interns", opts.name));
       await removeCopy(opts.runDir, opts.runId, opts.name, opts.runnerImage);
       await saveDisks(opts.runDir, opts.name, project, opts.runnerImage);
+      held.end();
     } catch (reason) {
       teardowns.push(message(reason));
     }
@@ -586,6 +591,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
 async function newRun(ref: TargetRef, options: RunState["options"], print: (line: string) => void) {
   const runId = newRunId();
   const runDir = runDirFor(runId);
+  const held = holdRun(runId, runDir);
   await mkdir(runsDir(), { recursive: true });
   await mkdir(runDir);
   const state: RunState = {
@@ -608,12 +614,12 @@ async function newRun(ref: TargetRef, options: RunState["options"], print: (line
   await save();
   print(runDir);
   print(`phase ${state.phase}`);
-  return { runId, runDir, state, save };
+  return { runId, runDir, state, save, held };
 }
 
 export async function startCopy(opts: CopyOptions): Promise<string> {
   const ref = await resolveTarget(opts.dir, opts.rev, false);
-  const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0, confirmConcurrency: 0 }, opts.print);
+  const { runId, runDir, state, save, held } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0, confirmConcurrency: 0 }, opts.print);
   const ctx = context(runId, runDir, "", new Scheduler([]), async () => {});
   const dirs = [join(runDir, "envs"), join(runDir, "interns")];
   const phase = async (next: RunPhase) => {
@@ -634,6 +640,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
     if (problems.length > 1) {
       if (hasSecrets()) problems.push(`secret values stay in the files under ${dirs.join(" and ")}`);
     } else {
+      held.end();
       try {
         await redactFiles(dirs);
       } catch (reason) {
@@ -651,6 +658,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
       let slot: HeldSlot | undefined;
       try {
         ctx.runnerImage = await opts.runnerImage();
+        for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
         const source = join(runDir, "source");
         await exportTree(ref, source);
         const target = await loadTarget(ref, source);
@@ -672,6 +680,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         const envDir = join(runDir, "envs", copyName);
         await redactFiles([join(runDir, "envs")], new Set([env.project, "tmp", "files"].map((entry) => join(envDir, entry))));
         await phase("up");
+        held.end();
         opts.print(`project ${env.project}`);
         opts.print(`runner ${env.runner}`);
         opts.print(`dev container ${env.devContainer}`);
@@ -693,7 +702,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
   const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
   const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0, confirmConcurrency: 0 };
-  const { runId, runDir, state, save } = await newRun(ref, options, opts.print);
+  const { runId, runDir, state, save, held } = await newRun(ref, options, opts.print);
 
   const ctx = context(runId, runDir, "", scheduler, async (id, patch) => {
     const intern = state.interns.find((entry) => entry.id === id);
@@ -714,6 +723,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let rejected: Rejected[] = [];
   let groups: Group[] | null = opts.replay?.groups ?? null;
   let egress: string[] = [];
+  let browser: string | null = null;
   let releaseImages = async () => {};
 
   const finish = once(async (error: string | null): Promise<string | null> => {
@@ -730,6 +740,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
       teardowns.unshift(...ctx.teardowns);
       if (hasSecrets()) teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}`);
     } else {
+      held.end();
       try {
         await redactFiles(dirs);
       } catch (reason) {
@@ -752,8 +763,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const environments = redactJson(ctx.environments);
     const report =
       opts.replay === null
-        ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
-        : { ...renderReplay(redactJson(state), redactJson(opts.replay), traffic, environments), tickets: [] };
+        ? renderReport(redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
+        : { ...renderReplay(redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     writeAtomic(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await writeTickets(runDir, report.tickets);
@@ -765,6 +776,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const source = join(runDir, "source");
     await exportTree(ref, source);
     ctx.runnerImage = await opts.runnerImage();
+    for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
+    browser = await browserVersion(ctx.runnerImage);
     const target = await loadTarget(ref, source);
     egress = target.settings.egress;
     const slots = await freeSlots();
