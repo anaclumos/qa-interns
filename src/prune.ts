@@ -88,16 +88,19 @@ async function replaySource(dir: string): Promise<string | null> {
   return existsSync(file) ? ((await readJson(file, storedRunSchema)).run.replay?.runId ?? null) : null;
 }
 
-type Candidate = { dir: string; runId: string; target: { repo: string; commit: string } | null; source: string | null };
+type Candidate = { dir: string; runId: string; target: { repo: string; commit: string } | null };
+
+async function runDirs(root: string): Promise<string[]> {
+  return existsSync(root)
+    ? (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => join(root, entry.name))
+    : [];
+}
 
 export async function prune(print: (line: string) => void): Promise<void> {
   const root = runsDir();
-  const dirs = existsSync(root)
-    ? (await readdir(root, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => join(root, entry.name))
-    : [];
+  const dirs = await runDirs(root);
   const host = await hostObjects();
   const kept = { active: 0, dirty: 0, leftovers: 0, unshipped: 0, replayed: 0 };
-  const sources = new Set<string>();
   const candidates: Candidate[] = [];
   for (const dir of dirs) {
     const file = join(dir, "state.json");
@@ -107,35 +110,40 @@ export async function prune(print: (line: string) => void): Promise<void> {
       continue;
     }
     const runId = state?.runId ?? basename(dir);
-    const source = await replaySource(dir);
     const changed = state === null ? (await stat(dir)).mtimeMs : Date.parse(state.updatedAt);
     if (Date.now() - changed < settleMs) kept.active++;
     else if (state?.target.dirty === true) kept.dirty++;
     else if (await leftBehind(host, dir, runId)) kept.leftovers++;
-    else {
-      candidates.push({ dir, runId, target: state?.target ?? null, source });
-      continue;
-    }
-    if (source !== null) sources.add(source);
+    else candidates.push({ dir, runId, target: state?.target ?? null });
   }
   const shipped = await shippedCommits(new Map(candidates.flatMap(({ target }) => (target === null ? [] : [[target.commit, target.repo] as const]))));
   const unshipped = candidates.filter(({ target }) => target !== null && !shipped.has(target.commit));
-  for (const { source } of unshipped) if (source !== null) sources.add(source);
   kept.unshipped = unshipped.length;
+  const locks = new Map<Candidate, number>();
   let removed = 0;
-  for (const { dir, runId } of candidates.filter((candidate) => !unshipped.includes(candidate))) {
-    const lock = sources.has(runId) ? null : flock(replayLock(dir), "--exclusive", "--nonblock");
-    if (lock === null) {
-      kept.replayed++;
-      continue;
+  try {
+    for (const candidate of candidates.filter((candidate) => !unshipped.includes(candidate))) {
+      const lock = flock(replayLock(candidate.dir), "--exclusive", "--nonblock");
+      if (lock === null) kept.replayed++;
+      else locks.set(candidate, lock);
     }
-    try {
+    const held = new Set([...locks.keys()].map(({ dir }) => dir));
+    const sources = new Set<string>();
+    for (const dir of await runDirs(root)) {
+      const source = held.has(dir) ? null : await replaySource(dir);
+      if (source !== null) sources.add(source);
+    }
+    for (const { dir, runId } of locks.keys()) {
+      if (sources.has(runId)) {
+        kept.replayed++;
+        continue;
+      }
       await removeRun(dir);
-    } finally {
-      closeSync(lock);
+      removed++;
+      print(`Removed run ${runId}.`);
     }
-    removed++;
-    print(`Removed run ${runId}.`);
+  } finally {
+    for (const lock of locks.values()) closeSync(lock);
   }
   print(
     `Removed ${removed} of ${dirs.length} run directories. Kept ${kept.active} running or changed within 24 hours, ${kept.dirty} run with --dirty, ${kept.leftovers} with teardown leftovers that qa-interns down removes, ${kept.unshipped} whose job has not shipped, and ${kept.replayed} whose findings a kept run replays.`,

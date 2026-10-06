@@ -235,7 +235,7 @@ Nothing else deletes a run directory, so run `qa-interns prune` on a schedule, s
 - The run used `--dirty`. No commit holds the uncommitted changes it tested, so no pull request shows whether they shipped.
 - The run's teardown left a container, network, volume, or image of the run, a disk helper, a mounted output disk or a disk image, or a workspace copy. `qa-interns down` removes these, and it needs the run directory to do so.
 - The run's job has not shipped.
-- A run that `prune` keeps, or a replay that still runs, replays the run's findings. The replay's report cites the evidence in the run's directory, and `qa-interns replay` takes the run, never its replay. A replay holds a shared lock on the run's `replay.lock` from before it reads the run until it ends, and `prune` deletes a run only while it holds that lock exclusively.
+- A run that `prune` keeps, or a replay that still runs, replays the run's findings. The replay's report cites the evidence in the run's directory, and `qa-interns replay` takes the run, never its replay. A replay holds a shared lock on the run's `replay.lock` from before it reads the run until it ends, and `prune` deletes a run only while it holds that lock exclusively. `prune` takes the locks of every run it can delete before it reads which runs the other run directories replay, so a replay that ends while `prune` runs keeps its run too.
 
 A run directory without `state.json`, such as one whose run failed to start on a full disk, has no job. `prune` deletes it once the directory has not changed for 24 hours and its teardown left nothing. `prune` reads and deletes only directories in `runs/`. It leaves a file or a symbolic link there, and what the link points to.
 

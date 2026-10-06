@@ -14,6 +14,9 @@ const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", st
 const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
 
 const fakeGh = `
+import { existsSync, renameSync } from "node:fs";
+const finish = process.env.FAKE_GH_FINISH;
+if (finish !== undefined && existsSync(finish + ".next")) renameSync(finish + ".next", finish);
 const pulls = JSON.parse(await Bun.file(process.env.FAKE_GH_PULLS).text());
 const [command, kind, ...rest] = process.argv.slice(2);
 if (command !== "api" || kind !== "graphql") throw new Error("unexpected gh " + process.argv.slice(2).join(" "));
@@ -79,9 +82,9 @@ async function saveRun(runId: string, target: { repo: string; commit: string; di
   return dir;
 }
 
-async function replays(runId: string, source: string, commit: string): Promise<void> {
+async function replays(runId: string, source: string, commit: string, file = "findings.json"): Promise<void> {
   const run = { runId, replay: { runId: source, commit, dirty: false }, phase: "done", reproducedGroups: 1, notReproducedGroups: 0, uncheckedGroups: 0 };
-  await Bun.write(join(runDirFor(runId), "findings.json"), JSON.stringify({ run, groups: [], interns: [], egress: [], environments: [] }));
+  await Bun.write(join(runDirFor(runId), file), JSON.stringify({ run, groups: [], interns: [], egress: [], environments: [] }));
 }
 
 describe.skipIf(!dockerAvailable)("prune", () => {
@@ -146,6 +149,9 @@ describe.skipIf(!dockerAvailable)("prune", () => {
     await replays("a0000003", "a0000011", reopened);
     const replayed = await saveRun("a0000014", { repo: gone, commit: squashed });
     kept.push(replayed);
+    const finishing = await saveRun("a0000016", { repo: gone, commit: squashed }, { pid: process.pid, pidStart: processStart(process.pid), phase: "confirming", endedAt: null });
+    kept.push(finishing, await saveRun("a0000017", { repo: gone, commit: squashed }));
+    await replays("a0000016", "a0000017", squashed, "findings.json.next");
     const outside = join(home, "outside");
     await mkdir(outside);
     await Bun.write(join(outside, "notes.txt"), "kept\n");
@@ -154,7 +160,12 @@ describe.skipIf(!dockerAvailable)("prune", () => {
     await symlink(outside, linked);
     kept.push(linked);
 
-    const env = { ...process.env, PATH: `${join(home, "bin")}:${process.env.PATH}`, FAKE_GH_PULLS: join(home, "pulls.json") };
+    const env = {
+      ...process.env,
+      PATH: `${join(home, "bin")}:${process.env.PATH}`,
+      FAKE_GH_PULLS: join(home, "pulls.json"),
+      FAKE_GH_FINISH: join(finishing, "findings.json"),
+    };
     const lock = flock(replayLock(replayed), "--shared");
     if (lock === null) throw new Error(`flock on ${replayLock(replayed)} returned no lock`);
     const pruned = await capture(["bun", cliScript, "prune"], { env }).finally(() => closeSync(lock));
@@ -166,7 +177,7 @@ describe.skipIf(!dockerAvailable)("prune", () => {
     expect(await readdir(outside)).toEqual(["notes.txt"]);
     expect(lines.slice(0, -1).sort()).toEqual(shipped.map((dir) => `Removed run ${dir.slice(-8)}.`));
     expect(lines.at(-1)).toBe(
-      "Removed 3 of 14 run directories. Kept 3 running or changed within 24 hours, 1 run with --dirty, 1 with teardown leftovers that qa-interns down removes, 4 whose job has not shipped, and 2 whose findings a kept run replays.",
+      "Removed 3 of 16 run directories. Kept 4 running or changed within 24 hours, 1 run with --dirty, 1 with teardown leftovers that qa-interns down removes, 4 whose job has not shipped, and 3 whose findings a kept run replays.",
     );
   });
 });
