@@ -7,7 +7,7 @@ import { runQa } from "../src/run.ts";
 import { newRunId, readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
 import type { EnvironmentStats } from "../src/types.ts";
-import { disks, dockerAvailable, endToEnd, firstPrompt, intern, knownGap, leftovers, runLocks, timeout, title, workspaces } from "./e2e.ts";
+import { disks, dockerAvailable, endToEnd, firstPrompt, intendedBehavior, intern, knownGap, leftovers, runLocks, timeout, title, workspaces } from "./e2e.ts";
 import { freeBlock } from "./subnet.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
@@ -61,6 +61,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(charterPrompt).toContain(`  - ${knownGap}`);
       expect(confirmationPrompt).toContain("/qa/out/confirmation.json");
       expect(confirmationPrompt).not.toContain(knownGap);
+      expect(charterPrompt).toContain(`  - ${intendedBehavior}`);
+      expect(confirmationPrompt).toContain(`  - ${intendedBehavior}`);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.egress).toEqual([]);
@@ -104,6 +106,9 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Not confirmed"));
       expect(confirmed).toContain(`### ${title}`);
       expect(confirmed).toContain("- Reproductions: 3 (i1, i2, c1)");
+      expect(report.run.browser).toMatch(/^Google Chrome for Testing \d+\./);
+      expect(markdown.split("\n")).toContain(`- Browser: ${report.run.browser}`);
+      expect(confirmed).toContain(`  - Browser version: ${report.run.browser}`);
       const usage = markdown.slice(markdown.indexOf("## Environments"));
       expect(usage).toContain("### judge, attempt 1\n\n- Started: ");
       const web = usage.split("\n").filter((line) => line.startsWith("| web-1 | running | "));
