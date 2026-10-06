@@ -472,6 +472,7 @@ describe("Scheduler", () => {
     const scheduler = new Scheduler([cursor]);
     expect(scheduler.leased()).toBe(true);
     expect(await scheduler.acquire("q6")).toBeNull();
+    expect(scheduler.contended("q6")).toBe(false);
     expect(scheduler.leased()).toBe(false);
   });
 
@@ -766,10 +767,12 @@ describe("Scheduler", () => {
     expect(other.count).toBe(1);
     const scheduler = new Scheduler([codex]);
     expect(await scheduler.acquire("p1")).toBeNull();
+    expect(scheduler.contended("p1")).toBe(true);
     other.child.kill("SIGKILL");
     await other.child.exited;
     const lease = held(await scheduler.acquire("p2"));
     expect(lease.store).toBe(codexStore);
+    expect(scheduler.contended("p2")).toBe(false);
     lease.release();
 
     const claude = login("claude-1", "claude", 2);

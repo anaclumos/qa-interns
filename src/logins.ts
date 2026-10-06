@@ -317,6 +317,7 @@ export class Scheduler {
   private readonly exhaustedMounts = new Set<string>();
   private readonly live = new Set<Held & { login: Login }>();
   private readonly refused = new Map<string, string[]>();
+  private readonly held = new Set<string>();
 
   constructor(logins: Login[]) {
     const known: Held[] = [];
@@ -347,6 +348,7 @@ export class Scheduler {
     const tried = new Set<Slot>();
     const refused: string[] = [];
     this.refused.set(intern, refused);
+    this.held.delete(intern);
     while (true) {
       const slot = this.next(tried);
       if (slot === undefined) return null;
@@ -377,13 +379,17 @@ export class Scheduler {
     return this.refused.get(intern) ?? [];
   }
 
+  contended(intern: string): boolean {
+    return this.held.has(intern);
+  }
+
   private async lease(slot: Slot, intern: string, refused: string[], unclaim: () => void): Promise<Lease | null> {
     const { login } = slot;
     if (!(await hasQuota(login))) {
       slot.exhausted = true;
       return null;
     }
-    if (slot.store !== null) return this.grant(slot, slot.store, login.concurrency, null, unclaim);
+    if (slot.store !== null) return this.grant(slot, intern, slot.store, login.concurrency, null, unclaim);
     if (login.seat === null) throw new Error(`Login ${login.id} has neither a store nor a seat command`);
     const keeper = Bun.spawn(["tail", `--pid=${process.pid}`, "-f", "/dev/null"], { stdin: "ignore", stdout: "ignore", stderr: "inherit" });
     const refuse = (problems: string[]) => refused.push(...problems.map((problem) => `seat store of login ${login.id}: ${problem}`));
@@ -399,7 +405,7 @@ export class Scheduler {
         refuse(problems);
         if (problems.length === 0) {
           const mounted = mountedPath(login.provider, path);
-          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, { store: found.store, mounted, where: `login ${login.id}` }, login.concurrency, keeper, unclaim);
+          if (!this.exhaustedMounts.has(mounted)) lease = this.grant(slot, intern, { store: found.store, mounted, where: `login ${login.id}` }, login.concurrency, keeper, unclaim);
         }
       }
     } finally {
@@ -408,9 +414,12 @@ export class Scheduler {
     return lease;
   }
 
-  private grant(slot: Slot, grant: Grant, slots: number, keeper: Subprocess | null, unclaim: () => void): Lease | null {
+  private grant(slot: Slot, intern: string, grant: Grant, slots: number, keeper: Subprocess | null, unclaim: () => void): Lease | null {
     const unlock = lock(grant.mounted, slot.login.provider, slots);
-    if (unlock === null) return null;
+    if (unlock === null) {
+      this.held.add(intern);
+      return null;
+    }
     try {
       const source = mountSource(slot.login.provider, grant.store);
       const resolved = realpathSync(source);
