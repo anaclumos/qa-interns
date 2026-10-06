@@ -322,12 +322,20 @@ function setPriceSteps() {
   const step = digits[form.currency.value] ? "0.01" : "1";
   for (const input of form.querySelectorAll("input[name=unitPrice]")) input.step = step;
 }
+function setRemoveDisabled() {
+  const disabled = lines.rows.length === 1;
+  for (const button of lines.querySelectorAll(".remove-line")) button.disabled = disabled;
+}
 document.getElementById("add-line").addEventListener("click", () => {
   lines.append(document.getElementById("line-template").content.cloneNode(true));
   setPriceSteps();
+  setRemoveDisabled();
 });
 lines.addEventListener("click", (event) => {
-  if (event.target.classList.contains("remove-line") && lines.rows.length > 1) event.target.closest("tr").remove();
+  if (event.target.classList.contains("remove-line") && lines.rows.length > 1) {
+    event.target.closest("tr").remove();
+    setRemoveDisabled();
+  }
 });
 form.currency.addEventListener("change", setPriceSteps);
 form.addEventListener("submit", async (event) => {
@@ -364,6 +372,7 @@ form.addEventListener("submit", async (event) => {
   }
 });
 setPriceSteps();
+setRemoveDisabled();
 </script>`,
   );
 }
