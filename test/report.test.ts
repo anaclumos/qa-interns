@@ -478,7 +478,7 @@ describe("writeTickets", () => {
     const files = ["interns/i1/out/evidence/shot (1) [a]#b%20 <c>.png", "interns/i1/out/evidence/trace.har", "interns/c1/out/evidence/repeat.webp"];
     for (const file of files) await Bun.write(join(runDir, file), file);
     const lead = { ...overlap.findings[0]!, evidence: files.slice(0, 2) };
-    const confirmation = { ...overlap.confirmation!, result: { ...overlap.confirmation!.result!, evidence: files.slice(2) } };
+    const confirmation = { ...overlap.confirmation!, result: { ...overlap.confirmation!.result!, evidence: files.slice(2) }, error: null };
     const { tickets } = renderReport(runDir, state, browser, [{ ...overlap, findings: [lead, overlap.findings[1]!], confirmation }], [], none, []);
     await writeTickets(runDir, tickets);
     const dir = join(runDir, "tickets", "g1");
