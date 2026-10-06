@@ -41,10 +41,10 @@ function held(): boolean {
 }
 
 function take(): number {
-  const free = flock(file, "--exclusive", "--nonblock");
+  const free = flock(file, "exclusive", "nonblock");
   if (free !== null) return free;
   console.error(`Waiting for the test suite that holds ${file} to end`);
-  const fd = flock(file, "--exclusive");
+  const fd = flock(file, "exclusive", "block");
   if (fd === null) throw new Error(`flock on ${file} reported the lock as held after it waited for it`);
   return fd;
 }

@@ -148,7 +148,7 @@ export type HeldSlot = { slot: number; release: () => void };
 export async function freeSlot(): Promise<HeldSlot> {
   const dir = runtimeDir("slots", "the locks of its network slots");
   for (const slot of openSlots(await usedBlocks())) {
-    const fd = flock(join(dir, `${slotAddress(slot, 0)}.lock`), "--exclusive", "--nonblock");
+    const fd = flock(join(dir, `${slotAddress(slot, 0)}.lock`), "exclusive", "nonblock");
     if (fd === null) continue;
     let free = false;
     try {
