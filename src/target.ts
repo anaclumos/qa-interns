@@ -168,6 +168,7 @@ const settingsSchema = z
     focus: z.array(z.string().min(1)).default([]),
     offLimits: z.array(z.string().min(1)).default([]),
     knownGaps: z.array(z.string().min(1)).default([]),
+    intendedBehaviors: z.array(z.string().min(1)).default([]),
     hostEnv: z.array(z.string().min(1)).default([]),
     secrets: z
       .strictObject({ hostEnv: z.array(z.string().min(1)).default([]), seed: z.array(z.string().min(1)).default([]) })
