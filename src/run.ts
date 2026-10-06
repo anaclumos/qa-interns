@@ -473,13 +473,14 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
   });
-  const answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };
-  let confirmation = { intern: intern.id, provider: intern.provider, ...answer };
+  const answer: Answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };
+  let confirmation: NonNullable<Group["confirmation"]> = { intern: intern.id, provider: intern.provider, ...answer };
   for (const entry of attempts.toReversed()) {
-    if (confirmation.result !== null) break;
-    const earlier = await check(entry.attempt);
-    if (earlier.result !== null) confirmation = { intern: intern.id, provider: entry.provider, ...earlier };
+    const saved = await check(entry.attempt);
+    if (saved.result !== null || confirmation.error === null) confirmation = { intern: intern.id, provider: entry.provider, ...saved };
+    if (saved.result !== null) break;
   }
+  if (answer.error === null && confirmation.result === null) await ctx.update(intern.id, { detail: stripControl(`${intern.detail}; confirmation failed after teardown: ${confirmation.error}`) });
   group.confirmation = confirmation;
 }
 
@@ -778,8 +779,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const environments = redactJson(ctx.environments);
     const report =
       opts.replay === null
-        ? renderReport(redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
-        : { ...renderReplay(redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
+        ? renderReport(runDir, redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
+        : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     writeAtomic(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await writeTickets(runDir, report.tickets);
