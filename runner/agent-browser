@@ -1,0 +1,48 @@
+#!/bin/sh
+set -eu
+real=/usr/local/lib/node_modules/agent-browser/bin/agent-browser-linux-x64
+limit=4
+session=${AGENT_BROWSER_SESSION-default}
+command=
+named=false
+for arg in "$@"; do
+  if [ "$named" = true ]; then
+    session=$arg
+    named=false
+    continue
+  fi
+  case $arg in
+    --session) named=true ;;
+    --help | -h | --version | -V) exec "$real" "$@" ;;
+    -*) ;;
+    *) [ -n "$command" ] || command=$arg ;;
+  esac
+done
+case $command in
+  "" | close | quit | exit | session | skills) exec "$real" "$@" ;;
+esac
+sessions() {
+  "$real" session list --json | node -e 'console.log(JSON.parse(require("node:fs").readFileSync(0, "utf8")).data.sessions.sort().join(" "))'
+}
+open=$(sessions)
+case " $open " in
+  *" $session "*) exec "$real" "$@" ;;
+esac
+exec 9> /tmp/agent-browser-sessions.lock
+flock 9
+tries=0
+while :; do
+  open=$(sessions)
+  case " $open " in
+    *" $session "*) exec "$real" "$@" 9>&- ;;
+  esac
+  count=$(printf '%s\n' "$open" | wc -w)
+  [ "$count" -ge "$limit" ] || break
+  if [ "$tries" -ge 30 ]; then
+    echo "agent-browser runs at most $limit sessions at once in this environment, and $count are open: $open. Close a session you no longer need with \`agent-browser --session <name> close\`, then run this command again." >&2
+    exit 1
+  fi
+  tries=$((tries + 1))
+  sleep 0.1
+done
+"$real" "$@" 9>&-

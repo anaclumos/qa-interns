@@ -5,7 +5,7 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 ## Layout
 
 - `src/`: the orchestrator CLI (`src/cli.ts`), Bun and TypeScript.
-- `runner/`: the runner image, the runner's egress proxy, and the target's relay. The image tag is derived from these files and the host uid and gid, so any edit rebuilds it on the next run.
+- `runner/`: the runner image, the runner's egress proxy, the target's relay, and the `agent-browser` wrapper that limits the runner to four browser sessions. The image tag is derived from these files and the host uid and gid, so any edit rebuilds it on the next run.
 - `skills/qa-interns/` and `.claude-plugin/`: the Claude Code plugin. It has one skill and no hooks.
 - `eval/ledger/`: the evaluation target. `eval/defects.json` is the only place its planted defects are described; the application code carries no hint of them.
 - `test/`: `bun run test`. Tests that need Docker skip when `docker info` fails. The end-to-end tests are split across `test/e2e-*.test.ts` files that share the fixture in `test/e2e.ts`, so `bun test --parallel` runs them in separate worker processes; a file holds no state that another file reads. `test/subnet.ts` locks each `/22` block it hands out for the life of the process, so files that run at once never share a block.

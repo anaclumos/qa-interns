@@ -54,7 +54,8 @@ RUN userdel --remove node \
  && mkdir -p /qa/out \
  && chown qa:qa /qa/out
 
-COPY proxy.mjs relay.mjs /opt/qa-interns/
+COPY proxy.mjs relay.mjs agent-browser /opt/qa-interns/
+RUN ln -sf /opt/qa-interns/agent-browser /usr/local/bin/agent-browser
 
 ENV AGENT_BROWSER_DOWNLOAD_PATH=/qa/out/downloads \
     AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/chrome \
