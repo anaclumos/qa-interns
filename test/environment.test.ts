@@ -594,7 +594,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       services: { web: { build: true, image: null, tags: [], memLimit: null, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, replicas: 1, active: false } },
     };
     expect(environmentMemory(profiled)).toBe(environmentMemory(null));
-    expect((await buildImages("3f9a1c2e", profiled, ledgerSource)).images).toEqual({});
+    expect((await buildImages("3f9a1c2e", profiled, ledgerSource, join(await scratch(), "build.log"))).images).toEqual({});
   });
 
   test("tag a built image only with the run's name and one shared name, whatever build tags the target sets", async () => {
@@ -620,7 +620,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       tags: ["${scope}extra:latest"]
 `,
     );
-    const { images } = await buildImages(runId, await loadTarget(ref, source), source);
+    const { images } = await buildImages(runId, await loadTarget(ref, source), source, join(await scratch(), "build.log"));
     const shared = await sharedTags(Object.values(images));
     const listed = (await execute(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])).split("\n");
     const created = listed.filter((image) => [`qa-${runId}-`, scope].some((prefix) => image.startsWith(prefix)));
@@ -667,7 +667,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
 `,
     );
     const target = await loadTarget(ref, source);
-    const { images } = await buildImages(runId, target, source);
+    const { images } = await buildImages(runId, target, source, join(await scratch(), "build.log"));
     const run = `qa-${runId}-web:latest`;
     const shared = await sharedTags([run]);
     const listed = (await execute(["docker", "image", "ls", "--format", "{{.Repository}}:{{.Tag}}"])).split("\n");
@@ -708,7 +708,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     image: ${scope}app
 `,
     );
-    const failure = await buildImages(runId, await loadTarget(ref, source), source).then(
+    const failure = await buildImages(runId, await loadTarget(ref, source), source, join(await scratch(), "build.log")).then(
       () => null,
       (error: unknown) => error,
     );
@@ -717,6 +717,55 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     if (created.length > 0) await execute(["docker", "image", "rm", ...created]);
     expect(String(failure)).toContain(`Services api and web both build the image ${scope}app that service worker runs`);
     expect(created).toEqual([]);
+  });
+
+  test("write the whole output of a failed build, with its secret values replaced, to the log that the error names", async () => {
+    const source = await scratch();
+    const runId = crypto.randomUUID().slice(0, 8);
+    const key = `sk_build_${runId}`;
+    await Bun.write(join(source, "Dockerfile"), 'FROM busybox:1.37\nARG BUILD_KEY\nRUN echo "first line $BUILD_KEY" && seq 1 500 && exit 3\n');
+    await Bun.write(
+      join(source, ".devcontainer", "devcontainer.json"),
+      JSON.stringify({
+        dockerComposeFile: "compose.yml",
+        service: "web",
+        customizations: {
+          "qa-interns": {
+            urls: { app: "http://web:3000" },
+            ready: "http://web:3000/health",
+            seed: "node seed.mjs",
+            hostEnv: ["QA_INTERNS_TEST_BUILD_KEY"],
+            secrets: { hostEnv: ["QA_INTERNS_TEST_BUILD_KEY"] },
+          },
+        },
+      }),
+    );
+    await Bun.write(
+      join(source, ".devcontainer", "compose.yml"),
+      `services:
+  web:
+    build:
+      context: ..
+      args:
+        BUILD_KEY: \${QA_INTERNS_TEST_BUILD_KEY}
+`,
+    );
+    const log = join(await scratch(), "build.log");
+    process.env.QA_INTERNS_TEST_BUILD_KEY = key;
+    try {
+      const failure = await buildImages(runId, await loadTarget(ref, source), source, log).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(String(failure)).toEndWith(` (log: ${log})`);
+      const written = await Bun.file(log).text();
+      expect(written).toContain("first line [redacted]");
+      expect(written).toContain(" 500\n");
+      expect(written).not.toContain(key);
+    } finally {
+      delete process.env.QA_INTERNS_TEST_BUILD_KEY;
+      forgetSecrets();
+    }
   });
 
   test("give a later run the image an earlier run built from an export with the same files and build settings, and build again when a file, a build argument, or a hostEnv value differs", async () => {
@@ -740,7 +789,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     );
     const own: string[] = [];
     const build = async (dir: string) => {
-      const { images } = await buildImages(crypto.randomUUID().slice(0, 8), await loadTarget(ref, dir), dir);
+      const { images } = await buildImages(crypto.randomUUID().slice(0, 8), await loadTarget(ref, dir), dir, join(await scratch(), "build.log"));
       own.push(images.web ?? "");
       return images.web ?? "";
     };
@@ -788,7 +837,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       }),
     );
     await Bun.write(join(source, ".devcontainer", "compose.yml"), "services:\n  web:\n    build: ..\n  api:\n    build:\n      context: ..\n      dockerfile: api.Dockerfile\n");
-    const { images, release } = await buildImages(runId, await loadTarget(ref, source), source);
+    const { images, release } = await buildImages(runId, await loadTarget(ref, source), source, join(await scratch(), "build.log"));
     const own = [images.web ?? "", images.api ?? ""];
     const [web = "", api = ""] = await Promise.all(own.map(async (name) => (await sharedTags([name]))[0] ?? ""));
     const use = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "images", web.slice("qa-build-".length).split("-")[0] ?? "");
@@ -965,7 +1014,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       process.env.QA_INTERNS_TEST_UNLISTED = "unlisted";
       try {
         const target = await loadTarget(ref, source);
-        const { images } = await buildImages(runId, target, source);
+        const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
         const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner }));
@@ -1049,7 +1098,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       let shared: string[] = [];
       try {
         const target = await loadTarget(ref, source);
-        const { images } = await buildImages(runId, target, source);
+        const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
         shared = await sharedTags(Object.values(images));
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = (name: string, urls: Record<string, string>) => ({ image, out: join(runDir, "interns", name, "out"), env: runnerEnv(urls), mounts: [], files: [], tmpfs: [] });
@@ -1222,7 +1271,7 @@ ${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", 
       const flood = 'yes "$(head -c 8000 /dev/zero | tr "\\0" x)" | head -c 67108864 > /proc/1/fd/1';
       try {
         const target = await loadTarget(ref, source);
-        const { images } = await buildImages(runId, target, source);
+        const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
         const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner }));
@@ -1284,7 +1333,7 @@ ${sleeper}    profiles: ["mail"]
       try {
         const target = await loadTarget(ref, source);
         expect(Object.keys(target.services).filter((name) => target.services[name]?.active).sort()).toEqual(expected);
-        const { images } = await buildImages(runId, target, source);
+        const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
         await writeChromePolicy(runDir, target.settings.urls);
         const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], files: [], tmpfs: [] };
         const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner }));

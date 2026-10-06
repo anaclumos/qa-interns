@@ -712,7 +712,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
         await phase("building");
-        const { images } = await buildImages(runId, target, source);
+        const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
         await phase("starting");
         slot = await freeSlot();
         const env = await startEnvironment({
@@ -842,7 +842,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await save();
 
     await phase("building");
-    const built = await buildImages(runId, target, source);
+    const built = await buildImages(runId, target, source, join(runDir, "build.log"));
     releaseImages = built.release;
     ctx.images = built.images;
 
