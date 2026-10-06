@@ -14,6 +14,7 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 
 - The `ci.yml` `test` job passes on a change's head commit before the change merges. It runs `docker info`, `bun run typecheck`, `claude plugin validate .` and `claude plugin validate skills`, and `bun run test`. A session pushes the branch and reads that job's result instead of running these commands on the development host.
 - One exclusive `flock` on `$XDG_RUNTIME_DIR/qa-interns/suite.lock` covers each suite, so the suites of one user on one host run one at a time. `bun run test` runs `test/suite-lock.ts` as a script, which takes the lock and then starts `bun test --parallel=2`. `bunfig.toml` preloads the same file into every `bun test` process: a serial `bun test` takes the lock itself, and a `--parallel` worker fails unless it or a process above it holds the lock, because the workers of one suite are separate processes and a lock that one worker takes blocks the others. A process under a lock holder takes no second lock.
+- Each network that a test creates itself, and each container that a test starts on one, carries the `suiteLabel` that `test/suite-lock.ts` exports. The process that takes the suite lock removes every container and network with that label, which earlier suites left, before it runs a test.
 
 ## Invariants
 
