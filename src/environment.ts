@@ -1,10 +1,10 @@
-import { closeSync, existsSync, mkdirSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, statfs } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { errorCode } from "./findings.ts";
+import { errorCode, message } from "./findings.ts";
 import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
@@ -26,6 +26,9 @@ export type Environment = { project: string; runner: string; out: string; devCon
 export const devcontainer = fileURLToPath(import.meta.resolve("@devcontainers/cli/devcontainer.js"));
 const gib = 1024 ** 3;
 const mib = 1024 ** 2;
+const runnerMemory = 4 * gib;
+const sidecarMemory = 128 * mib;
+const serviceMemory = gib;
 const minute = 60_000;
 const readyTimeout = 5 * minute;
 const waitTimeoutSeconds = "600";
@@ -44,7 +47,7 @@ const keepImages = 30 * minute;
 const createDiskScript =
   'if [ -e "$2" ] || mountpoint -q "$1"; then echo "$1 already has an output disk" >&2; exit 1; fi; { truncate -s "$4" "$2.new" && mkfs.ext4 -q -F -m 0 -E root_owner="$3" "$2.new" && mount -o loop "$2.new" /mnt && rmdir /mnt/lost+found && umount /mnt && mv "$2.new" "$2" && mount -o loop,nosuid,nodev "$2" "$1"; } || { rm -f "$2.new"; exit 1; }';
 const saveDiskScript =
-  'rm -f "$2.new"; [ -e "$2" ] || exit 0; if mountpoint -q "$1"; then umount "$1"; fi && mount -o loop "$2" /mnt && find "$1" -mindepth 1 -delete && cp -a /mnt/. "$1" && umount /mnt && rm "$2"';
+  'rm -f "$2.new"; [ -e "$2" ] || exit 0; mkdir /under && mount --bind "${1%/*}" /under && { if mountpoint -q "$1"; then src="$1"; else mount -o loop "$2" /mnt && src=/mnt; fi; } && find "/under/${1##*/}" -mindepth 1 -delete && cp -a "$src/." "/under/${1##*/}" && umount "$src" && umount /under && rm "$2"';
 
 const defaultSubnet = "10.213.0.0/16";
 const slotBits = 23;
@@ -198,7 +201,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
         );
       }
     }
-    const memory = service.memLimit === null ? "1g" : null;
+    const memory = service.memLimit === null ? String(serviceMemory) : null;
     const cpus = service.hasCpus ? null : 2;
     const pids = service.hasPidsLimit ? null : 1024;
     if (service.deployLimits) {
@@ -234,7 +237,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
       `    environment: ${y({ QA_PROXY_ALLOW: spec.egress.join(",") })}`,
       `    networks: ${y(["qa_agent", "qa_egress"])}`,
       ...hardening,
-      `    mem_limit: ${y("128m")}`,
+      `    mem_limit: ${y(String(sidecarMemory))}`,
       "    cpus: 0.5",
       "    pids_limit: 128",
     );
@@ -253,7 +256,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...hardening,
     "    pids_limit: 4096",
     `    ulimits: ${y({ fsize: outLimit })}`,
-    `    mem_limit: ${y("4g")}`,
+    `    mem_limit: ${y(String(runnerMemory))}`,
     "    cpus: 2",
     `    networks: ${y(["qa_internal", ...(proxied ? ["qa_agent"] : [])])}`,
   );
@@ -267,7 +270,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
       `    networks: ${y({ qa_relay: { ipv4_address: relayAddress }, qa_egress: null })}`,
       `    healthcheck: ${y({ test: ["CMD", "node", "-e", relayProbe], start_period: "30s", start_interval: "500ms" })}`,
       ...hardening,
-      `    mem_limit: ${y("128m")}`,
+      `    mem_limit: ${y(String(sidecarMemory))}`,
       "    cpus: 0.5",
       "    pids_limit: 128",
     );
@@ -280,6 +283,12 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...(proxied || relayHosts.length > 0 ? [`  qa_egress: !override ${y({ ipam: { config: [{ subnet: egress }] } })}`] : []),
   );
   return `${lines.join("\n")}\n`;
+}
+
+export function environmentMemory(target: Target | null): number {
+  const services = Object.values(target?.services ?? {}).filter((service) => service.active);
+  const relay = (target?.settings.egress.length ?? 0) > 0 ? sidecarMemory : 0;
+  return services.reduce((sum, service) => sum + (service.memLimit ?? serviceMemory) * service.replicas, runnerMemory + sidecarMemory + relay);
 }
 
 function urlHosts(urls: Record<string, string>): string[] {
@@ -378,7 +387,7 @@ async function tagShared(pairs: [string, string][]): Promise<boolean> {
   return true;
 }
 
-export async function buildImages(runId: string, target: Target, sourceDir: string): Promise<BuiltImages> {
+export async function buildImages(runId: string, target: Target, sourceDir: string, log: string): Promise<BuiltImages> {
   const own = (builder: string) => `qa-${runId}-${builder.toLowerCase()}:latest`;
   const images = Object.fromEntries(Object.entries(imageBuilders(target)).map(([name, builder]) => [name, own(builder)]));
   const services = Object.entries(target.services).filter(([, service]) => service.build && service.active).map(([name]) => name);
@@ -410,7 +419,15 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
     const tags = join(dir, "tags.yml");
     const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(own(name))}`, "    build:", `      tags: !override ${JSON.stringify([shared(name)])}`]);
     await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
-    await execute([...compose, "-f", tags, "build", ...services], { env, timeout: 30 * minute });
+    const cmd = [...compose, "-f", tags, "build", ...services];
+    const result = await capture(cmd, { env, timeout: 30 * minute }).catch(async (error: unknown) => {
+      if (!(error instanceof CommandTimeout)) throw error;
+      await Bun.write(log, redact(`${error.stdout}\n${error.stderr}`));
+      throw new Error(`${error.message} (log: ${log})`);
+    });
+    const output = `${result.stdout}\n${result.stderr}`;
+    await Bun.write(log, redact(output));
+    if (result.code !== 0) throw new Error(`${failure(cmd, result.code, output).message} (log: ${log})`);
     return { images, release };
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -704,9 +721,9 @@ async function saveRelayLogs(project: string, dir: string): Promise<void> {
   for (const id of ids) await Bun.write(join(dir, `${relayPrefix}${id}${relaySuffix}`), await execute(["docker", "logs", id]));
 }
 
-async function down(project: string, relayDir: string): Promise<void> {
+async function down(project: string, relayDir: string | null): Promise<void> {
   await execute(["docker", "compose", "-p", project, "stop", "--timeout", "2"]);
-  await saveRelayLogs(project, relayDir);
+  if (relayDir !== null) await saveRelayLogs(project, relayDir);
   await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
   const ids = await projectObjects(project);
   if (ids.length > 0) throw new Error(`docker compose down left objects of ${project} behind: ${ids.join(", ")}`);
@@ -722,14 +739,15 @@ async function removeImages(prefixes: string[]): Promise<void> {
   if (images.length > 0) await execute(["docker", "image", "rm", ...images]);
 }
 
-async function removeAsRoot(dir: string, image: string, paths: string[]): Promise<void> {
-  await execute(["docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
+async function removeAsRoot(dir: string, image: string, owner: string, paths: string[]): Promise<void> {
+  const name = `${owner}-remove-${crypto.randomUUID().slice(0, 8)}`;
+  await execute(["docker", "run", "--rm", "--name", name, "--label", `${diskLabel}=${owner}`, "--network", "none", "--user", "0:0", "-v", `${dir}:/env`, image, "rm", "-rf", ...paths.map((path) => `/env/${path}`)]);
 }
 
 export async function removeCopy(runDir: string, runId: string, name: string, image: string): Promise<void> {
   const dir = join(runDir, "envs", name);
   const paths = [projectName(runId, name), "tmp"].filter((path) => existsSync(join(dir, path)));
-  if (paths.length > 0) await removeAsRoot(dir, image, paths);
+  if (paths.length > 0) await removeAsRoot(dir, image, projectName(runId, name), paths);
 }
 
 export async function stopEnvironment(runDir: string, name: string, project: string, image: string, removed?: () => void): Promise<void> {
@@ -755,7 +773,7 @@ async function settleDiskHelpers(runId: string): Promise<void> {
   if (created.length > 0) await execute(["docker", "rm", "-f", ...created]);
   const deadline = Date.now() + helperTimeout;
   for (let running = await diskHelpers(runId, "running"); running.length > 0; running = await diskHelpers(runId, "running")) {
-    if (Date.now() >= deadline) throw new Error(`The disk helpers ${running.join(", ")} of run ${runId} still run after ${helperTimeout / minute} minutes`);
+    if (Date.now() >= deadline) throw new Error(`The helper containers ${running.join(", ")} of run ${runId} still run after ${helperTimeout / minute} minutes`);
     await Bun.sleep(1000);
   }
 }
@@ -771,7 +789,7 @@ export async function removeCopies(runDir: string, runId: string, image: string)
     const left = [...paths.map((path) => join(envs, path)), ...disks.map((disk) => `the output disk of ${disk.out}`)];
     throw new Error(`${runDir} still holds ${left.join(", ")}, which only a container of the runner image can save or remove, and the runner image ${image} does not exist. Build it with qa-interns doctor, then run qa-interns down again.`);
   }
-  if (paths.length > 0) await removeAsRoot(envs, image, paths);
+  if (paths.length > 0) await removeAsRoot(envs, image, projectName(runId, "envs"), paths);
   const errors: string[] = [];
   for (const { out, owner } of disks) {
     try {
@@ -792,8 +810,81 @@ export async function stopRun(runDir: string, runId: string): Promise<void> {
     execute(["docker", "volume", "ls", ...listing]),
   ]);
   const projects = [...new Set(found.join("\n").split("\n"))].filter((project) => project.startsWith(prefix));
-  const results = await Promise.allSettled(projects.map((project) => down(project, join(runDir, "interns", project.slice(prefix.length)))));
+  const kept = existsSync(runDir);
+  const results = await Promise.allSettled(projects.map((project) => down(project, kept ? join(runDir, "interns", project.slice(prefix.length)) : null)));
   const errors = results.flatMap((result) => (result.status === "rejected" ? [String(result.reason)] : []));
   if (errors.length > 0) throw new Error(`Teardown of run ${runId} failed:\n${errors.join("\n")}`);
   await removeImages([prefix, `vsc-${prefix}`]);
+}
+
+export type HeldRun = { end: () => void };
+
+function locksEntry(fd: number, entry: string): boolean {
+  const current = statSync(entry, { throwIfNoEntry: false });
+  const locked = fstatSync(fd);
+  return current !== undefined && current.dev === locked.dev && current.ino === locked.ino;
+}
+
+export function holdRun(runId: string, runDir: string): HeldRun {
+  const dir = runtimeDir("runs", "the locks of its runs");
+  const entry = join(dir, runId);
+  const pending = join(dir, `.${runId}.${process.pid}`);
+  const fresh = flock(pending, "--exclusive", "--nonblock");
+  if (fresh === null) throw new Error(`Another process holds ${pending}`);
+  let fd = fresh;
+  let created = true;
+  try {
+    writeSync(fresh, runDir);
+    linkSync(pending, entry);
+  } catch (error) {
+    closeSync(fresh);
+    if (errorCode(error) !== "EEXIST") throw error;
+    const existing = flock(entry, "--exclusive", "--nonblock");
+    if (existing === null) throw new Error(`Another process holds run ${runId}`);
+    if (!locksEntry(existing, entry)) {
+      closeSync(existing);
+      throw new Error(`Another process replaced the file of run ${runId} while this process locked it`);
+    }
+    fd = existing;
+    created = readFileSync(entry, "utf8") === "";
+    if (created) writeSync(fd, runDir);
+  } finally {
+    rmSync(pending, { force: true });
+  }
+  let held = true;
+  return {
+    end: () => {
+      if (!held) return;
+      held = false;
+      if (created) rmSync(entry, { force: true });
+      closeSync(fd);
+    },
+  };
+}
+
+export async function sweepRuns(image: string): Promise<string[]> {
+  const dir = runtimeDir("runs", "the locks of its runs");
+  const runIds = readdirSync(dir).filter((name) => !name.startsWith("."));
+  const errors = await Promise.all(
+    runIds.map(async (runId) => {
+      const entry = join(dir, runId);
+      const fd = flock(entry, "--exclusive", "--nonblock");
+      if (fd === null) return [];
+      try {
+        if (!locksEntry(fd, entry)) return [];
+        const runDir = readFileSync(entry, "utf8");
+        if (runDir !== "") {
+          await stopRun(runDir, runId);
+          await removeCopies(runDir, runId, image);
+        }
+        rmSync(entry, { force: true });
+        return [];
+      } catch (error) {
+        return [`Removing what run ${runId} left after its process ended failed: ${message(error)}`];
+      } finally {
+        closeSync(fd);
+      }
+    }),
+  );
+  return errors.flat();
 }

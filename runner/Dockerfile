@@ -14,7 +14,7 @@ RUN apt-get update \
       libxrender1 libasound2t64 libfreetype6 libfontconfig1 libdbus-1-3 libnss3 \
       libnss3-tools libnspr4 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 \
       libatspi2.0-0t64 libcups2t64 libxshmfence1 libgbm1 \
-      fonts-noto-cjk fonts-noto-color-emoji fonts-freefont-ttf \
+      fonts-noto-cjk fonts-noto-color-emoji fonts-freefont-ttf fonts-liberation \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g --no-audit --no-fund \
@@ -59,6 +59,7 @@ COPY proxy.mjs relay.mjs /opt/qa-interns/
 ENV AGENT_BROWSER_ARGS=--disable-component-extensions-with-background-pages \
     AGENT_BROWSER_DOWNLOAD_PATH=/qa/out/downloads \
     AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/chrome \
+    AGENT_BROWSER_NO_AUTO_DIALOG=1 \
     AGENT_BROWSER_PROXY=direct:// \
     AGENT_BROWSER_SCREENSHOT_DIR=/qa/out/screenshots
 
