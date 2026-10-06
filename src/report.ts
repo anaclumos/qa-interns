@@ -118,7 +118,7 @@ function confirmation(group: Group) {
   ];
 }
 
-function reported(first: Finding, fact: string) {
+function reported(first: Finding, fact: string, browser: string | null) {
   const lines = [
     `### ${inline(first.title)}`,
     "",
@@ -129,6 +129,7 @@ function reported(first: Finding, fact: string) {
     `  - Data: ${inline(first.conditions.data)}`,
     `  - Viewport: ${inline(first.conditions.viewport)}`,
     `  - Browser: ${inline(first.conditions.browser)}`,
+    ...(browser === null ? [] : [`  - Browser version: ${inline(browser)}`]),
     `  - Network: ${inline(first.conditions.network)}`,
     "",
     "Steps:",
@@ -150,10 +151,10 @@ export function lead(group: Group) {
   return first;
 }
 
-function section(group: Group, interns: string[]) {
+function section(group: Group, interns: string[], browser: string | null) {
   const first = lead(group);
   const others = group.findings.slice(1);
-  const lines = reported(first, `- Reproductions: ${interns.length} (${interns.join(", ")})`);
+  const lines = reported(first, `- Reproductions: ${interns.length} (${interns.join(", ")})`, browser);
   lines.push("Evidence:", "", ...paths(first.evidence), "");
   if (others.length > 0) {
     lines.push("Other reports:", "");
@@ -164,7 +165,7 @@ function section(group: Group, interns: string[]) {
   return lines;
 }
 
-function ticket(state: RunState, group: Group, interns: string[]): Ticket {
+function ticket(state: RunState, browserVersion: string | null, group: Group, interns: string[]): Ticket {
   const first = lead(group);
   const others = group.findings.slice(1);
   const { account, data, viewport, browser, network } = first.conditions;
@@ -176,7 +177,9 @@ function ticket(state: RunState, group: Group, interns: string[]): Ticket {
     "",
     "## Conditions",
     "",
-    ...block([`Account: ${account}`, `Data: ${data}`, `Viewport: ${viewport}`, `Browser: ${browser}`, `Network: ${network}`].join("\n")),
+    ...block(
+      [`Account: ${account}`, `Data: ${data}`, `Viewport: ${viewport}`, `Browser: ${browser}`, ...(browserVersion === null ? [] : [`Browser version: ${browserVersion}`]), `Network: ${network}`].join("\n"),
+    ),
     "",
     "## Steps",
     "",
@@ -232,10 +235,11 @@ function commit(target: RunState["target"]) {
   return `\`${target.commit}\`${target.dirty ? ", with the uncommitted changes and untracked files of the working tree" : ""}`;
 }
 
-function ran(state: RunState) {
+function ran(state: RunState, browser: string | null) {
   return [
     `- Target: \`${state.target.repo}\`, path \`${state.target.path || "."}\``,
     `- Commit: ${commit(state.target)}`,
+    `- Browser: ${browser === null ? "not read" : inline(browser)}`,
     `- Ran: ${state.startedAt}${state.endedAt === null ? "" : ` to ${state.endedAt}`}`,
   ];
 }
@@ -279,7 +283,7 @@ function environmentSection(environments: EnvironmentStats[]) {
   return lines;
 }
 
-export function renderReport(state: RunState, groups: Group[], rejected: Rejected[], egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown; tickets: Ticket[] } {
+export function renderReport(state: RunState, browser: string | null, groups: Group[], rejected: Rejected[], egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown; tickets: Ticket[] } {
   const rows = groups.map((group) => ({ group, interns: reproductions(group) }));
   const connections = egressRows(egress);
   const confirmed = rows.filter((row) => row.interns.length >= 2 && !wrongSteps(row.group));
@@ -287,6 +291,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
   const summary = {
     runId: state.runId,
     target: state.target,
+    browser,
     phase: state.phase,
     error: state.error,
     startedAt: state.startedAt,
@@ -301,7 +306,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
   const lines = [
     `# QA Interns run ${state.runId}`,
     "",
-    ...ran(state),
+    ...ran(state, browser),
     `- Interns: ${summary.interns.testing} testing, ${summary.interns.confirming} confirming, ${summary.interns.judging} judging`,
     `- Providers: ${summary.providers.length > 0 ? summary.providers.join(", ") : "none"}`,
     `- Confirmed groups: ${summary.confirmedGroups}`,
@@ -311,10 +316,10 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
   if (state.error !== null) lines.push(`- Error: ${inline(state.error)}`);
   lines.push("", "## Confirmed", "");
   if (confirmed.length === 0) lines.push("No finding was confirmed.", "");
-  for (const row of confirmed) lines.push(...section(row.group, row.interns));
+  for (const row of confirmed) lines.push(...section(row.group, row.interns, browser));
   lines.push("## Not confirmed", "");
   if (notConfirmed.length === 0) lines.push("Every finding was confirmed.", "");
-  for (const row of notConfirmed) lines.push(...section(row.group, row.interns));
+  for (const row of notConfirmed) lines.push(...section(row.group, row.interns, browser));
   lines.push("## Rejected finding files", "");
   if (rejected.length === 0) lines.push("No finding file was rejected.");
   for (const entry of rejected) lines.push(`- ${inline(entry.file)}: ${inline(entry.reason)}`);
@@ -336,7 +341,7 @@ export function renderReport(state: RunState, groups: Group[], rejected: Rejecte
       egress: connections,
       environments,
     },
-    tickets: confirmed.map((row) => ticket(state, row.group, row.interns)),
+    tickets: confirmed.map((row) => ticket(state, browser, row.group, row.interns)),
   };
 }
 
@@ -345,7 +350,7 @@ function outcome(group: Group) {
   return result === null ? null : confirms(result);
 }
 
-export function renderReplay(state: RunState, replay: Replay, egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown } {
+export function renderReplay(state: RunState, browser: string | null, replay: Replay, egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown } {
   const connections = egressRows(egress);
   const reproduced = replay.groups.filter((group) => outcome(group) === true);
   const notReproduced = replay.groups.filter((group) => outcome(group) === false);
@@ -354,6 +359,7 @@ export function renderReplay(state: RunState, replay: Replay, egress: Egress, en
     runId: state.runId,
     replay: { runId: replay.runId, commit: replay.target.commit, dirty: replay.target.dirty },
     target: state.target,
+    browser,
     phase: state.phase,
     error: state.error,
     startedAt: state.startedAt,
@@ -369,7 +375,7 @@ export function renderReplay(state: RunState, replay: Replay, egress: Egress, en
     `# QA Interns run ${state.runId}`,
     "",
     `- Replay of: run \`${replay.runId}\` at commit ${commit(replay.target)}`,
-    ...ran(state),
+    ...ran(state, browser),
     `- Interns: ${summary.interns.confirming} confirming`,
     `- Providers: ${summary.providers.length > 0 ? summary.providers.join(", ") : "none"}`,
     `- Groups reproduced: ${summary.reproducedGroups}`,
@@ -386,7 +392,7 @@ export function renderReplay(state: RunState, replay: Replay, egress: Egress, en
   for (const [heading, none, list] of sections) {
     lines.push(`## ${heading}`, "");
     if (list.length === 0) lines.push(none, "");
-    for (const group of list) lines.push(...reported(lead(group), `- Group: ${inline(group.id)} in run ${inline(replay.runId)}`), ...confirmation(group), "");
+    for (const group of list) lines.push(...reported(lead(group), `- Group: ${inline(group.id)} in run ${inline(replay.runId)}`, null), ...confirmation(group), "");
   }
   lines.push(...internTable(state), "", ...egressTable(connections), "", ...environmentSection(environments));
 

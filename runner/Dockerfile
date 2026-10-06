@@ -58,6 +58,7 @@ COPY proxy.mjs relay.mjs /opt/qa-interns/
 
 ENV AGENT_BROWSER_DOWNLOAD_PATH=/qa/out/downloads \
     AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/chrome \
+    AGENT_BROWSER_NO_AUTO_DIALOG=1 \
     AGENT_BROWSER_PROXY=direct:// \
     AGENT_BROWSER_SCREENSHOT_DIR=/qa/out/screenshots
 

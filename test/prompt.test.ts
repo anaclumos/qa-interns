@@ -20,6 +20,7 @@ const env: PromptEnvironment = {
 };
 
 const knownGaps = ["The environment has no media support.", "The environment has no video model."];
+const intendedBehaviors = ["The invoice table scrolls sideways at narrow viewports instead of clipping its columns.", "A Paid invoice cannot be edited."];
 
 function finding(id: string, title: string, evidence: string[]): Finding {
   const intern = id.slice(0, id.indexOf("/"));
@@ -55,7 +56,7 @@ describe("deck", () => {
 
 describe("internPrompt", () => {
   const charter = deck(["What viewers can change."]).at(0) ?? "";
-  const prompt = internPrompt(charter, env, knownGaps);
+  const prompt = internPrompt(charter, env, knownGaps, intendedBehaviors);
 
   test("carries the charter as its own Charter line", () => {
     expect(prompt.split("\n")).toContain(`Charter: ${charter}`);
@@ -65,6 +66,16 @@ describe("internPrompt", () => {
     const lines = prompt.split("\n");
     const findings = lines.slice(lines.indexOf("Findings:"));
     for (const entry of knownGaps) expect(findings).toContain(`  - ${entry}`);
+  });
+
+  test("lists every intended behavior in the findings section", () => {
+    const lines = prompt.split("\n");
+    const findings = lines.slice(lines.indexOf("Findings:"));
+    for (const entry of intendedBehaviors) expect(findings).toContain(`  - ${entry}`);
+  });
+
+  test("carries no intended behavior section when the target sets none", () => {
+    expect(internPrompt(charter, env, knownGaps, [])).not.toContain("intended behavior");
   });
 
   test("names every URL, every seeded account, and every off-limits entry", () => {
@@ -140,7 +151,7 @@ describe("judgePrompt", () => {
 describe("confirmPrompt", () => {
   const target = findings[2] ?? findings[0];
   if (target === undefined) throw new Error("no finding to confirm");
-  const prompt = confirmPrompt(target, { ...env, minutes: 10 });
+  const prompt = confirmPrompt(target, { ...env, minutes: 10 }, intendedBehaviors);
 
   test("names the confirmation file and no other file an agent keys on", () => {
     expect(prompt).toContain("/qa/out/confirmation.json");
@@ -158,6 +169,15 @@ describe("confirmPrompt", () => {
     for (const file of target.evidence) expect(prompt).not.toContain(file);
     for (const account of accounts) expect(prompt).toContain(account.password);
     expect(prompt).toContain("http://web:3000");
+  });
+
+  test("lists every intended behavior", () => {
+    const lines = prompt.split("\n");
+    for (const entry of intendedBehaviors) expect(lines).toContain(`  - ${entry}`);
+  });
+
+  test("carries no intended behavior section when the target sets none", () => {
+    expect(confirmPrompt(target, { ...env, minutes: 10 }, [])).not.toContain("intended behavior");
   });
 });
 
