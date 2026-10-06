@@ -28,6 +28,7 @@ import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation,
 import { hasQuota, loadLogins, Scheduler, watchReleases, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
+import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
@@ -714,6 +715,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let rejected: Rejected[] = [];
   let groups: Group[] | null = opts.replay?.groups ?? null;
   let egress: string[] = [];
+  let browser: string | null = null;
   let releaseImages = async () => {};
 
   const finish = once(async (error: string | null): Promise<string | null> => {
@@ -752,8 +754,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const environments = redactJson(ctx.environments);
     const report =
       opts.replay === null
-        ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
-        : { ...renderReplay(redactJson(state), redactJson(opts.replay), traffic, environments), tickets: [] };
+        ? renderReport(redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
+        : { ...renderReplay(redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await writeTickets(runDir, report.tickets);
@@ -765,6 +767,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const source = join(runDir, "source");
     await exportTree(ref, source);
     ctx.runnerImage = await opts.runnerImage();
+    browser = await browserVersion(ctx.runnerImage);
     const target = await loadTarget(ref, source);
     egress = target.settings.egress;
     const slots = await freeSlots();
