@@ -135,9 +135,14 @@ export async function prune(print: (line: string) => void): Promise<void> {
       const source = held.has(dir) ? null : await replaySource(dir);
       if (source !== null) sources.add(source);
     }
+    const locked = await hostObjects();
     for (const { dir, runId } of locks.keys()) {
       if (sources.has(runId)) {
         kept.replayed++;
+        continue;
+      }
+      if (await leftBehind(locked, dir, runId)) {
+        kept.leftovers++;
         continue;
       }
       await removeRun(dir);
