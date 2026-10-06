@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { removeCopies } from "../src/environment.ts";
 import { ask, runQa } from "../src/run.ts";
 import { newRunId, readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
-import { dockerAvailable, endToEnd, internalSubnet, leftovers, timeout } from "./e2e.ts";
+import { dockerAvailable, endToEnd, internalSubnet, leftovers, runLocks, timeout } from "./e2e.ts";
 import { freeBlock } from "./subnet.ts";
 import { suiteLabel } from "./suite-lock.ts";
 
@@ -88,6 +89,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         await execute(["docker", "rm", "-f", held]);
         await execute(["docker", "network", "rm", held]);
         await removeCopies(join(root, "asks", runId), runId, fakeImage);
+        rmSync(join(runLocks, runId), { force: true });
       }
       expect(await leftovers(runId)).toEqual([]);
       expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
