@@ -73,7 +73,7 @@ type Work<T> = (session: Session, attempt: number, env: Environment, login: Logi
 type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "failed"; error: unknown };
 type Answer = { result: Confirmation | null; error: string | null };
 type Explored = { intern: InternState; attempts: { attempt: number; environment: FindingEnvironment }[] };
-type Collected = { findings: Finding[]; rejected: Rejected[] };
+type Collected = { findings: Finding[]; rejected: Rejected[]; failures: unknown[] };
 type Reproduced = { intern: InternState; group: Group; attempts: { attempt: number; provider: Provider }[] };
 
 class NoQuota extends Error {}
@@ -403,8 +403,13 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
 }
 
 async function collect(ctx: Context, { intern, attempts }: Explored): Promise<Collected> {
-  const results = await Promise.all(attempts.map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
-  return { findings: results.flatMap((result) => result.findings), rejected: results.flatMap((result) => result.rejected) };
+  const results = await Promise.allSettled(attempts.map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
+  const read = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+  return {
+    findings: read.flatMap((result) => result.findings),
+    rejected: read.flatMap((result) => result.rejected),
+    failures: results.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
+  };
 }
 
 async function count(ctx: Context, { intern }: Explored, collected: Collected): Promise<Collected> {
@@ -434,6 +439,7 @@ async function explore(ctx: Context, explored: Explored, target: Target, minutes
     if (session.toolCalls() === 0) throw new Error(`made no tool call in its ${minutes} minutes`);
   });
   const collected = await collect(ctx, explored);
+  if (collected.failures.length > 0) throw collected.failures[0];
   if (!ctx.stopping) await count(ctx, explored, collected);
   return { outcome, ...collected };
 }
@@ -745,7 +751,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
         teardowns.push(message(reason));
       }
     }
-    let recovery: string | null = null;
+    let failures: unknown[] = [];
     try {
       if (ctx.stopping) {
         for (const intern of state.interns) {
@@ -757,9 +763,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
         const results = await Promise.all(explored.map(async (entry) => count(ctx, entry, await collect(ctx, entry))));
         findings = results.flatMap((result) => result.findings);
         rejected = results.flatMap((result) => result.rejected);
+        failures = results.flatMap((result) => result.failures);
       }
-    } catch (reason) {
-      recovery = `reading the interns' output failed: ${message(reason)}`;
     } finally {
       const dirs = [join(runDir, "envs"), join(runDir, "interns")];
       if (teardowns.length > ctx.teardowns.length) {
@@ -778,7 +783,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
-    const problems = [error, recovery, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+    const problems = [error, ...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`), ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
