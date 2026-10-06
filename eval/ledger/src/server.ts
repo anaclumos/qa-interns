@@ -118,7 +118,11 @@ async function loadContext(req: { cookies: CookieMap }): Promise<Ctx | undefined
   if (!user) return undefined;
   let teams = await teamsOf(user.id);
   if (teams.length === 0) {
-    await createTeam(sql, user.id, `${user.display_name}'s team`);
+    await sql.begin(async (tx) => {
+      const [locked] = await tx`select display_name from users where id = ${user.id} for update`;
+      const [member] = await tx`select 1 from memberships where user_id = ${user.id} limit 1`;
+      if (!member) await createTeam(tx, user.id, `${locked.display_name}'s team`);
+    });
     teams = await teamsOf(user.id);
   }
   const team = teams.find((row: any) => row.id === user.current_team_id) ?? teams[0];
@@ -179,6 +183,16 @@ function csvCell(value: string) {
 
 function csvText(value: string) {
   return csvCell(value.length > 0 && "=+-@\t\r".includes(value.charAt(0)) ? "'" + value : value);
+}
+
+function invoiceFilters(teamId: number, params: URLSearchParams) {
+  const q = (params.get("q") ?? "").trim();
+  const status = statuses.find((value) => value === params.get("status")) ?? "";
+  const where = () => sql`
+    team_id = ${teamId}
+    ${q ? sql`and strpos(lower(customer), lower(${q}::text)) > 0` : sql``}
+    ${status ? sql`and status = ${status}` : sql``}`;
+  return { q, status, where };
 }
 
 const server = Bun.serve({
@@ -245,8 +259,7 @@ const server = Bun.serve({
     "/invoices": {
       GET: page(async (req, ctx) => {
         const params = new URL(req.url).searchParams;
-        const q = (params.get("q") ?? "").trim();
-        const status = statuses.find((value) => value === params.get("status")) ?? "";
+        const { q, status, where: filters } = invoiceFilters(ctx.team.id, params);
         const sort = ["due", "total", "customer"].find((value) => value === params.get("sort")) ?? "";
         const order =
           sort === "due"
@@ -257,10 +270,6 @@ const server = Bun.serve({
                 ? sql`lower(customer), id`
                 : sql`id desc`;
         const requested = Number(params.get("page") ?? "1");
-        const filters = () => sql`
-          team_id = ${ctx.team.id}
-          ${q ? sql`and strpos(lower(customer), lower(${q}::text)) > 0` : sql``}
-          ${status ? sql`and status = ${status}` : sql``}`;
         const [{ count }] = await sql`select count(*)::int as count from invoices where ${filters()}`;
         const pages = Math.max(1, Math.ceil(count / pageSize));
         const pageNumber = Number.isSafeInteger(requested) && requested >= 1 ? Math.min(requested, pages) : 1;
@@ -382,9 +391,10 @@ const server = Bun.serve({
     },
     "/api/invoices": {
       GET: api(async (req, ctx) => {
+        const { where } = invoiceFilters(ctx.team.id, new URL(req.url).searchParams);
         const rows = await sql`
           select ${invoiceColumns()} from invoices
-          where team_id = ${ctx.team.id} and deleted_at is null order by id`;
+          where ${where()} and deleted_at is null order by id`;
         return Response.json({ invoices: rows.map(toInvoice) });
       }),
       POST: api(async (req, ctx) => {
