@@ -745,6 +745,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
         teardowns.push(message(reason));
       }
     }
+    let recovery: string | null = null;
     try {
       if (ctx.stopping) {
         for (const intern of state.interns) {
@@ -757,6 +758,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
         findings = results.flatMap((result) => result.findings);
         rejected = results.flatMap((result) => result.rejected);
       }
+    } catch (reason) {
+      recovery = `reading the interns' output failed: ${message(reason)}`;
     } finally {
       const dirs = [join(runDir, "envs"), join(runDir, "interns")];
       if (teardowns.length > ctx.teardowns.length) {
@@ -775,7 +778,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
-    const problems = [error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+    const problems = [error, recovery, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
