@@ -73,6 +73,7 @@ type Work<T> = (session: Session, attempt: number, env: Environment, login: Logi
 type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "failed"; error: unknown };
 type Answer = { result: Confirmation | null; error: string | null };
 type Explored = { intern: InternState; attempts: { attempt: number; environment: FindingEnvironment }[] };
+type Collected = { findings: Finding[]; rejected: Rejected[] };
 type Reproduced = { intern: InternState; group: Group; attempts: { attempt: number; provider: Provider }[] };
 
 class NoQuota extends Error {}
@@ -401,15 +402,17 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
   return outcome.value;
 }
 
-async function collect(ctx: Context, { intern, attempts }: Explored): Promise<{ findings: Finding[]; rejected: Rejected[] }> {
+async function collect(ctx: Context, { intern, attempts }: Explored): Promise<Collected> {
   const results = await Promise.all(attempts.map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
-  const findings = results.flatMap((result) => result.findings);
-  const rejected = results.flatMap((result) => result.rejected);
-  await ctx.update(intern.id, { findings: findings.length, rejected: rejected.length });
-  return { findings, rejected };
+  return { findings: results.flatMap((result) => result.findings), rejected: results.flatMap((result) => result.rejected) };
 }
 
-async function explore(ctx: Context, explored: Explored, target: Target, minutes: number, free: () => void): Promise<Outcome<void>> {
+async function count(ctx: Context, { intern }: Explored, collected: Collected): Promise<Collected> {
+  await ctx.update(intern.id, { findings: collected.findings.length, rejected: collected.rejected.length });
+  return collected;
+}
+
+async function explore(ctx: Context, explored: Explored, target: Target, minutes: number, free: () => void): Promise<{ outcome: Outcome<void> } & Collected> {
   const { intern, attempts } = explored;
   const outcome = await agentTask(ctx, intern.id, target, free, async (session, attempt, env, login, note) => {
     const environment = { commit: target.commit, dirty: target.dirty, environment: env.project, provider: login.provider, model: session.model };
@@ -430,8 +433,9 @@ async function explore(ctx: Context, explored: Explored, target: Target, minutes
     });
     if (session.toolCalls() === 0) throw new Error(`made no tool call in its ${minutes} minutes`);
   });
-  await collect(ctx, explored);
-  return outcome;
+  const collected = await collect(ctx, explored);
+  if (!ctx.stopping) await count(ctx, explored, collected);
+  return { outcome, ...collected };
 }
 
 async function check(ctx: Context, id: string, attempt: number): Promise<Answer> {
@@ -475,7 +479,8 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
     return answer;
   });
   const answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };
-  group.confirmation = await recover(ctx, reproduced, answer);
+  const confirmation = await recover(ctx, reproduced, answer);
+  if (!ctx.stopping) group.confirmation = confirmation;
 }
 
 function internState(id: string, role: InternState["role"], charter: string, group: string | null): InternState {
@@ -731,12 +736,6 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let egress: string[] = [];
   let releaseImages = async () => {};
 
-  const gather = async () => {
-    const results = await Promise.all(explored.map((entry) => collect(ctx, entry)));
-    findings = results.flatMap((result) => result.findings);
-    rejected = results.flatMap((result) => result.rejected);
-  };
-
   const finish = once(async (error: string | null): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
@@ -753,7 +752,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
         }
         for (const entry of reproduced) entry.group.confirmation ??= await recover(ctx, entry, { result: null, error: "interrupted" });
       }
-      if (groups === null) await gather();
+      if (groups === null) {
+        const results = await Promise.all(explored.map(async (entry) => count(ctx, entry, await collect(ctx, entry))));
+        findings = results.flatMap((result) => result.findings);
+        rejected = results.flatMap((result) => result.rejected);
+      }
     } finally {
       const dirs = [join(runDir, "envs"), join(runDir, "interns")];
       if (teardowns.length > ctx.teardowns.length) {
@@ -819,9 +822,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
       await phase("testing");
       const testing = limit(state.options.concurrency);
       explored = state.interns.map((intern) => ({ intern, attempts: [] }));
-      const outcomes = await settle(explored.map((entry) => testing((free) => explore(ctx, entry, target, opts.minutes, free))));
-      await gather();
-      if (outcomes.every((outcome) => outcome.status !== "done")) {
+      const results = await settle(explored.map((entry) => testing((free) => explore(ctx, entry, target, opts.minutes, free))));
+      checkStopping(ctx);
+      findings = results.flatMap((result) => result.findings);
+      rejected = results.flatMap((result) => result.rejected);
+      if (results.every((result) => result.outcome.status !== "done")) {
         throw new Error(`No testing intern completed: ${state.interns.map((intern) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
       }
 
