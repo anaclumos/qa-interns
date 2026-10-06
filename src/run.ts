@@ -85,6 +85,7 @@ type Context = {
   environments: EnvironmentStats[];
   waiting: Set<() => void>;
   stopping: boolean;
+  tearingDown: boolean;
   update(id: string, patch: Partial<InternState>): Promise<void>;
 };
 
@@ -161,6 +162,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     environments: [],
     waiting: new Set(),
     stopping: false,
+    tearingDown: false,
     update,
   };
 }
@@ -495,10 +497,21 @@ function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args:
   return (...args) => (result ??= fn(...args));
 }
 
+function finisher<A extends unknown[], R>(ctx: Context, fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return once(async (...args) => {
+    ctx.tearingDown = true;
+    try {
+      return await fn(...args);
+    } finally {
+      ctx.tearingDown = false;
+    }
+  });
+}
+
 async function stop(ctx: Context, running: Promise<unknown> | undefined): Promise<void> {
   ctx.stopping = true;
   for (const wake of ctx.waiting) wake();
-  killCommands();
+  if (!ctx.tearingDown) killCommands();
   const closed = await Promise.allSettled(
     [...ctx.sessions].map(async (session) => {
       try {
@@ -546,7 +559,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
   const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, async () => {});
   const project = `qa-${opts.runId}-${opts.name}`;
-  const finish = once(async (): Promise<string | null> => {
+  const finish = finisher(ctx, async (): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     try {
       await stopProject(project, join(opts.runDir, "interns", opts.name));
@@ -622,7 +635,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
     opts.print(`phase ${next}`);
     await save();
   };
-  const finish = once(async (error: string): Promise<void> => {
+  const finish = finisher(ctx, async (error: string): Promise<void> => {
     const problems = [error];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
@@ -716,7 +729,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let egress: string[] = [];
   let releaseImages = async () => {};
 
-  const finish = once(async (error: string | null): Promise<string | null> => {
+  const finish = finisher(ctx, async (error: string | null): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
@@ -741,7 +754,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
-    const problems = [error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+    const problems = [error ?? (ctx.stopping ? "interrupted" : null), ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
