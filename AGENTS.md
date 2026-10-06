@@ -17,6 +17,12 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 - `claude plugin validate .` and `claude plugin validate skills` pass after any change to `.claude-plugin/` or `skills/`.
 - The lefthook `pre-push` hook in `lefthook.yml` runs the install, typecheck, plugin validate, and test commands of the `ci.yml` `test` job, after it checks for a clean tree and a running Docker daemon. `bun install` installs the hook. A change to one of those commands in one file makes the same change in the other. A job that runs git in another repository first runs `unset $(git rev-parse --local-env-vars)`: git exports `GIT_DIR` to hooks, and without the unset the test fixtures commit into this repository and set its `core.bare`.
 
+## Host
+
+- `~/Developer/qa-interns` is the host's machine checkout of this repository. Every `qa-interns` command on the host runs its working tree, and `qa-interns` on `PATH` is a link to its `src/cli.ts`.
+- No session edits a tracked file in `~/Developer/qa-interns`.
+- After a merge, the shipping session runs `git -C ~/Developer/qa-interns pull --ff-only` and `bun install --frozen-lockfile` in that checkout, and confirms with `git merge-base --is-ancestor <merge commit> HEAD` there that the merge reached it.
+
 ## Invariants
 
 - An intern never fixes, suggests, ranks, or explains. Prompts, the report, the ticket drafts, and the finding format carry no field or instruction for any of those.
