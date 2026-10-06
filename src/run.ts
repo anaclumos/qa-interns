@@ -749,9 +749,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
         teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}: ${message(reason)}`);
       }
     }
+    ctx.tearingDown = false;
     try {
       await releaseImages();
-      await sweepImages();
+      if (!ctx.stopping) await sweepImages();
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
