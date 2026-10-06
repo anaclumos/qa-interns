@@ -6,6 +6,7 @@ import { execute } from "../src/target.ts";
 import type { EnvironmentStats, Finding } from "../src/types.ts";
 import { disks, dockerAvailable, endToEnd, intern, internalSubnet, leftovers, timeout, workspaces } from "./e2e.ts";
 import { freeBlock } from "./subnet.ts";
+import { suiteLabel } from "./suite-lock.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   const { id, root, target, fakeImage, logins } = endToEnd();
@@ -33,12 +34,13 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         ]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
           if (dir === undefined || line !== "i1 starting on claude-confirm-limit (claude)") return;
           first = internalSubnet(dir, "i1");
-          blocked = Bun.spawnSync(["docker", "network", "create", "--internal", "--subnet", first, blocker], { stdout: "ignore" }).exitCode;
+          blocked = Bun.spawnSync(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", first, blocker], { stdout: "ignore" }).exitCode;
         },
       }).finally(async () => {
         if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
@@ -125,6 +127,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         ]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
