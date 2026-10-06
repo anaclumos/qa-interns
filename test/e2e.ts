@@ -1,7 +1,7 @@
 import { afterAll, beforeAll } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, readdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { removeDir, writeChromePolicy } from "../src/environment.ts";
 import type { AskOptions } from "../src/run.ts";
@@ -21,7 +21,8 @@ type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: tru
 export function endToEnd() {
   const id = crypto.randomUUID().slice(0, 8);
   const root = join(tmpdir(), `qair-f-e2e-${id}`);
-  const fakeImage = `qair-f-e2e-runner:${id}`;
+  const fakeRepo = `qair-f-e2e-runner-${userInfo().uid}`;
+  const fakeImage = `${fakeRepo}:${process.pid}-${id}`;
   const target = join(root, "repo", "eval", "ledger");
   let previousStateHome: string | undefined;
   let built = false;
@@ -74,6 +75,14 @@ USER qa
     } finally {
       if (built) await execute(["docker", "image", "rm", "-f", fakeImage]);
     }
+    const earlier = (await execute(["docker", "image", "ls", "--filter", `reference=${fakeRepo}`, "--format", "{{.Repository}}:{{.Tag}}"])).split("\n").filter((image) => image !== "");
+    const unused = [];
+    for (const image of earlier) {
+      const owner = Number(image.slice(image.indexOf(":") + 1).split("-")[0]);
+      if (Number.isSafeInteger(owner) && existsSync(join("/proc", String(owner)))) continue;
+      if ((await execute(["docker", "ps", "-aq", "--filter", `ancestor=${image}`])) === "") unused.push(image);
+    }
+    if (unused.length > 0) await execute(["docker", "image", "rm", "-f", ...unused]);
   }, timeout);
 
   async function logins(name: string, entries: FakeLogin[]): Promise<string> {

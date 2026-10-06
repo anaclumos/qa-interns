@@ -93,7 +93,7 @@ const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
-const writeUpMs = 2 * minute;
+const writeUpMs = 4 * minute;
 const stopWaitMs = 30_000;
 const loginWaitMs = 30_000;
 const noLogin = "no login has spare capacity";
@@ -178,7 +178,7 @@ async function acquire(ctx: Context, id: string): Promise<Lease | null> {
       const leased = ctx.scheduler.leased();
       const lease = await ctx.scheduler.acquire(id);
       if (lease !== null) return lease;
-      if (!ctx.scheduler.leased()) {
+      if (!ctx.scheduler.lost(id) && !ctx.scheduler.leased()) {
         if (!leased) return null;
         continue;
       }
