@@ -42,6 +42,8 @@ ${JSON.stringify(env.seed, null, 2)}
 \`\`\``;
 }
 
+const defaultViewport = "1280x577";
+
 const howToWork = `How to work:
 - Drive the browser with agent-browser. \`agent-browser skills get core\` prints its command reference, and \`agent-browser skills get dogfood\` prints its guide to exploratory testing.
 - \`agent-browser open <url>\` opens a page. \`agent-browser snapshot -i\` lists the interactive elements with refs such as \`@e3\`. \`agent-browser click @e3\` and \`agent-browser fill @e3 "text"\` act on them. Refs go stale after navigation or a page change; run \`agent-browser snapshot -i\` again.
@@ -54,7 +56,7 @@ const howToWork = `How to work:
 - A toast, a snackbar, or another status message can appear a moment after an action and disappear a few seconds later, so one check right after the action or after a \`sleep\` can miss it. Check once a second for five seconds after the action, for example \`agent-browser click @e3 && for i in 1 2 3 4 5; do sleep 1; agent-browser snapshot --delta; done\`. \`snapshot --delta\` prints the page once, then only what changed. A message is missing only when none of these checks shows it.
 - A click that starts a download prints \`✓ Done\` and saves the file in \`/qa/out/downloads/\` under the name the page gives it. \`agent-browser download @e3 /qa/out/evidence/<name>.csv\` clicks the element and saves the file at the path you name.
 - \`agent-browser console\` prints console messages, and \`agent-browser errors\` prints page errors.
-- \`agent-browser set viewport 390 844\`, \`agent-browser set device "iPhone 15"\`, \`agent-browser set media dark\`, and \`agent-browser set offline on\` (then \`off\`) change the viewport, the device, the color scheme, and the network state.
+- The browser opens at a ${defaultViewport} viewport. \`agent-browser set viewport 390 844\`, \`agent-browser set device "iPhone 15"\`, \`agent-browser set media dark\`, and \`agent-browser set offline on\` (then \`off\`) change the viewport, the device, the color scheme, and the network state.
 - \`agent-browser tab new <url>\` opens a second tab in the same session. \`agent-browser --session <name> open <url>\` starts a separate browser session with its own cookies, for example for a second account; pass \`--session <name>\` to every later command for that session. Each session is a browser of its own that keeps its memory until it closes, and your environment has memory for about four at once. Close a session you no longer need with \`agent-browser --session <name> close\`.
 - The browser time zone follows the \`TZ\` environment variable of the command that starts a session, for example \`TZ=America/Los_Angeles agent-browser --session west open <url>\`.
 - Send HTTP requests directly with \`curl\`, for example \`curl -i -c /tmp/cookies.txt -b /tmp/cookies.txt <url>\`.
@@ -84,7 +86,7 @@ const findingExample = {
   conditions: {
     account: "member@example.test, role member",
     data: "freshly seeded, plus the task created in step 3",
-    viewport: "1280x720",
+    viewport: defaultViewport,
     browser: "one tab, signed in, time zone UTC",
     network: "online",
   },
