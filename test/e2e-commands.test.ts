@@ -8,7 +8,7 @@ import { capture, execute } from "../src/target.ts";
 import { cliScript, dockerAvailable, endToEnd, intern, leftovers, timeout, title } from "./e2e.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
-  const { root, target, logins } = endToEnd();
+  const { root, target, fakeImage, logins } = endToEnd();
 
   test(
     "up leaves one ready and seeded environment with its relay and a runner without a login, and down removes it",
@@ -130,19 +130,25 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   test(
     "a run that SIGTERM interrupts while an intern tests writes report.md, findings.json, and state.json with the findings of the interns that ended, before its teardown",
     async () => {
+      const options = {
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 2,
+        minutes: 10,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("snapshot", [
+          { id: "claude-1", provider: "claude" },
+          { id: "grok-hang", provider: "grok", hang: true },
+        ]),
+        replay: null,
+      };
+      const module = join(import.meta.dir, "..", "src", "run.ts");
       const cli = Bun.spawn(
         [
           process.execPath,
-          cliScript,
-          "run",
-          target,
-          "--interns",
-          "2",
-          "--logins",
-          await logins("snapshot", [
-            { id: "claude-1", provider: "claude" },
-            { id: "grok-hang", provider: "grok", hang: true },
-          ]),
+          "-e",
+          `const { runQa } = await import(${JSON.stringify(module)}); await runQa({ ...${JSON.stringify(options)}, runnerImage: async () => ${JSON.stringify(fakeImage)}, print: (line) => process.stdout.write(line + "\\n") });`,
         ],
         { env: { ...process.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
       );
