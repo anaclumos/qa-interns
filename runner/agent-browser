@@ -4,16 +4,21 @@ real=/usr/local/lib/node_modules/agent-browser/bin/agent-browser-linux-x64
 limit=4
 session=${AGENT_BROWSER_SESSION-default}
 command=
-named=false
+next=
 for arg in "$@"; do
-  if [ "$named" = true ]; then
-    session=$arg
-    named=false
+  case $arg in
+    --help | -h | --version | -V) exec "$real" "$@" ;;
+  esac
+  case $next in
+    session) session=$arg ;;
+  esac
+  if [ -n "$next" ]; then
+    next=
     continue
   fi
   case $arg in
-    --session) named=true ;;
-    --help | -h | --version | -V) exec "$real" "$@" ;;
+    --session) next=session ;;
+    --restore-save | --restore-check-url | --restore-check-text | --restore-check-fn | --namespace | --headers | --executable-path | --cdp | --extension | --init-script | --enable | --profile | --state | --proxy | --proxy-bypass | --args | --user-agent | -p | --provider | --device | --session-name | --color-scheme | --download-path | --max-output | --allowed-domains | --action-policy | --confirm-actions | --config | --engine | --input-mode | --screenshot-dir | --screenshot-quality | --screenshot-format | --idle-timeout | --ca-cert | --model) next=value ;;
     -*) ;;
     *) [ -n "$command" ] || command=$arg ;;
   esac
