@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { stopRun } from "../src/environment.ts";
 import { runQa } from "../src/run.ts";
 import { readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
-import { disks, dockerAvailable, endToEnd, intern, leftovers, timeout, workspaces } from "./e2e.ts";
+import { disks, dockerAvailable, endToEnd, intern, leftovers, runLocks, timeout, workspaces } from "./e2e.ts";
 import { freeBlock } from "./subnet.ts";
+import { suiteLabel } from "./suite-lock.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   const { id, target, fakeImage, logins } = endToEnd();
@@ -26,6 +27,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("upgrade", [{ id: "cursor-upgrade", provider: "cursor", upgrade: true }]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -58,6 +60,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("hang", [{ id: "grok-hang", provider: "grok", hang: true }]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -91,13 +94,14 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("teardown", [{ id: "claude-limit", provider: "claude", limit: true }]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
           if (dir === undefined || line !== "i1 starting on claude-limit (claude)") return;
           held = `qair-f-e2e-held-${basename(dir)}`;
-          Bun.spawnSync(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${basename(dir)}-i1`, held], { stdout: "ignore" });
-          Bun.spawnSync(["docker", "run", "-d", "--rm", "--name", held, "--network", held, fakeImage], { stdout: "ignore" });
+          Bun.spawnSync(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${basename(dir)}-i1`, "--label", suiteLabel, held], { stdout: "ignore" });
+          Bun.spawnSync(["docker", "run", "-d", "--rm", "--label", suiteLabel, "--name", held, "--network", held, fakeImage], { stdout: "ignore" });
         },
       });
 
@@ -117,6 +121,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(intern(state, "i1")).toMatchObject({ login: "claude-limit", status: "failed" });
       expect(intern(state, "i1").detail).toStartWith(`${failure}; teardown failed: docker compose down left objects of qa-${state.runId}-i1 behind`);
       expect(await leftovers(state.runId)).toEqual([]);
+      expect(existsSync(join(runLocks, state.runId))).toBe(true);
+      rmSync(join(runLocks, state.runId));
     },
     timeout,
   );
@@ -187,6 +193,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           loginsFile: await logins("busy", [{ id: "grok-busy", provider: "grok" }]),
           replay: null,
           runnerImage: async () => fakeImage,
+          admit: () => () => {},
           print: (line) => {
             lines.push(line);
             const [dir] = lines;

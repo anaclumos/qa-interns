@@ -35,7 +35,7 @@
       "id": "due-date-timezone",
       "kind": "inconsistency",
       "summary": "In a browser west of UTC, the invoice detail page shows a due date one day earlier than the list page and the CSV export show for the same invoice.",
-      "trigger": "In a browser set to a time zone west of UTC, for example America/Los_Angeles, sign in as owner@acme.test and open /invoices/1. The detail page shows 6/14/2026 as the due date, while the list and the CSV export show 2026-06-15."
+      "trigger": "In a browser set to a time zone west of UTC, for example America/Los_Angeles, sign in as owner@acme.test and open /invoices/1. The detail page shows 2026-06-14 as the due date, while the list and the CSV export show 2026-06-15."
     },
     {
       "id": "export-total-without-tax",
