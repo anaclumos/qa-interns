@@ -42,18 +42,23 @@ ${JSON.stringify(env.seed, null, 2)}
 \`\`\``;
 }
 
+const defaultViewport = "1280x577";
+
 const howToWork = `How to work:
 - Drive the browser with agent-browser. \`agent-browser skills get core\` prints its command reference, and \`agent-browser skills get dogfood\` prints its guide to exploratory testing.
 - \`agent-browser open <url>\` opens a page. \`agent-browser snapshot -i\` lists the interactive elements with refs such as \`@e3\`. \`agent-browser click @e3\` and \`agent-browser fill @e3 "text"\` act on them. Refs go stale after navigation or a page change; run \`agent-browser snapshot -i\` again.
 - \`agent-browser snapshot -i\` lists headings, table cells, and controls, and leaves out the rest of the page's text, such as a validation message under a field, an element with the \`alert\` or \`status\` role, or a paragraph. \`agent-browser snapshot\` without \`-i\` shows that text. Read the page with \`agent-browser snapshot\` before you report what it shows or that it shows nothing.
+- \`agent-browser read\` prints the text of hidden elements too, such as an element with the \`hidden\` attribute, \`display: none\`, or \`visibility: hidden\`, so its output can hold text that a person on the page does not see. Report only text that \`agent-browser snapshot\` or a screenshot shows.
 - A ref to an element that the page replaced after the snapshot acts on an element with the same role and name, which can be another element, and prints \`✓ Done\`. A page can replace its elements after it loads with no visible change. When a link opens a page other than its \`href\`, or a control acts on something other than what it shows, repeat the action with a CSS selector, such as \`agent-browser click 'a[href="/lists/7"]'\`, and report only what the selector shows.
 - \`agent-browser click\`, on a ref, a selector, or a \`find\` locator, presses the middle of the box around the whole element. On a link that wraps onto two lines, that point can lie outside both lines of the link, so the press lands on the text around it, prints \`✓ Done\`, and opens nothing. Before you report that a link does nothing, run \`agent-browser focus @e3\` on the link, then print its text and the middle of each of its lines with \`agent-browser eval '[document.activeElement.textContent.slice(0, 100), ...[...document.activeElement.getClientRects()].map((r) => [Math.round(r.x + r.width / 2), Math.round(r.y + r.height / 2)])]'\`. When it prints the link's text and more than one point, press one of the points with \`agent-browser mouse move <x> <y>\`, \`agent-browser mouse down\`, and \`agent-browser mouse up\`.
 - To empty a field, click it, then run \`agent-browser press Control+a\` and \`agent-browser press Backspace\`. \`agent-browser fill @e3 ""\` empties the field on screen only: a page built with React keeps the old value and submits it. A field emptied that way keeps the old value until you type into it, so type a character with \`agent-browser type @e3 "1"\` before you empty it again.
-- On a native date, time, \`datetime-local\`, month, or week input, \`fill\`, \`type\`, \`keyboard type\`, and a click on a day of its calendar popup print \`✓ Done\` and leave the input empty. \`agent-browser snapshot -i\` lists such an input as one spinbutton per part, such as Month, Day, and Year, and \`agent-browser snapshot\` without \`-i\` shows which input each spinbutton belongs to. Click each spinbutton, then press its characters one at a time, for example \`agent-browser click @e5\`, \`agent-browser press 1\`, and \`agent-browser press 0\` for October. An AM/PM spinbutton takes \`A\` or \`P\`.
+- On a native date, time, \`datetime-local\`, month, or week input, \`fill\`, \`type\`, and \`keyboard type\` print \`✓ Done\` and leave the input empty. \`agent-browser snapshot -i\` lists such an input as one spinbutton per part, such as Month, Day, and Year, and \`agent-browser snapshot\` without \`-i\` shows which input each spinbutton belongs to. Click each spinbutton, then press its characters one at a time, for example \`agent-browser click @e5\`, \`agent-browser press 1\`, and \`agent-browser press 0\` for October. An AM/PM spinbutton takes \`A\` or \`P\`.
+- The button beside such an input, such as Show date picker, opens a picker popup, and \`agent-browser snapshot -i\` then lists the popup's elements, such as \`gridcell "Sunday, October 25, 2026"\`, \`option "05"\`, and \`button "Today"\`. A click on one of them prints \`✓ Done\` and leaves the input empty. The press lands on the page under the popup, at the point where the element sits inside the popup, measured from the top-left corner of the viewport, so it can follow a link or close a dialog there. Do not click inside the popup. Close it with \`agent-browser press Escape\` and set the value through the spinbuttons.
 - A toast, a snackbar, or another status message can appear a moment after an action and disappear a few seconds later, so one check right after the action or after a \`sleep\` can miss it. Check once a second for five seconds after the action, for example \`agent-browser click @e3 && for i in 1 2 3 4 5; do sleep 1; agent-browser snapshot --delta; done\`. \`snapshot --delta\` prints the page once, then only what changed. A message is missing only when none of these checks shows it.
 - A click that starts a download prints \`✓ Done\` and saves the file in \`/qa/out/downloads/\` under the name the page gives it. \`agent-browser download @e3 /qa/out/evidence/<name>.csv\` clicks the element and saves the file at the path you name.
+- A JavaScript dialog, such as an alert, a confirmation, a text prompt, or a warning before you leave a page, pauses the page until you close it. Here agent-browser leaves every dialog open, including the alerts and leave-page warnings that its core reference says it accepts on its own. While a dialog is open, most commands on the page fail at once and print its text. Some commands, such as \`open\`, \`back\`, \`reload\`, and \`screenshot\`, can instead wait until they time out, and \`back\` can print nothing and succeed. After a command fails, times out, or prints nothing, run \`agent-browser dialog status\`, which prints the open dialog's type, its text, and the default text of a text prompt. Save that text as evidence with \`agent-browser dialog status > /qa/out/evidence/<name>-dialog.txt\`. \`agent-browser dialog accept\` presses OK, \`agent-browser dialog accept "text"\` answers a text prompt with the text, and \`agent-browser dialog dismiss\` presses Cancel. On a text prompt, \`agent-browser dialog accept\` without text answers with empty text, not the default text, so pass the default text to keep it.
 - \`agent-browser console\` prints console messages, and \`agent-browser errors\` prints page errors.
-- \`agent-browser set viewport 390 844\`, \`agent-browser set device "iPhone 15"\`, \`agent-browser set media dark\`, and \`agent-browser set offline on\` (then \`off\`) change the viewport, the device, the color scheme, and the network state.
+- The browser opens at a ${defaultViewport} viewport. \`agent-browser set viewport 390 844\`, \`agent-browser set device "iPhone 15"\`, \`agent-browser set media dark\`, and \`agent-browser set offline on\` (then \`off\`) change the viewport, the device, the color scheme, and the network state.
 - \`agent-browser tab new <url>\` opens a second tab in the same session. \`agent-browser --session <name> open <url>\` starts a separate browser session with its own cookies, for example for a second account; pass \`--session <name>\` to every later command for that session. Each session is a browser of its own that keeps its memory until it closes, and your environment has memory for about four at once. Close a session you no longer need with \`agent-browser --session <name> close\`.
 - The browser time zone follows the \`TZ\` environment variable of the command that starts a session, for example \`TZ=America/Los_Angeles agent-browser --session west open <url>\`.
 - Send HTTP requests directly with \`curl\`, for example \`curl -i -c /tmp/cookies.txt -b /tmp/cookies.txt <url>\`.
@@ -83,7 +88,7 @@ const findingExample = {
   conditions: {
     account: "member@example.test, role member",
     data: "freshly seeded, plus the task created in step 3",
-    viewport: "1280x720",
+    viewport: defaultViewport,
     browser: "one tab, signed in, time zone UTC",
     network: "online",
   },
@@ -99,8 +104,12 @@ const findingExample = {
   evidence: ["/qa/out/evidence/task-status-board.png", "/qa/out/evidence/task-status-detail.png", "/qa/out/evidence/task-status.har"],
 };
 
-export function internPrompt(charter: string, env: PromptEnvironment, knownGaps: string[]): string {
+export function internPrompt(charter: string, env: PromptEnvironment, knownGaps: string[], intendedBehaviors: string[]): string {
   const gaps = knownGaps.length > 0 ? `\n- Do not write a finding about these known gaps of the test environment:\n${knownGaps.map((entry) => `  - ${entry}`).join("\n")}` : "";
+  const intended =
+    intendedBehaviors.length > 0
+      ? `\n- Do not write a finding whose observed result is one of these intended behaviors of the application, as the list states it:\n${intendedBehaviors.map((entry) => `  - ${entry}`).join("\n")}\n- A page that differs from an intended behavior is still a finding.`
+      : "";
   return `You are a QA intern. You test one web application the way a person uses it, and you report what breaks.
 
 ${rules}
@@ -112,7 +121,7 @@ ${environment(env)}
 ${howToWork}
 
 Findings:
-- Write each finding to its own file, \`/qa/out/findings/<slug>.json\`, as soon as you have reproduced it twice. \`<slug>\` is a short name of lowercase letters, digits, and hyphens. A finding that is not in a file when the time box ends is lost.${gaps}
+- Write each finding to its own file, \`/qa/out/findings/<slug>.json\`, as soon as you have reproduced it twice. \`<slug>\` is a short name of lowercase letters, digits, and hyphens. A finding that is not in a file when the time box ends is lost.${gaps}${intended}
 - A finding is one JSON object with these fields and no others:
 
 ${findingFormat}
@@ -173,7 +182,11 @@ Write /qa/out/groups.json with this shape:
 - Write only that file.`;
 }
 
-export function confirmPrompt(finding: Finding, env: PromptEnvironment): string {
+export function confirmPrompt(finding: Finding, env: PromptEnvironment, intendedBehaviors: string[]): string {
+  const intended =
+    intendedBehaviors.length > 0
+      ? `\n- A finding whose observed result is one of these intended behaviors of the application, as the list states it, is not a failure:\n${intendedBehaviors.map((entry) => `  - ${entry}`).join("\n")}\n- For such a finding, \`steps\` and \`task\` are false, and \`observed\` names the intended behavior it matches. The list does not cover a result that differs from these behaviors.`
+      : "";
   const reported = {
     title: finding.title,
     kind: finding.kind,
@@ -205,9 +218,8 @@ Confirmation:
 - \`steps\` is true when an attempt that follows the steps shows the failure the finding describes, and false when neither attempt does.
 - \`task\` is true when an attempt at the task through the page's controls shows the same failure, and false when neither attempt does. When the steps are the task, \`task\` has the value of \`steps\`.
 - \`observed\` states what your attempts showed, for the steps and for the task.
-- Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.
-- \`evidence\` includes at least one screenshot that shows what your attempts showed whenever a page shows it. Take it while the page shows the result. Leave screenshots out only when no page shows the result, such as a failure that only an HTTP response or the console shows.
-- The session ends when the time box ends. Write the file before then.`;
+- Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.${intended}
+- \`evidence\` includes at least one screenshot that shows what your attempts showed whenever a page shows it. Take it while the page shows the result. Leave screenshots out only when no page shows the result, such as a failure that only an HTTP response or the console shows.- The session ends when the time box ends. Write the file before then.`;
 }
 
 export function timeUpPrompt(): string {
