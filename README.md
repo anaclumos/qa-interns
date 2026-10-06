@@ -235,13 +235,13 @@ Nothing else deletes a run directory, so run `qa-interns prune` on a schedule, s
 - The run used `--dirty`. No commit holds the uncommitted changes it tested, so no pull request shows whether they shipped.
 - The run's teardown left a container, network, volume, or image of the run, a disk helper, a mounted output disk or a disk image, or a workspace copy. `qa-interns down` removes these, and it needs the run directory to do so.
 - The run's job has not shipped.
-- A run that `prune` keeps, or a replay that still runs, replays the run's findings. The replay's report cites the evidence in the run's directory, and `qa-interns replay` takes the run, never its replay. A replay holds a shared lock on the run's `replay.lock` from before it reads the run until it ends, and `prune` deletes a run only while it holds that lock exclusively. `prune` takes the locks of every run it can delete before it reads which runs the other run directories replay, so a replay that ends while `prune` runs keeps its run too.
+- A run that `prune` keeps, or a replay that still runs, replays the run's findings. The replay's report cites the evidence in the run's directory, and `qa-interns replay` takes the run, never its replay. A replay, and `eval/score.ts`, hold a shared lock on the run's `replay.lock` from before they read the run until they end, and `prune` deletes a run only while it holds that lock exclusively. `prune` takes the locks of every run it can delete before it reads which runs the other run directories replay, so a replay that ends while `prune` runs keeps its run too.
 
 A run directory without `state.json`, such as one whose run failed to start on a full disk, has no job. `prune` deletes it once the directory has not changed for 24 hours and its teardown left nothing. `prune` reads and deletes only directories in `runs/`. It leaves a file or a symbolic link there, and what the link points to.
 
 A run's job has shipped when one or more pull requests hold the commit the run tested and none of them is open. A pull request holds a commit when the commit is one of its commits or its merge commit, including the commit of a squash merge. A commit that no pull request holds and that has two or more parents, such as a batch commit that merges several pull request heads, has shipped when each of its parents has shipped. `prune` reads those parents from the run's target repository, so such a run stays once that repository or the commit is gone from the host.
 
-`prune` finds the pull requests that hold a commit with GitHub search through `gh api graphql`, in every repository the account can read, so a pull request in a fork also counts. It deletes the files of a run directory before its `state.json`, so a `prune` that stops partway leaves a run directory that the next `prune` deletes. It prints a line for each run directory it deletes, then the number it deleted and the number it kept for each reason above.
+`prune` finds the pull requests that hold a commit with GitHub search through `gh api graphql`, in every repository the account can read, so a pull request in a fork also counts. It deletes the files of a run directory before its `state.json`, and `replay.lock` with the directory itself, so a `prune` that stops partway leaves a run directory that the next `prune` deletes. It prints a line for each run directory it deletes, then the number it deleted and the number it kept for each reason above.
 
 ## Isolation
 
@@ -299,4 +299,4 @@ qa-interns run eval/ledger --interns 4
 bun eval/score.ts <run>
 ```
 
-`eval/score.ts` runs one agent on a login from your logins file and writes its files under `envs/score/` and `interns/score/` in the run directory. When its teardown succeeds, it replaces the API key of an OpenCode login with `[redacted]` in those files, as a run does.
+`eval/score.ts` holds the run's shared `replay.lock` until it ends, so `qa-interns prune` keeps the run. It runs one agent on a login from your logins file and writes its files under `envs/score/` and `interns/score/` in the run directory. When its teardown succeeds, it replaces the API key of an OpenCode login with `[redacted]` in those files, as a run does.

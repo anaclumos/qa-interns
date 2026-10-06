@@ -79,7 +79,9 @@ async function shippedCommits(targets: Map<string, string>): Promise<Set<string>
 }
 
 async function removeRun(dir: string): Promise<void> {
-  for (const entry of await readdir(dir)) if (entry !== "state.json") await rm(join(dir, entry), { recursive: true, force: true });
+  const keep = new Set(["state.json", basename(replayLock(dir))]);
+  for (const entry of await readdir(dir)) if (!keep.has(entry)) await rm(join(dir, entry), { recursive: true, force: true });
+  await rm(join(dir, "state.json"), { force: true });
   await rm(dir, { recursive: true, force: true });
 }
 
