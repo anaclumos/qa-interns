@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { rmSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { removeCopies } from "../src/environment.ts";
 import { ask, runQa } from "../src/run.ts";
 import { newRunId, readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
-import { dockerAvailable, endToEnd, internalSubnet, leftovers, timeout } from "./e2e.ts";
+import { dockerAvailable, endToEnd, internalSubnet, leftovers, runLocks, timeout } from "./e2e.ts";
 import { freeBlock } from "./subnet.ts";
+import { suiteLabel } from "./suite-lock.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   const { id, root, target, fakeImage, logins, askOptions } = endToEnd();
@@ -19,7 +21,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const blockers: string[] = [];
       const block = async (range: string) => {
         const name = `qair-f-e2e-${id}-range-${blockers.length}`;
-        await execute(["docker", "network", "create", "--internal", "--subnet", range, name]);
+        await execute(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", range, name]);
         blockers.push(name);
       };
       const previous = process.env.QA_INTERNS_SUBNET;
@@ -27,7 +29,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       try {
         await block(`10.214.${third}.0/25`);
         const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude", second: true }]);
-        const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+        const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
         const runDir = await run();
         const state = await readState(runDir);
         expect(state.phase).toBe("done");
@@ -58,7 +60,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const other = `qair-f-e2e-other-${runId}`;
       const sibling = join(root, "asks", runId, "envs", "i1", `qa-${runId}-i1`, "marker");
       await Bun.write(sibling, "sibling copy\n");
-      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${runId}-i1`, other]);
+      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${runId}-i1`, "--label", suiteLabel, other]);
       try {
         expect(await ask(await askOptions(runId, "score"))).toEqual({ groups: [] });
         expect((await capture(["docker", "network", "inspect", other])).code).toBe(0);
@@ -79,14 +81,15 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const runId = newRunId();
       const project = `qa-${runId}-score`;
       const held = `qair-f-e2e-held-${runId}`;
-      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=${project}`, held]);
+      await execute(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=${project}`, "--label", suiteLabel, held]);
       try {
-        await execute(["docker", "run", "-d", "--rm", "--name", held, "--network", held, fakeImage]);
+        await execute(["docker", "run", "-d", "--rm", "--label", suiteLabel, "--name", held, "--network", held, fakeImage]);
         await expect(ask(await askOptions(runId, "score"))).rejects.toThrow(`Teardown of ${project} failed: score: docker compose down left objects of ${project} behind`);
       } finally {
         await execute(["docker", "rm", "-f", held]);
         await execute(["docker", "network", "rm", held]);
         await removeCopies(join(root, "asks", runId), runId, fakeImage);
+        rmSync(join(runLocks, runId), { force: true });
       }
       expect(await leftovers(runId)).toEqual([]);
       expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
@@ -143,7 +146,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     async () => {
       const third = await freeBlock(215);
       const blocker = `qair-f-e2e-${id}-shared`;
-      await execute(["docker", "network", "create", "--internal", "--subnet", `10.215.${third}.0/25`, blocker]);
+      await execute(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", `10.215.${third}.0/25`, blocker]);
       const previous = process.env.QA_INTERNS_SUBNET;
       process.env.QA_INTERNS_SUBNET = `10.215.${third}.0/22`;
       try {
