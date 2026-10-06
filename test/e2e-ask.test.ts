@@ -29,7 +29,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       try {
         await block(`10.214.${third}.0/25`);
         const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude", second: true }]);
-        const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+        const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
         const runDir = await run();
         const state = await readState(runDir);
         expect(state.phase).toBe("done");

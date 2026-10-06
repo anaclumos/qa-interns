@@ -26,6 +26,9 @@ export type Environment = { project: string; runner: string; out: string; devCon
 export const devcontainer = fileURLToPath(import.meta.resolve("@devcontainers/cli/devcontainer.js"));
 const gib = 1024 ** 3;
 const mib = 1024 ** 2;
+const runnerMemory = 4 * gib;
+const sidecarMemory = 128 * mib;
+const serviceMemory = gib;
 const minute = 60_000;
 const readyTimeout = 5 * minute;
 const waitTimeoutSeconds = "600";
@@ -198,7 +201,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
         );
       }
     }
-    const memory = service.memLimit === null ? "1g" : null;
+    const memory = service.memLimit === null ? String(serviceMemory) : null;
     const cpus = service.hasCpus ? null : 2;
     const pids = service.hasPidsLimit ? null : 1024;
     if (service.deployLimits) {
@@ -234,7 +237,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
       `    environment: ${y({ QA_PROXY_ALLOW: spec.egress.join(",") })}`,
       `    networks: ${y(["qa_agent", "qa_egress"])}`,
       ...hardening,
-      `    mem_limit: ${y("128m")}`,
+      `    mem_limit: ${y(String(sidecarMemory))}`,
       "    cpus: 0.5",
       "    pids_limit: 128",
     );
@@ -253,7 +256,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...hardening,
     "    pids_limit: 4096",
     `    ulimits: ${y({ fsize: outLimit })}`,
-    `    mem_limit: ${y("4g")}`,
+    `    mem_limit: ${y(String(runnerMemory))}`,
     "    cpus: 2",
     `    networks: ${y(["qa_internal", ...(proxied ? ["qa_agent"] : [])])}`,
   );
@@ -267,7 +270,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
       `    networks: ${y({ qa_relay: { ipv4_address: relayAddress }, qa_egress: null })}`,
       `    healthcheck: ${y({ test: ["CMD", "node", "-e", relayProbe], start_period: "30s", start_interval: "500ms" })}`,
       ...hardening,
-      `    mem_limit: ${y("128m")}`,
+      `    mem_limit: ${y(String(sidecarMemory))}`,
       "    cpus: 0.5",
       "    pids_limit: 128",
     );
@@ -280,6 +283,12 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...(proxied || relayHosts.length > 0 ? [`  qa_egress: !override ${y({ ipam: { config: [{ subnet: egress }] } })}`] : []),
   );
   return `${lines.join("\n")}\n`;
+}
+
+export function environmentMemory(target: Target | null): number {
+  const services = Object.values(target?.services ?? {}).filter((service) => service.active);
+  const relay = (target?.settings.egress.length ?? 0) > 0 ? sidecarMemory : 0;
+  return services.reduce((sum, service) => sum + (service.memLimit ?? serviceMemory) * service.replicas, runnerMemory + sidecarMemory + relay);
 }
 
 function urlHosts(urls: Record<string, string>): string[] {

@@ -32,6 +32,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         replay: null,
         onEnd: `test -f "$QA_INTERNS_RUN_DIR/report.md" && printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'`,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -145,6 +146,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         ]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: () => {},
       });
 
@@ -175,6 +177,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("handoff", [{ id: "claude-handoff", provider: "claude", second: true }]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: () => {},
       });
 
@@ -222,7 +225,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         await deadHolder.exited;
         process.env.QA_INTERNS_SUBNET = `10.214.${third}.0/23`;
         const loginsFile = await logins("swept", [{ id: "claude-1", provider: "claude" }]);
-        const run = runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+        const run = runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
         await expect(run).rejects.toThrow("No free network slot");
         expect(await leftovers(dead)).toEqual([]);
         expect(existsSync(deadDir)).toBe(false);

@@ -5,6 +5,7 @@ import { openSession, type Session } from "./acp.ts";
 import {
   buildImages,
   containerStats,
+  environmentMemory,
   freeSlot,
   freeSlots,
   holdRun,
@@ -27,7 +28,7 @@ import {
   type HeldSlot,
 } from "./environment.ts";
 import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
-import { hasQuota, loadLogins, Scheduler, watchReleases, type Lease } from "./logins.ts";
+import { admit, hasQuota, loadLogins, Scheduler, watchReleases, type Lease } from "./logins.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
 import { providers } from "./providers.ts";
 import { browserVersion } from "./runner.ts";
@@ -48,6 +49,7 @@ export type RunOptions = {
   replay: Replay | null;
   onEnd?: string;
   runnerImage(): Promise<string>;
+  admit: Admit;
   print(line: string): void;
 };
 
@@ -64,10 +66,13 @@ export type AskOptions = {
   name: string;
   loginsFile: string;
   runnerImage: string;
+  admit: Admit;
   prompt: string;
   file: string;
   parse(raw: string): unknown;
 };
+
+type Admit = (memory: number) => (() => void) | null;
 
 type Turn = Awaited<ReturnType<Session["prompt"]>>;
 type Limit = <T>(task: (free: () => void) => Promise<T>) => Promise<T>;
@@ -83,6 +88,7 @@ type Context = {
   runDir: string;
   runnerImage: string;
   scheduler: Scheduler;
+  admit: Admit;
   images: Record<string, string>;
   sessions: Set<Session>;
   teardowns: string[];
@@ -98,7 +104,7 @@ const askMinutes = 10;
 const settleMs = 60_000;
 const writeUpMs = 4 * minute;
 const stopWaitMs = 30_000;
-const loginWaitMs = 30_000;
+const waitMs = 30_000;
 const noLogin = "no login has spare capacity";
 const copyName = "up";
 
@@ -153,12 +159,13 @@ function checkStopping(ctx: Context): void {
   if (ctx.stopping) throw new Error("interrupted");
 }
 
-function context(runId: string, runDir: string, runnerImage: string, scheduler: Scheduler, update: Context["update"]): Context {
+function context(runId: string, runDir: string, runnerImage: string, scheduler: Scheduler, admit: Admit, update: Context["update"]): Context {
   return {
     runId,
     runDir,
     runnerImage,
     scheduler,
+    admit,
     images: {},
     sessions: new Set(),
     teardowns: [],
@@ -185,7 +192,27 @@ async function acquire(ctx: Context, id: string): Promise<Lease | null> {
         if (!leased) return null;
         continue;
       }
-      timer = setTimeout(wake, loginWaitMs);
+      timer = setTimeout(wake, waitMs);
+      await released.promise;
+    } finally {
+      clearTimeout(timer);
+      ctx.waiting.delete(wake);
+      unwatch();
+    }
+  }
+}
+
+async function admitted(ctx: Context, memory: number): Promise<() => void> {
+  for (;;) {
+    checkStopping(ctx);
+    const released = Promise.withResolvers<void>();
+    const wake = () => released.resolve();
+    const unwatch = watchReleases(wake);
+    ctx.waiting.add(wake);
+    const timer = setTimeout(wake, waitMs);
+    try {
+      const started = ctx.admit(memory);
+      if (started !== null) return started;
       await released.promise;
     } finally {
       clearTimeout(timer);
@@ -258,11 +285,14 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
   const first = await acquire(ctx, id);
   if (first === null) return null;
   let lease = first;
+  const memory = environmentMemory(target);
   const project = `qa-${ctx.runId}-${id}`;
+  let starting = () => {};
   let slot: HeldSlot | undefined;
   let started = false;
   let unread = null as EnvironmentStats | null;
   const releaseSlot = () => {
+    starting();
     slot?.release();
     slot = undefined;
   };
@@ -280,6 +310,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     }
   };
   try {
+    starting = await admitted(ctx, memory);
     await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, project, startedAt: now() });
     for (let count = 1; ; count += 1) {
       checkStopping(ctx);
@@ -290,7 +321,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
       unread = environment;
       const env = await startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease, count), () => {
         environment.readyAt = now();
-      });
+      }).finally(starting);
       const outcome = await attempt(ctx, id, count, env, lease, work, note);
       if (!(outcome instanceof Error)) return outcome;
       const retry = outcome instanceof Unanswered;
@@ -307,6 +338,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
       if (next === null) return null;
       await note(`moved to ${next.login.id}`);
       lease = next;
+      starting = await admitted(ctx, memory);
       await ctx.update(id, { status: "starting", provider: lease.login.provider, login: lease.login.id, model: null });
     }
   } finally {
@@ -563,7 +595,7 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
 
 export async function ask(opts: AskOptions): Promise<unknown> {
   const scheduler = new Scheduler(await loadLogins(opts.loginsFile));
-  const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, async () => {});
+  const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, opts.admit, async () => {});
   const project = `qa-${opts.runId}-${opts.name}`;
   const held = holdRun(opts.runId, opts.runDir);
   const finish = once(async (): Promise<string | null> => {
@@ -636,7 +668,7 @@ async function newRun(ref: TargetRef, options: RunState["options"], print: (line
 export async function startCopy(opts: CopyOptions): Promise<string> {
   const ref = await resolveTarget(opts.dir, opts.rev, false);
   const { runId, runDir, state, save, held } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0, confirmConcurrency: 0 }, opts.print);
-  const ctx = context(runId, runDir, "", new Scheduler([]), async () => {});
+  const ctx = context(runId, runDir, "", new Scheduler([]), admit, async () => {});
   const dirs = [join(runDir, "envs"), join(runDir, "interns")];
   const phase = async (next: RunPhase) => {
     checkStopping(ctx);
@@ -720,7 +752,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0, confirmConcurrency: 0 };
   const { runId, runDir, state, save, held } = await newRun(ref, options, opts.print);
 
-  const ctx = context(runId, runDir, "", scheduler, async (id, patch) => {
+  const ctx = context(runId, runDir, "", scheduler, opts.admit, async (id, patch) => {
     const intern = state.interns.find((entry) => entry.id === id);
     if (intern === undefined) throw new Error(`Run ${runId} has no intern ${id}`);
     const changed = (patch.status !== undefined && patch.status !== intern.status) || (patch.login !== undefined && patch.login !== intern.login);
