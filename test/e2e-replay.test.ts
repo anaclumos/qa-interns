@@ -17,7 +17,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
 
   beforeAll(async () => {
     loginsFile = await logins("replay", [{ id: "claude-1", provider: "claude" }]);
-    sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: () => {} });
+    sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
     source = await readState(sourceDir);
     const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false"];
     next = (await execute([...git, "commit-tree", "-p", source.target.commit, "-m", "Next", `${source.target.commit}^{tree}`])).trim();
@@ -46,6 +46,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile,
         replay,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -104,6 +105,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           loginsFile: await logins("replay-silent", [{ id: "claude-no-confirm", provider: "claude", confirms: false }]),
           replay,
           runnerImage: async () => fakeImage,
+          admit: () => () => {},
           print: (line) => failedLines.push(line),
         }),
       ).rejects.toThrow("No confirming intern recorded a result: c1 done: confirmation failed: no confirmation.json written");
@@ -133,6 +135,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("replay-late", [{ id: "claude-late", provider: "claude", late: true }]),
         replay,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: () => {},
       });
       const late = await readState(lateDir);
@@ -168,6 +171,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           loginsFile: await logins("replay-deaf", [{ id: "claude-deaf", provider: "claude", late: true, deaf: true }]),
           replay,
           runnerImage: async () => fakeImage,
+          admit: () => () => {},
           print: (line) => deafLines.push(line),
         }),
       ).rejects.toThrow("No confirming intern recorded a result: c1 done: confirmation failed: no confirmation.json written");
@@ -202,6 +206,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           loginsFile: await logins("replay-swap", [{ id: "claude-swap", provider: "claude", swap: true }]),
           replay,
           runnerImage: async () => fakeImage,
+          admit: () => () => {},
           print: (line) => swappedLines.push(line),
         }),
       ).rejects.toThrow(`No confirming intern recorded a result: c1 done: reproduced; confirmation failed after teardown: ${outside}`);

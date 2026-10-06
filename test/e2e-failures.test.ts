@@ -26,6 +26,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("upgrade", [{ id: "cursor-upgrade", provider: "cursor", upgrade: true }]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -58,6 +59,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("hang", [{ id: "grok-hang", provider: "grok", hang: true }]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -91,6 +93,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("teardown", [{ id: "claude-limit", provider: "claude", limit: true }]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
@@ -139,6 +142,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           loginsFile: await logins("busy", [{ id: "grok-busy", provider: "grok" }]),
           replay: null,
           runnerImage: async () => fakeImage,
+          admit: () => () => {},
           print: (line) => {
             lines.push(line);
             const [dir] = lines;

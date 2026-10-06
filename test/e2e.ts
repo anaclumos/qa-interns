@@ -109,6 +109,7 @@ USER qa
       name,
       loginsFile: await logins(`ask-${runId}`, [{ id: "claude-1", provider: "claude" }]),
       runnerImage: fakeImage,
+      admit: () => () => {},
       prompt: "Write /qa/out/groups.json.",
       file: "groups.json",
       parse: (raw) => JSON.parse(raw),

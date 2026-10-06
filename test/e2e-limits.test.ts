@@ -34,6 +34,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         ]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
@@ -126,6 +127,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         ]),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 

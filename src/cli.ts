@@ -8,7 +8,7 @@ import { z } from "zod";
 import { doctor } from "./doctor.ts";
 import { imageBuilders, removeCopies, stopRun, sweepImages } from "./environment.ts";
 import { errorCode, message, stripControl } from "./findings.ts";
-import { defaultLoginsPath, flock } from "./logins.ts";
+import { admit, defaultLoginsPath, flock } from "./logins.ts";
 import { prune } from "./prune.ts";
 import { readReplay, replayLock } from "./report.ts";
 import { runQa, startCopy } from "./run.ts";
@@ -21,7 +21,8 @@ const usage = `Usage: qa-interns <command> [options]
 Commands:
   doctor [--logins <file>]
       Check Docker, Compose, the isolated network mode, the Dev Container CLI,
-      the runner image and its agents, and the logins.
+      the runner image and its agents, the logins, and the host's available
+      memory and CPU pressure.
   validate <target-dir> [--commit <rev> | --dirty]
       Check the target's dev container and Compose files at the commit (default
       HEAD), or with --dirty in a copy of its working tree, as run does before it
@@ -33,7 +34,8 @@ Commands:
       files that Git does not ignore. Defaults: HEAD, 4 interns, 30 minutes
       each, 10 minutes per confirmation. The testing interns run at once, then
       one confirming intern per group of findings, all at once, as far as login
-      capacity and free network slots allow. Prints the run directory first.
+      capacity, free network slots, free memory, and CPU pressure allow. Prints
+      the run directory first.
       With --on-end, run the shell command when the run ends, done, failed, or
       interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
   replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]
@@ -141,7 +143,7 @@ async function main(args: string[]): Promise<number> {
         loginsFile: values.logins,
         onEnd: values["on-end"],
       };
-      await runQa({ ...options, replay: null, runnerImage: ensureRunnerImage, print });
+      await runQa({ ...options, replay: null, runnerImage: ensureRunnerImage, admit, print });
       return 0;
     }
     case "replay": {
@@ -173,6 +175,7 @@ async function main(args: string[]): Promise<number> {
           loginsFile: values.logins,
           replay,
           runnerImage: ensureRunnerImage,
+          admit,
           print,
         });
       } finally {
