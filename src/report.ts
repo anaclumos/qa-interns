@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { basename, extname, join, resolve } from "node:path";
 import { z } from "zod";
 import { linkEvidence, stripControl } from "./findings.ts";
 import { readJson, readState } from "./state.ts";
@@ -92,6 +92,19 @@ function paths(list: string[]) {
   return list.length > 0 ? list.map((entry) => `- ${inline(entry)}`) : ["No evidence files."];
 }
 
+const imageTypes = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"]);
+
+function destination(file: string) {
+  return file
+    .split("/")
+    .map((part) => encodeURIComponent(part).replaceAll("(", "%28").replaceAll(")", "%29"))
+    .join("/");
+}
+
+function images(list: string[], root: string) {
+  return list.filter((entry) => imageTypes.has(extname(entry).toLowerCase())).flatMap((entry) => ["", `![${inline(basename(entry))}](${destination(join(root, entry))})`]);
+}
+
 function wrongSteps(group: Group) {
   const result = group.confirmation?.result ?? null;
   return result !== null && result.steps && !result.task;
@@ -102,7 +115,7 @@ function verdict(result: Confirmation) {
   return `${confirms(result) ? "reproduced it" : "did not reproduce it"}: the steps ${shown(result.steps)} the failure, and the task done through the page's own controls ${shown(result.task)} it`;
 }
 
-function confirmation(group: Group) {
+function confirmation(group: Group, root: string) {
   const outcome = group.confirmation;
   if (outcome === null) return ["Confirmation: not attempted."];
   if (outcome.result === null) return [`Confirmation: ${who(outcome)} failed: ${inline(outcome.error)}`];
@@ -114,6 +127,7 @@ function confirmation(group: Group) {
     "Confirmation evidence:",
     "",
     ...paths(outcome.result.evidence),
+    ...images(outcome.result.evidence, root),
   ];
 }
 
@@ -150,17 +164,17 @@ export function lead(group: Group) {
   return first;
 }
 
-function section(group: Group, interns: string[], browser: string | null) {
+function section(group: Group, interns: string[], browser: string | null, root: string) {
   const first = lead(group);
   const others = group.findings.slice(1);
   const lines = reported(first, `- Reproductions: ${interns.length} (${interns.join(", ")})`, browser);
-  lines.push("Evidence:", "", ...paths(first.evidence), "");
+  lines.push("Evidence:", "", ...paths(first.evidence), ...images(first.evidence, root), "");
   if (others.length > 0) {
     lines.push("Other reports:", "");
     for (const finding of others) lines.push(`- ${inline(finding.id)}`, ...quote(finding.observed, "  "));
     lines.push("");
   }
-  lines.push(...confirmation(group), "");
+  lines.push(...confirmation(group, root), "");
   return lines;
 }
 
@@ -190,7 +204,7 @@ function ticket(state: RunState, browserVersion: string | null, group: Group, in
     "",
   ];
   if (first.contradicts !== null) lines.push("## Contradicts", "", ...block(first.contradicts), "");
-  lines.push("## Evidence", "", ...files(first.evidence), "");
+  lines.push("## Evidence", "", ...files(first.evidence), ...images(first.evidence, ""), "");
   if (others.length > 0) {
     lines.push("## Other reports", "");
     for (const finding of others) lines.push(`${finding.intern}:`, "", ...block(finding.observed), "");
@@ -201,7 +215,7 @@ function ticket(state: RunState, browserVersion: string | null, group: Group, in
   else if (outcome.result === null) lines.push(`${who(outcome)} failed:`, "", ...block(outcome.error), "");
   else {
     lines.push(`${who(outcome)} ${verdict(outcome.result)}.`, "", ...block(outcome.result.observed), "");
-    lines.push("Confirmation evidence:", "", ...files(outcome.result.evidence), "");
+    lines.push("Confirmation evidence:", "", ...files(outcome.result.evidence), ...images(outcome.result.evidence, ""), "");
   }
   const evidence = [...new Set([...first.evidence, ...(outcome?.result?.evidence ?? [])])];
   return { id: group.id, title: first.title, body: lines.join("\n"), evidence };
@@ -281,7 +295,16 @@ function environmentSection(environments: EnvironmentStats[]) {
   return lines;
 }
 
-export function renderReport(state: RunState, browser: string | null, groups: Group[], rejected: Rejected[], egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown; tickets: Ticket[] } {
+export function renderReport(
+  runDir: string,
+  state: RunState,
+  browser: string | null,
+  groups: Group[],
+  rejected: Rejected[],
+  egress: Egress,
+  environments: EnvironmentStats[],
+): { markdown: string; json: unknown; tickets: Ticket[] } {
+  const root = resolve(runDir);
   const rows = groups.map((group) => ({ group, interns: reproductions(group) }));
   const connections = egressRows(egress);
   const confirmed = rows.filter((row) => row.interns.length >= 2 && !wrongSteps(row.group));
@@ -314,10 +337,10 @@ export function renderReport(state: RunState, browser: string | null, groups: Gr
   if (state.error !== null) lines.push(`- Error: ${inline(state.error)}`);
   lines.push("", "## Confirmed", "");
   if (confirmed.length === 0) lines.push("No finding was confirmed.", "");
-  for (const row of confirmed) lines.push(...section(row.group, row.interns, browser));
+  for (const row of confirmed) lines.push(...section(row.group, row.interns, browser, root));
   lines.push("## Not confirmed", "");
   if (notConfirmed.length === 0) lines.push("Every finding was confirmed.", "");
-  for (const row of notConfirmed) lines.push(...section(row.group, row.interns, browser));
+  for (const row of notConfirmed) lines.push(...section(row.group, row.interns, browser, root));
   lines.push("## Rejected finding files", "");
   if (rejected.length === 0) lines.push("No finding file was rejected.");
   for (const entry of rejected) lines.push(`- ${inline(entry.file)}: ${inline(entry.reason)}`);
@@ -348,7 +371,8 @@ function outcome(group: Group) {
   return result === null ? null : confirms(result);
 }
 
-export function renderReplay(state: RunState, browser: string | null, replay: Replay, egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown } {
+export function renderReplay(runDir: string, state: RunState, browser: string | null, replay: Replay, egress: Egress, environments: EnvironmentStats[]): { markdown: string; json: unknown } {
+  const root = resolve(runDir);
   const connections = egressRows(egress);
   const reproduced = replay.groups.filter((group) => outcome(group) === true);
   const notReproduced = replay.groups.filter((group) => outcome(group) === false);
@@ -390,7 +414,7 @@ export function renderReplay(state: RunState, browser: string | null, replay: Re
   for (const [heading, none, list] of sections) {
     lines.push(`## ${heading}`, "");
     if (list.length === 0) lines.push(none, "");
-    for (const group of list) lines.push(...reported(lead(group), `- Group: ${inline(group.id)} in run ${inline(replay.runId)}`, null), ...confirmation(group), "");
+    for (const group of list) lines.push(...reported(lead(group), `- Group: ${inline(group.id)} in run ${inline(replay.runId)}`, null), ...confirmation(group, root), "");
   }
   lines.push(...internTable(state), "", ...egressTable(connections), "", ...environmentSection(environments));
 
