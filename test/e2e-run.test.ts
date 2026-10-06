@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { runQa } from "../src/run.ts";
 import { readState } from "../src/state.ts";
 import type { EnvironmentStats } from "../src/types.ts";
-import { disks, dockerAvailable, endToEnd, firstPrompt, intern, knownGap, leftovers, timeout, title, workspaces } from "./e2e.ts";
+import { disks, dockerAvailable, endToEnd, firstPrompt, intendedBehavior, intern, knownGap, leftovers, timeout, title, workspaces } from "./e2e.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   const { root, target, fakeImage, logins } = endToEnd();
@@ -56,6 +56,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(charterPrompt).toContain(`  - ${knownGap}`);
       expect(confirmationPrompt).toContain("/qa/out/confirmation.json");
       expect(confirmationPrompt).not.toContain(knownGap);
+      expect(charterPrompt).toContain(`  - ${intendedBehavior}`);
+      expect(confirmationPrompt).toContain(`  - ${intendedBehavior}`);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.egress).toEqual([]);

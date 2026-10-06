@@ -14,6 +14,7 @@ export const timeout = 20 * 60_000;
 export const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
 export const title = "Home page shows the fake defect";
 export const knownGap = "The environment has no video model.";
+export const intendedBehavior = "The invoices table scrolls sideways at narrow viewports instead of clipping its columns.";
 
 type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; late?: true; deaf?: true; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
 
@@ -35,7 +36,7 @@ export function endToEnd() {
     await Bun.write(join(feature, "install.sh"), "#!/bin/sh\nset -e\n");
     const devcontainerFile = join(target, ".devcontainer", "devcontainer.json");
     const ledger = await Bun.file(devcontainerFile).json();
-    const customizations = { "qa-interns": { ...ledger.customizations["qa-interns"], knownGaps: [knownGap] } };
+    const customizations = { "qa-interns": { ...ledger.customizations["qa-interns"], knownGaps: [knownGap], intendedBehaviors: [intendedBehavior] } };
     await Bun.write(devcontainerFile, JSON.stringify({ ...ledger, customizations, features: { "./probe-feature": {} } }));
     const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"];
     await execute([...git, "init", "-q"]);
