@@ -35,7 +35,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       let runDir: string;
       let printed: string;
       try {
-        runDir = await runQa({ dir: secret, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+        runDir = await runQa({ dir: secret, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: (line) => lines.push(line) });
       } finally {
         printed = stderr.mock.calls.map(([chunk]) => String(chunk)).join("");
         stderr.mockRestore();
@@ -82,11 +82,11 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const key = `fake-agent:${JSON.stringify(fake)}`;
       const loginsFile = await logins("login-key", fake);
       const lines: string[] = [];
-      const runDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, print: (line) => lines.push(line) });
+      const runDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: (line) => lines.push(line) });
 
       const state = await readState(runDir);
       expect(state.phase).toBe("done");
-      const options = { runDir, runId: state.runId, loginsFile, runnerImage: fakeImage };
+      const options = { runDir, runId: state.runId, loginsFile, runnerImage: fakeImage, admit: () => () => {} };
       expect(await ask({ ...options, name: "score", prompt: "Write /qa/out/groups.json.", file: "groups.json", parse: (raw) => JSON.parse(raw) })).toEqual({ groups: [] });
       const failed = ask({
         ...options,

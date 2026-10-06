@@ -4,8 +4,10 @@ import { openSession, type Session } from "./acp.ts";
 import {
   buildImages,
   containerStats,
+  environmentMemory,
   freeSlot,
   freeSlots,
+  holdRun,
   networkRange,
   readRelayLogs,
   removeCopies,
@@ -17,6 +19,7 @@ import {
   stopProject,
   stopRun,
   sweepImages,
+  sweepRuns,
   watchOut,
   writeChromePolicy,
   type Environment,
@@ -24,14 +27,15 @@ import {
   type HeldSlot,
 } from "./environment.ts";
 import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
-import { loadLogin, Scheduler, watchReleases, type Lease } from "./logins.ts";
+import { admit, loadLogin, Scheduler, watchReleases, type Lease } from "./logins.ts";
 import { credentialRule, pi, readKey } from "./pi.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
+import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
-import type { Confirmation, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Rejected, Replay, RunPhase, RunState } from "./types.ts";
+import type { Answer, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
   dir: string;
@@ -44,6 +48,7 @@ export type RunOptions = {
   replay: Replay | null;
   onEnd?: string;
   runnerImage(): Promise<string>;
+  admit: Admit;
   print(line: string): void;
 };
 
@@ -60,10 +65,13 @@ export type AskOptions = {
   name: string;
   loginsFile: string;
   runnerImage: string;
+  admit: Admit;
   prompt: string;
   file: string;
   parse(raw: string): unknown;
 };
+
+type Admit = (memory: number) => (() => void) | null;
 
 type Turn = Awaited<ReturnType<Session["prompt"]>>;
 type Limit = <T>(task: (free: () => void) => Promise<T>) => Promise<T>;
@@ -71,11 +79,14 @@ type Note = (text: string) => Promise<void>;
 type Work<T> = (session: Session, env: Environment, note: Note) => Promise<T>;
 type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "failed"; error: unknown };
 
+class Unanswered extends Error {}
+
 type Context = {
   runId: string;
   runDir: string;
   runnerImage: string;
   scheduler: Scheduler | null;
+  admit: Admit;
   images: Record<string, string>;
   sessions: Set<Session>;
   teardowns: string[];
@@ -89,9 +100,9 @@ const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
-const writeUpMs = 2 * minute;
+const writeUpMs = 4 * minute;
 const stopWaitMs = 30_000;
-const loginWaitMs = 30_000;
+const waitMs = 30_000;
 const noLogin = "no login has spare capacity";
 const copyName = "up";
 
@@ -146,12 +157,13 @@ function checkStopping(ctx: Context): void {
   if (ctx.stopping) throw new Error("interrupted");
 }
 
-function context(runId: string, runDir: string, runnerImage: string, scheduler: Scheduler | null, update: Context["update"]): Context {
+function context(runId: string, runDir: string, runnerImage: string, scheduler: Scheduler | null, admit: Admit, update: Context["update"]): Context {
   return {
     runId,
     runDir,
     runnerImage,
     scheduler,
+    admit,
     images: {},
     sessions: new Set(),
     teardowns: [],
@@ -174,11 +186,31 @@ async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null
       const leased = scheduler.leased();
       const lease = scheduler.acquire();
       if (lease !== null) return lease;
-      if (!scheduler.leased()) {
+      if (!scheduler.lost() && !scheduler.leased()) {
         if (!leased) return null;
         continue;
       }
-      timer = setTimeout(wake, loginWaitMs);
+      timer = setTimeout(wake, waitMs);
+      await released.promise;
+    } finally {
+      clearTimeout(timer);
+      ctx.waiting.delete(wake);
+      unwatch();
+    }
+  }
+}
+
+async function admitted(ctx: Context, memory: number): Promise<() => void> {
+  for (;;) {
+    checkStopping(ctx);
+    const released = Promise.withResolvers<void>();
+    const wake = () => released.resolve();
+    const unwatch = watchReleases(wake);
+    ctx.waiting.add(wake);
+    const timer = setTimeout(wake, waitMs);
+    try {
+      const started = ctx.admit(memory);
+      if (started !== null) return started;
       await released.promise;
     } finally {
       clearTimeout(timer);
@@ -245,40 +277,61 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
 async function leased<T>(ctx: Context, id: string, target: Target | null, free: () => void, work: Work<T>, note: Note): Promise<{ value: T } | null> {
   const project = `qa-${ctx.runId}-${id}`;
   let lease: Lease | null = null;
+  let starting = () => {};
   let slot: HeldSlot | undefined;
-  let environment: EnvironmentStats | null = null;
+  let started = false;
+  let unread = null as EnvironmentStats | null;
+  const releaseSlot = () => {
+    starting();
+    slot?.release();
+    slot = undefined;
+  };
+  const teardown = async (removed: () => void) => {
+    const environment = unread;
+    unread = null;
+    try {
+      if (environment !== null) environment.containers = await containerStats(project);
+    } finally {
+      await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage, removed);
+    }
+  };
   try {
     if (ctx.scheduler === null) throw new Error(`Run ${ctx.runId} has no login`);
     lease = await acquire(ctx, ctx.scheduler);
     if (lease === null) return null;
+    starting = await admitted(ctx, environmentMemory(target));
     await ctx.update(id, { status: "starting", login: lease.login.id, project, startedAt: now() });
-    checkStopping(ctx);
-    slot = await freeSlot();
-    const started: EnvironmentStats = { intern: id, startedAt: now(), readyAt: null, containers: null };
-    ctx.environments.push(started);
-    environment = started;
-    const env = await startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease), () => {
-      started.readyAt = now();
-    });
-    return { value: await withSession(ctx, id, env, lease, work, note) };
+    for (;;) {
+      checkStopping(ctx);
+      slot = await freeSlot();
+      const environment: EnvironmentStats = { intern: id, startedAt: now(), readyAt: null, containers: null };
+      ctx.environments.push(environment);
+      started = true;
+      unread = environment;
+      const env = await startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease), () => {
+        environment.readyAt = now();
+      }).finally(starting);
+      try {
+        return { value: await withSession(ctx, id, env, lease, work, note) };
+      } catch (error) {
+        if (!(error instanceof Unanswered)) throw error;
+        await note(error.message);
+      }
+      await teardown(releaseSlot);
+      started = false;
+      await ctx.update(id, { status: "starting" });
+    }
   } catch (error) {
     await note(ctx.stopping ? "interrupted" : message(error));
     throw error;
   } finally {
     const handOff = () => {
-      slot?.release();
-      slot = undefined;
+      releaseSlot();
       lease?.release();
       free();
     };
     try {
-      if (environment !== null) {
-        try {
-          environment.containers = await containerStats(project);
-        } finally {
-          await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage, handOff);
-        }
-      }
+      if (started) await teardown(handOff);
     } catch (error) {
       ctx.teardowns.push(`${id}: ${message(error)}`);
       await note(`teardown failed: ${message(error)}`);
@@ -342,6 +395,7 @@ function promptEnvironment(target: Target, env: Environment, minutes: number): P
 }
 
 async function askWith<T>(ctx: Context, id: string, prompt: string, file: string, parse: (raw: string) => T): Promise<T> {
+  let unanswered = false;
   const outcome = await agentTask(ctx, id, null, () => {}, async (session) => {
     const path = join(ctx.runDir, outDir(id), file);
     await rm(path, { force: true });
@@ -364,7 +418,12 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
         throw new Error(`${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes: ${message(error)}`);
       }
     }
-    if (parsed === null) throw new Error(`${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes`);
+    if (parsed === null) {
+      const reason = `${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes`;
+      if (unanswered) throw new Error(reason);
+      unanswered = true;
+      throw new Unanswered(`${reason}; starting it again in a fresh environment`);
+    }
     return parsed.value;
   });
   if (outcome.status === "failed") throw outcome.error;
@@ -379,7 +438,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     environment = found;
     const start = Date.now();
     const deadline = start + minutes * minute;
-    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps), deadline, async (turn, idle) => {
+    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
       if (idle) {
         const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
         if (session.toolCalls() === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
@@ -398,7 +457,7 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
 
 async function reproduce(ctx: Context, intern: InternState, group: Group, target: Target, minutes: number, free: () => void): Promise<void> {
   const finding = lead(group);
-  const check = async (): Promise<{ result: Confirmation | null; error: string | null }> => {
+  const check = async (): Promise<Answer> => {
     try {
       return { result: await readConfirmation(ctx.runDir, intern.id), error: null };
     } catch (error) {
@@ -411,9 +470,9 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     const out = outDir(intern.id);
     const file = join(ctx.runDir, out, "confirmation.json");
     const deadline = Date.now() + minutes * minute;
-    let answer: { result: Confirmation | null; error: string | null } = { result: null, error: "no confirmation.json written" };
+    let answer: Answer = { result: null, error: "no confirmation.json written" };
     let corrected = false;
-    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes)), deadline, async (_turn, idle) => {
+    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
       answer = await check();
       if (answer.error === null || corrected) return null;
@@ -425,9 +484,11 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
   });
-  const answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };
-  const written = answer.result === null && ran ? await check() : null;
-  group.confirmation = { intern: intern.id, ...(written !== null && written.result !== null ? written : answer) };
+  const answer: Answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };
+  const saved = ran ? await check() : null;
+  const confirmation: NonNullable<Group["confirmation"]> = { intern: intern.id, ...(saved !== null && (saved.result !== null || answer.error === null) ? saved : answer) };
+  if (answer.error === null && confirmation.result === null) await ctx.update(intern.id, { detail: stripControl(`${intern.detail}; confirmation failed after teardown: ${confirmation.error}`) });
+  group.confirmation = confirmation;
 }
 
 function internState(id: string, role: InternState["role"], charter: string, group: string | null): InternState {
@@ -508,14 +569,16 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
 
 export async function ask(opts: AskOptions): Promise<unknown> {
   const scheduler = new Scheduler(await loadLogin(opts.loginsFile));
-  const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, async () => {});
+  const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, opts.admit, async () => {});
   const project = `qa-${opts.runId}-${opts.name}`;
+  const held = holdRun(opts.runId, opts.runDir);
   const finish = once(async (): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     try {
       await stopProject(project, join(opts.runDir, "interns", opts.name));
       await removeCopy(opts.runDir, opts.runId, opts.name, opts.runnerImage);
       await saveDisks(opts.runDir, opts.name, project, opts.runnerImage);
+      held.end();
     } catch (reason) {
       teardowns.push(message(reason));
     }
@@ -550,6 +613,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
 async function newRun(ref: TargetRef, options: RunState["options"], print: (line: string) => void) {
   const runId = newRunId();
   const runDir = runDirFor(runId);
+  const held = holdRun(runId, runDir);
   await mkdir(runsDir(), { recursive: true });
   await mkdir(runDir);
   const state: RunState = {
@@ -572,13 +636,13 @@ async function newRun(ref: TargetRef, options: RunState["options"], print: (line
   await save();
   print(runDir);
   print(`phase ${state.phase}`);
-  return { runId, runDir, state, save };
+  return { runId, runDir, state, save, held };
 }
 
 export async function startCopy(opts: CopyOptions): Promise<string> {
   const ref = await resolveTarget(opts.dir, opts.rev, false);
-  const { runId, runDir, state, save } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0, confirmConcurrency: 0 }, opts.print);
-  const ctx = context(runId, runDir, "", null, async () => {});
+  const { runId, runDir, state, save, held } = await newRun(ref, { interns: 0, minutes: 0, confirmMinutes: 0, concurrency: 0, confirmConcurrency: 0 }, opts.print);
+  const ctx = context(runId, runDir, "", null, admit, async () => {});
   const dirs = [join(runDir, "envs"), join(runDir, "interns")];
   const phase = async (next: RunPhase) => {
     checkStopping(ctx);
@@ -598,6 +662,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
     if (problems.length > 1) {
       if (hasSecrets()) problems.push(`secret values stay in the files under ${dirs.join(" and ")}`);
     } else {
+      held.end();
       try {
         await redactFiles(dirs);
       } catch (reason) {
@@ -615,6 +680,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
       let slot: HeldSlot | undefined;
       try {
         ctx.runnerImage = await opts.runnerImage();
+        for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
         const source = join(runDir, "source");
         await exportTree(ref, source);
         const target = await loadTarget(ref, source);
@@ -636,6 +702,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         const envDir = join(runDir, "envs", copyName);
         await redactFiles([join(runDir, "envs")], new Set([env.project, "tmp"].map((entry) => join(envDir, entry))));
         await phase("up");
+        held.end();
         opts.print(`project ${env.project}`);
         opts.print(`runner ${env.runner}`);
         opts.print(`dev container ${env.devContainer}`);
@@ -657,9 +724,9 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const scheduler = new Scheduler(await loadLogin(opts.loginsFile));
   const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
   const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0, confirmConcurrency: 0 };
-  const { runId, runDir, state, save } = await newRun(ref, options, opts.print);
+  const { runId, runDir, state, save, held } = await newRun(ref, options, opts.print);
 
-  const ctx = context(runId, runDir, "", scheduler, async (id, patch) => {
+  const ctx = context(runId, runDir, "", scheduler, opts.admit, async (id, patch) => {
     const intern = state.interns.find((entry) => entry.id === id);
     if (intern === undefined) throw new Error(`Run ${runId} has no intern ${id}`);
     const changed = (patch.status !== undefined && patch.status !== intern.status) || (patch.login !== undefined && patch.login !== intern.login);
@@ -678,6 +745,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let rejected: Rejected[] = [];
   let groups: Group[] | null = opts.replay?.groups ?? null;
   let egress: string[] = [];
+  let browser: string | null = null;
   let releaseImages = async () => {};
 
   const finish = once(async (error: string | null): Promise<string | null> => {
@@ -694,6 +762,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
       teardowns.unshift(...ctx.teardowns);
       if (hasSecrets()) teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}`);
     } else {
+      held.end();
       try {
         await redactFiles(dirs);
       } catch (reason) {
@@ -716,8 +785,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const environments = redactJson(ctx.environments);
     const report =
       opts.replay === null
-        ? renderReport(redactJson(state), redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
-        : { ...renderReplay(redactJson(state), redactJson(opts.replay), traffic, environments), tickets: [] };
+        ? renderReport(runDir, redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
+        : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await writeTickets(runDir, report.tickets);
@@ -729,6 +798,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const source = join(runDir, "source");
     await exportTree(ref, source);
     ctx.runnerImage = await opts.runnerImage();
+    for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
+    browser = await browserVersion(ctx.runnerImage);
     const target = await loadTarget(ref, source);
     egress = target.settings.egress;
     const slots = await freeSlots();

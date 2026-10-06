@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { openSession, type Session } from "../src/acp.ts";
 import { forgetSecrets, keepSeedSecrets } from "../src/secrets.ts";
+import { suiteLabel } from "./suite-lock.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -112,12 +113,14 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     mkdirSync(login);
     writeFileSync(credentials, auth({}));
     mkdirSync(internDir);
-    await docker("network", "create", name);
+    await docker("network", "create", "--label", suiteLabel, name);
     const server = `require("node:http").createServer((request, response) => response.end(${JSON.stringify(page)})).listen(8080)`;
-    await docker("run", "-d", "--name", web, "--network", name, "--network-alias", "web", image, "node", "-e", server);
+    await docker("run", "-d", "--label", suiteLabel, "--name", web, "--network", name, "--network-alias", "web", image, "node", "-e", server);
     await docker(
       "run",
       "-d",
+      "--label",
+      suiteLabel,
       "--name",
       agent,
       "--network",

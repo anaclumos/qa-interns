@@ -1,13 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, rmSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { stopRun } from "../src/environment.ts";
 import { runQa } from "../src/run.ts";
-import { readState } from "../src/state.ts";
+import { newRunId, readState } from "../src/state.ts";
+import { capture, execute } from "../src/target.ts";
 import type { EnvironmentStats } from "../src/types.ts";
-import { disks, dockerAvailable, endToEnd, firstPrompt, intern, knownGap, leftovers, timeout, title, workspaces } from "./e2e.ts";
+import { disks, dockerAvailable, endToEnd, firstPrompt, intendedBehavior, intern, knownGap, leftovers, runLocks, timeout, title, workspaces } from "./e2e.ts";
+import { freeBlock } from "./subnet.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
-  const { root, target, fakeImage, logins } = endToEnd();
+  const { id, root, target, fakeImage, logins } = endToEnd();
 
   test(
     "two interns report one defect, the judge groups it, and a confirmation reproduces it",
@@ -25,6 +29,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         replay: null,
         onEnd: `test -f "$QA_INTERNS_RUN_DIR/report.md" && printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'`,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
@@ -34,6 +39,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(lines).toContain("phase confirming");
       const state = await readState(runDir);
       expect(state).toMatchObject({ phase: "done", error: null, target: { path: "eval/ledger" }, options: { interns: 2 } });
+      expect(existsSync(join(runLocks, state.runId))).toBe(false);
       expect(state.options.concurrency).toBeGreaterThanOrEqual(1);
       expect(state.options.confirmConcurrency).toBe(1);
       expect(state.interns.map((entry) => [entry.id, entry.role, entry.status, entry.findings, entry.model])).toEqual([
@@ -53,6 +59,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(charterPrompt).toContain(`  - ${knownGap}`);
       expect(confirmationPrompt).toContain("/qa/out/confirmation.json");
       expect(confirmationPrompt).not.toContain(knownGap);
+      expect(charterPrompt).toContain(`  - ${intendedBehavior}`);
+      expect(confirmationPrompt).toContain(`  - ${intendedBehavior}`);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.egress).toEqual([]);
@@ -95,6 +103,9 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Not confirmed"));
       expect(confirmed).toContain(`### ${title}`);
       expect(confirmed).toContain("- Reproductions: 3 (i1, i2, c1)");
+      expect(report.run.browser).toMatch(/^Google Chrome for Testing \d+\./);
+      expect(markdown.split("\n")).toContain(`- Browser: ${report.run.browser}`);
+      expect(confirmed).toContain(`  - Browser version: ${report.run.browser}`);
       const usage = markdown.slice(markdown.indexOf("## Environments"));
       expect(usage).toContain("### judge\n\n- Started: ");
       const web = usage.split("\n").filter((line) => line.startsWith("| web-1 | running | "));
@@ -128,6 +139,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("wide", { second: true }, 2),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: () => {},
       });
 
@@ -158,6 +170,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         loginsFile: await logins("handoff", { second: true }),
         replay: null,
         runnerImage: async () => fakeImage,
+        admit: () => () => {},
         print: () => {},
       });
 
@@ -170,6 +183,58 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "a run first tears down what a run whose process ended left, without creating its deleted run directory, and leaves a run whose process lives",
+    async () => {
+      const module = join(import.meta.dir, "..", "src", "environment.ts");
+      const hold = async (runId: string, runDir: string) => {
+        const holder = Bun.spawn([process.execPath, "-e", `const { holdRun } = await import(${JSON.stringify(module)}); holdRun(${JSON.stringify(runId)}, ${JSON.stringify(runDir)}); console.log("held"); await Bun.sleep(600000);`], {
+          env: { ...process.env },
+          stdout: "pipe",
+        });
+        await holder.stdout.getReader().read();
+        return holder;
+      };
+      const dead = newRunId();
+      const live = newRunId();
+      const deadDir = join(root, "swept", dead);
+      const compose = join(root, `swept-${dead}.yml`);
+      await Bun.write(compose, `services:\n  qa-relay:\n    image: ${JSON.stringify(fakeImage)}\n    command: ["sleep", "infinity"]\n`);
+      const third = await freeBlock(214);
+      const blocker = `qair-f-e2e-${id}-swept`;
+      const previous = process.env.QA_INTERNS_SUBNET;
+      const deadHolder = await hold(dead, deadDir);
+      const liveHolder = await hold(live, join(root, "swept", live));
+      try {
+        await execute(["docker", "compose", "-p", `qa-${dead}-i1`, "-f", compose, "up", "-d"]);
+        await execute(["docker", "tag", fakeImage, `qa-${dead}-web:latest`]);
+        await execute(["docker", "tag", fakeImage, `qa-${live}-web:latest`]);
+        await execute(["docker", "network", "create", "--internal", "--subnet", `10.214.${third}.0/25`, blocker]);
+        deadHolder.kill("SIGKILL");
+        await deadHolder.exited;
+        process.env.QA_INTERNS_SUBNET = `10.214.${third}.0/23`;
+        const loginsFile = await logins("swept");
+        const run = runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
+        await expect(run).rejects.toThrow("No free network slot");
+        expect(await leftovers(dead)).toEqual([]);
+        expect(existsSync(deadDir)).toBe(false);
+        expect(existsSync(join(runLocks, dead))).toBe(false);
+        expect(await leftovers(live)).toEqual([`qa-${live}-web:latest`]);
+      } finally {
+        if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
+        else process.env.QA_INTERNS_SUBNET = previous;
+        deadHolder.kill("SIGKILL");
+        liveHolder.kill("SIGKILL");
+        await Promise.all([deadHolder.exited, liveHolder.exited]);
+        await capture(["docker", "network", "rm", blocker]);
+        await stopRun(deadDir, dead);
+        await stopRun(join(root, "swept", live), live);
+        rmSync(join(runLocks, live), { force: true });
+      }
     },
     timeout,
   );

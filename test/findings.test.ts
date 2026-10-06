@@ -154,6 +154,19 @@ describe("readFindings", () => {
     );
   });
 
+  test("rejects evidence whose real path holds a control character, which removing would turn into another path", async () => {
+    const real = `evidence/a/${".\u0001./".repeat(8)}shot.png`;
+    await write("i2", real, "png bytes");
+    await symlink(path.join(runDir, "interns", "i2", "out", real), path.join(runDir, "interns", "i2", "out", "evidence", "escape.png"));
+    expect(await reasonFor("control-real-path", { ...pagination, evidence: ["evidence/escape.png"] })).toBe(
+      "evidence path evidence/escape.png resolves to a path with a control character",
+    );
+    await write("c9", real, "png bytes");
+    await symlink(path.join(runDir, "interns", "c9", "out", real), path.join(runDir, "interns", "c9", "out", "evidence", "escape.png"));
+    await write("c9", "confirmation.json", JSON.stringify({ steps: true, task: true, observed: "Same.", evidence: ["evidence/escape.png"] }));
+    await expect(readConfirmation(runDir, "c9")).rejects.toThrow("evidence path evidence/escape.png resolves to a path with a control character");
+  });
+
   test("rejects empty steps", async () => {
     expect(await reasonFor("empty-steps", { ...pagination, steps: [] })).toBe("steps must have at least one entry");
   });

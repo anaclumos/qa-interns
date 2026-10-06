@@ -42,10 +42,12 @@ export const relayOutcomes = ["connected", "failed", "denied", "refused", "incom
 
 export type RelayRecord = z.infer<typeof relaySchema>;
 
+export type Answer = { result: Confirmation; error: null } | { result: null; error: string };
+
 export type Group = {
   id: string;
   findings: Finding[];
-  confirmation: { intern: string; result: Confirmation | null; error: string | null } | null;
+  confirmation: ({ intern: string } & Answer) | null;
 };
 
 export type Replay = { runId: string; target: RunState["target"]; groups: Group[] };

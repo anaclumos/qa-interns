@@ -3,7 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { chmod, mkdir, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadLogin, Scheduler, watchReleases, type Lease } from "../src/logins.ts";
+import { admit, hostMemory, loadLogin, Scheduler, watchReleases, type Lease } from "../src/logins.ts";
 import type { Login } from "../src/types.ts";
 
 const holders = new Set<Subprocess>();
@@ -268,7 +268,71 @@ describe("Scheduler", () => {
     expect(scheduler.leased()).toBe(false);
   });
 
+  test("an acquire that finds every slot of the login locked by another process counts as lost until the next acquire", async () => {
+    const full = new Scheduler(login(1));
+    const own = held(full.acquire());
+    expect(full.acquire()).toBeNull();
+    expect(full.lost()).toBe(false);
+    own.release();
+    const other = await holder(login(1), 1);
+    expect(other.count).toBe(1);
+    const scheduler = new Scheduler(login(1));
+    expect(scheduler.acquire()).toBeNull();
+    expect(scheduler.lost()).toBe(true);
+    other.child.kill("SIGKILL");
+    await other.child.exited;
+    held(scheduler.acquire()).release();
+    expect(scheduler.lost()).toBe(false);
+  });
+
   test("a store whose auth.json breaks the store rule stops the scheduler", async () => {
     expect(() => new Scheduler(login(1, emptyStore))).toThrow(`login openrouter-1: store ${emptyStore} has no auth.json`);
+  });
+});
+
+describe("admit", () => {
+  test("admits an environment only while available memory less the reserve and every environment still starting holds it, in this process and across processes", async () => {
+    const { available, reserve } = hostMemory();
+    const size = Math.floor((available - reserve) * 0.6);
+    const first = admit(size, 100);
+    if (first === null) throw new Error("admit refused the first environment");
+    expect(admit(size, 100)).toBeNull();
+    first();
+    first();
+
+    await Bun.write(
+      join(dir, "admitter.ts"),
+      [
+        `import { admit } from ${JSON.stringify(join(import.meta.dir, "..", "src", "logins.ts"))};`,
+        "const started = admit(Number(process.argv[2]), 100);",
+        'console.log(started === null ? "refused" : "admitted");',
+        "for await (const _ of Bun.stdin.stream()) {}",
+        "started?.();",
+        "",
+      ].join("\n"),
+    );
+    const child = Bun.spawn([process.execPath, join(dir, "admitter.ts"), String(size)], { env: { ...process.env }, stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+    holders.add(child);
+    const { value } = await child.stdout.getReader().read();
+    expect(new TextDecoder().decode(value).trim()).toBe("admitted");
+    expect(admit(size, 100)).toBeNull();
+    child.kill("SIGKILL");
+    await child.exited;
+    const after = admit(size, 100);
+    expect(after).not.toBeNull();
+    after?.();
+  });
+
+  test("holds every environment while CPU pressure is above the limit, and counts no held one as starting", () => {
+    const { available, reserve } = hostMemory();
+    const size = Math.floor((available - reserve) * 0.6);
+    expect(admit(size, -1)).toBeNull();
+    const started = admit(size, 100);
+    expect(started).not.toBeNull();
+    started?.();
+  });
+
+  test("throws when one environment and the reserve need more than the host's memory", () => {
+    expect(() => admit(hostMemory().total, 100)).toThrow("more than the");
   });
 });

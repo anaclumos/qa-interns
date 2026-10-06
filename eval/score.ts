@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
 import { message } from "../src/findings.ts";
-import { defaultLoginsPath, loadLogin } from "../src/logins.ts";
+import { admit, defaultLoginsPath, loadLogin } from "../src/logins.ts";
 import { ask } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { readJson, readState, resolveRunDir } from "../src/state.ts";
@@ -101,6 +101,7 @@ async function main(): Promise<void> {
     name: "score",
     loginsFile: values.logins,
     runnerImage: await ensureRunnerImage(),
+    admit,
     prompt: scorePrompt(defects, groups),
     file: "score.json",
     parse: (raw) => parseScore(raw, defectIds, groupIds),

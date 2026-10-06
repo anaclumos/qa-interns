@@ -1,6 +1,6 @@
 import { userInfo } from "node:os";
 import { join } from "node:path";
-import { track } from "./target.ts";
+import { execute, track } from "./target.ts";
 
 const runnerDir = join(import.meta.dir, "..", "runner");
 
@@ -28,4 +28,10 @@ export async function ensureRunnerImage(): Promise<string> {
   const code = await build.exited;
   if (code !== 0) throw new Error(`${cmd.join(" ")} exited with ${code}: ${tail.trim()}`);
   return image;
+}
+
+export async function browserVersion(image: string): Promise<string> {
+  const version = (await execute(["docker", "run", "--rm", "--network", "none", "--entrypoint", "chrome", image, "--version"], { timeout: 60_000 })).trim();
+  if (version === "") throw new Error(`chrome --version in ${image} printed nothing`);
+  return version;
 }
