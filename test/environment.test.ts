@@ -32,6 +32,7 @@ import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 import type { RelayRecord } from "../src/types.ts";
 import { freeBlock } from "./subnet.ts";
+import { suiteLabel } from "./suite-lock.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -211,7 +212,7 @@ describe.skipIf(!dockerAvailable)("slots", () => {
 
   async function withNetwork(subnet: string, check: () => Promise<void>): Promise<void> {
     const name = `qa-btest-${crypto.randomUUID().slice(0, 8)}`;
-    const proc = Bun.spawnSync(["docker", "network", "create", "--internal", "--subnet", subnet, name], { stderr: "pipe" });
+    const proc = Bun.spawnSync(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", subnet, name], { stderr: "pipe" });
     if (proc.exitCode !== 0) throw new Error(proc.stderr.toString());
     try {
       await check();
@@ -1296,6 +1297,19 @@ function clientHello(name: Buffer): Buffer {
   return Buffer.concat([Buffer.from([22, 3, 1]), u16(handshake.length), handshake]);
 }
 
+async function labelOverride(runDir: string): Promise<string> {
+  const file = join(runDir, "compose.label.yml");
+  const labels = [suiteLabel];
+  await Bun.write(
+    file,
+    JSON.stringify({
+      services: { app: { labels }, upstream: { labels }, "qa-relay": { labels } },
+      networks: { qa_internal: { labels }, qa_relay: { labels }, qa_egress: { labels } },
+    }),
+  );
+  return file;
+}
+
 describe.skipIf(!dockerAvailable)("qa-relay", () => {
   test(
     "carry HTTPS from a target service to its egress hosts and to no other host, and record each connection's outcome through teardown",
@@ -1332,7 +1346,7 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         JSON.stringify({ services: { upstream: { image, command: ["node", "-e", server], volumes: [`${certs}:/certs:ro`], networks: { qa_egress: { aliases: ["api.example.test", "blocked.example.test"] } } } } }),
       );
       const project = `qair-relay-${crypto.randomUUID().slice(0, 8)}`;
-      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream, "-f", await labelOverride(runDir)];
       const saved = join(runDir, "interns", "i1");
       try {
         await execute([...compose, "up", "-d", "--wait", "app", "upstream", "qa-relay"]);
@@ -1405,7 +1419,7 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
         JSON.stringify({ services: { upstream: { image, command: ["node", "-e", server], volumes: [`${certs}:/certs:ro`], networks: { qa_egress: { aliases: ["limited.example.test", "rate.example.test"] } } } } }),
       );
       const project = `qair-relay-${crypto.randomUUID().slice(0, 8)}`;
-      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream];
+      const compose = ["docker", "compose", "-p", project, "-f", join(source, ".devcontainer", "compose.yml"), "-f", override, "-f", upstream, "-f", await labelOverride(runDir)];
       const saved = join(runDir, "interns", "i1");
       const probe = `
 const tls = require("node:tls");
