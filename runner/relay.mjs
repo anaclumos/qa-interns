@@ -105,7 +105,7 @@ const server = createServer((socket) => {
         budget.open -= 1;
       });
     }
-    upstream = connect(443, host, () => {
+    upstream = connect(443, `${host}.`, () => {
       settle("connected", null);
       socket.setTimeout(0);
       upstream.write(data);
