@@ -162,12 +162,12 @@ describe("mounts", () => {
 
 describe("access", () => {
   test.each([
-    ["openrouter", "sk-or-v1-test-8f3a1c", ["openrouter.ai"]],
-    ["opencode-go", "sk-go-test-5b2e", ["opencode.ai"]],
-  ])("an opencode store with one %s key enables only that provider, turns off title requests, allows only its hosts, and names the key", async (upstream, key, egress) => {
+    ["openrouter", "sk-or-v1-test-8f3a1c", ["openrouter.ai"], { openrouter: { options: { extraBody: { provider: { zdr: true } } } } }],
+    ["opencode-go", "sk-go-test-5b2e", ["opencode.ai"], {}],
+  ])("an opencode store with one %s key enables only that provider, turns off title requests, sets its provider options, allows only its hosts, and names the key", async (upstream, key, egress, provider) => {
     const store = await opencodeStore(`access-${upstream}`, JSON.stringify({ [upstream]: { type: "api", key } }));
     const access = providers.opencode.access(store);
-    expect(JSON.parse(access.env.OPENCODE_CONFIG_CONTENT ?? "")).toEqual({ enabled_providers: [upstream], agent: { title: { disable: true } } });
+    expect(JSON.parse(access.env.OPENCODE_CONFIG_CONTENT ?? "")).toEqual({ enabled_providers: [upstream], agent: { title: { disable: true } }, provider });
     expect(access.egress).toEqual(egress);
     expect(access.key).toBe(key);
   });
