@@ -1,8 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { cp, mkdir, readdir } from "node:fs/promises";
+import { cp, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { writeChromePolicy } from "../src/environment.ts";
 import { ask, runQa } from "../src/run.ts";
 import { redact } from "../src/secrets.ts";
 import { newRunId, readState } from "../src/state.ts";
@@ -10,7 +9,7 @@ import { capture, execute } from "../src/target.ts";
 import { disks, dockerAvailable, endToEnd, intern, leftovers, timeout, workspaces } from "./e2e.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
-  const { root, target, fakeImage, logins } = endToEnd();
+  const { root, target, fakeImage, logins, askOptions } = endToEnd();
 
   test(
     "a run replaces every value that secrets names with [redacted] in the files it leaves and the lines it prints",
@@ -123,33 +122,32 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const loginsFile = await logins("overlap-key", [{ id: "opencode-1", provider: "opencode", openrouter: { type: "api", key } }]);
       const seatlessFile = join(root, "overlap-seatless-logins.json");
       await Bun.write(seatlessFile, JSON.stringify({ logins: [{ id: "claude-seatless", provider: "claude", seat: ["false"] }] }));
-      const runId = newRunId();
-      const runDir = join(root, "asks", runId);
-      await mkdir(runDir, { recursive: true });
-      await writeChromePolicy(runDir, {});
-      const options = { runDir, runId, runnerImage: fakeImage, admit: () => () => {}, prompt: "Write /qa/out/evidence/auth.json.", file: "evidence/auth.json" };
-      const running = ask({
-        ...options,
-        name: "keyed",
+      const keyed = {
+        ...(await askOptions(newRunId(), "keyed")),
         loginsFile,
-        parse: (raw) => {
+        prompt: "Write /qa/out/evidence/auth.json.",
+        file: "evidence/auth.json",
+        parse: (raw: string): unknown => {
           throw new Error(`unreadable ${raw}`);
         },
-      });
+      };
+      const seatless = { ...(await askOptions(newRunId(), "seatless")), loginsFile: seatlessFile };
+      const running = ask(keyed);
       let ended = false;
       const outcome = Promise.allSettled([running]).finally(() => {
         ended = true;
       });
       while (redact(key) === key && !ended) await Bun.sleep(20);
       expect(ended).toBe(false);
-      await expect(ask({ ...options, name: "seatless", loginsFile: seatlessFile, parse: (raw) => JSON.parse(raw) })).rejects.toThrow("No login has spare capacity for seatless");
+      await expect(ask(seatless)).rejects.toThrow("No login has spare capacity for seatless");
       expect(redact(key)).toBe("[redacted]");
       const [result] = await outcome;
       expect(result.status).toBe("rejected");
       expect(String((result as PromiseRejectedResult).reason)).toContain('"key":"[redacted]"');
-      expect(readFileSync(join(runDir, "interns", "keyed", "transcript.jsonl"), "utf8")).not.toContain(key);
+      expect(readFileSync(join(keyed.runDir, "interns", "keyed", "transcript.jsonl"), "utf8")).not.toContain(key);
       expect(redact(key)).toBe(key);
-      expect(await leftovers(runId)).toEqual([]);
+      expect(await leftovers(keyed.runId)).toEqual([]);
+      expect(await leftovers(seatless.runId)).toEqual([]);
     },
     timeout,
   );
