@@ -299,7 +299,12 @@ export async function writeChromePolicy(runDir: string, urls: Record<string, str
   const hosts = urlHosts(urls).filter((host) => !host.includes("."));
   const parsed = Object.values(urls).map((url) => new URL(url));
   const insecure = [...new Set(parsed.filter((url) => url.protocol === "http:").map((url) => url.origin))];
-  const policy = { HSTSPolicyBypassList: hosts, OverrideSecurityRestrictionsOnInsecureOrigin: insecure };
+  const policy = {
+    HSTSPolicyBypassList: hosts,
+    OverrideSecurityRestrictionsOnInsecureOrigin: insecure,
+    RestoreOnStartup: 4,
+    RestoreOnStartupURLs: ["about:blank"],
+  };
   await Bun.write(join(runDir, "chrome-policy.json"), `${JSON.stringify(policy, null, 2)}\n`);
 }
 
@@ -382,7 +387,7 @@ async function tagShared(pairs: [string, string][]): Promise<boolean> {
   return true;
 }
 
-export async function buildImages(runId: string, target: Target, sourceDir: string): Promise<BuiltImages> {
+export async function buildImages(runId: string, target: Target, sourceDir: string, log: string): Promise<BuiltImages> {
   const own = (builder: string) => `qa-${runId}-${builder.toLowerCase()}:latest`;
   const images = Object.fromEntries(Object.entries(imageBuilders(target)).map(([name, builder]) => [name, own(builder)]));
   const services = Object.entries(target.services).filter(([, service]) => service.build && service.active).map(([name]) => name);
@@ -414,7 +419,15 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
     const tags = join(dir, "tags.yml");
     const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(own(name))}`, "    build:", `      tags: !override ${JSON.stringify([shared(name)])}`]);
     await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
-    await execute([...compose, "-f", tags, "build", ...services], { env, timeout: 30 * minute });
+    const cmd = [...compose, "-f", tags, "build", ...services];
+    const result = await capture(cmd, { env, timeout: 30 * minute }).catch(async (error: unknown) => {
+      if (!(error instanceof CommandTimeout)) throw error;
+      await Bun.write(log, redact(`${error.stdout}\n${error.stderr}`));
+      throw new Error(`${error.message} (log: ${log})`);
+    });
+    const output = `${result.stdout}\n${result.stderr}`;
+    await Bun.write(log, redact(output));
+    if (result.code !== 0) throw new Error(`${failure(cmd, result.code, output).message} (log: ${log})`);
     return { images, release };
   } finally {
     await rm(dir, { recursive: true, force: true });
