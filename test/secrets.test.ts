@@ -84,6 +84,14 @@ describe("redact", () => {
     expect(redact(twice)).toBe('{"prompt":"Seed:\\n{\\"password\\":\\"[redacted]\\"}"}');
   });
 
+  test("replace a value as a URL component and as a form body field", () => {
+    keepSeedSecrets({ password: "p@ss w&rd=1+%2!" }, ["password"]);
+    const form = new URLSearchParams({ user: "ada", password: "p@ss w&rd=1+%2!" }).toString();
+    expect(form).toContain("password=p%40ss+w%26rd%3D1%2B%252%21");
+    expect(redact(form)).toBe("user=ada&password=[redacted]");
+    expect(redact("GET /login?password=p%40ss%20w%26rd%3D1%2B%252!")).toBe("GET /login?password=[redacted]");
+  });
+
   test("replace a longer value before a value it contains", () => {
     keepSeedSecrets({ keys: ["sk_west_4f9a", "sk_west_4f9a1c2e7b"] }, ["keys"]);
     expect(redact("keys sk_west_4f9a1c2e7b and sk_west_4f9a")).toBe("keys [redacted] and [redacted]");
