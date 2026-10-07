@@ -1,6 +1,7 @@
 FROM node:24-trixie-slim
 
-RUN packages="ca-certificates curl e2fsprogs ffmpeg procps ripgrep \
+RUN --mount=type=tmpfs,target=/usr/share/doc \
+    packages="ca-certificates curl e2fsprogs ffmpeg procps ripgrep \
       libxcb-shm0 libx11-xcb1 libx11-6 libxcb1 libxext6 libxrandr2 libxcomposite1 \
       libxcursor1 libxdamage1 libxfixes3 libxi6 libgtk-3-0t64 libpangocairo-1.0-0 \
       libpango-1.0-0 libatk1.0-0t64 libcairo-gobject2 libcairo2 libgdk-pixbuf-2.0-0 \
