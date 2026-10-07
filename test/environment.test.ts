@@ -1570,3 +1570,54 @@ const close = (socket) => { socket.destroy(); return new Promise((resolve) => se
     20 * 60_000,
   );
 });
+
+describe.skipIf(!dockerAvailable)("agent-browser in the runner", () => {
+  test(
+    "start at most four sessions, however a command names its session and whatever option values precede its command, and pass commands on open sessions, session lists, versions, and closes at the limit",
+    async () => {
+      const image = await ensureRunnerImage();
+      const script = [
+        'step() { label=$1; shift; "$@" > /dev/null 2> /tmp/err; echo "$label $?"; }',
+        "step flag agent-browser --session s1 open about:blank",
+        "step env env AGENT_BROWSER_SESSION=s2 agent-browser open about:blank",
+        "step after agent-browser open about:blank --session s3",
+        "step default agent-browser open about:blank",
+        "step fifth agent-browser --session s5 open about:blank",
+        "cat /tmp/err",
+        "step value agent-browser --user-agent close --session s6 open about:blank",
+        "step open agent-browser --session s1 get url",
+        "step list env AGENT_BROWSER_SESSION=s5 agent-browser session list",
+        "step version agent-browser --session s5 --version",
+        "step close agent-browser --session s2 close",
+        "step reopen agent-browser --session s5 open about:blank",
+        "step close agent-browser --session s3 close",
+        'for name in p1 p2 p3; do (agent-browser --session "$name" open about:blank > /dev/null 2>&1; echo "parallel $?") & done',
+        "wait",
+        "agent-browser session list --json",
+      ].join("\n");
+      const { code, stdout } = await capture(["docker", "run", "--rm", "--init", "--network", "none", image, "sh", "-c", script], { timeout: 5 * 60_000 });
+      expect(code).toBe(0);
+      const lines = stdout.trim().split("\n");
+      expect(lines.slice(0, 13)).toEqual([
+        "flag 0",
+        "env 0",
+        "after 0",
+        "default 0",
+        "fifth 1",
+        "agent-browser runs at most 4 sessions at once in this environment, and 4 are open: default s1 s2 s3. Close a session you no longer need with `agent-browser --session <name> close`, then run this command again.",
+        "value 1",
+        "open 0",
+        "list 0",
+        "version 0",
+        "close 0",
+        "reopen 0",
+        "close 0",
+      ]);
+      expect(lines.slice(13, 16).sort()).toEqual(["parallel 0", "parallel 1", "parallel 1"]);
+      const { sessions } = z.object({ data: z.object({ sessions: z.array(z.string()) }) }).parse(JSON.parse(lines[16] ?? "")).data;
+      expect(sessions).toHaveLength(4);
+      expect(sessions.filter((name) => !name.startsWith("p")).sort()).toEqual(["default", "s1", "s5"]);
+    },
+    20 * 60_000,
+  );
+});
