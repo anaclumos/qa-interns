@@ -833,7 +833,8 @@ export async function stopRun(runDir: string, runId: string): Promise<void> {
 
 export type HostObjects = { docker: string[]; mounts: string[] };
 
-export async function hostObjects(): Promise<HostObjects> {
+export async function hostObjects(docker: boolean): Promise<HostObjects> {
+  if (!docker) return { docker: [], mounts: await mountTargets() };
   const [projects, images, helpers, mounts] = await Promise.all([
     composeProjects(),
     execute(["docker", "image", "ls", "--format", "{{.Repository}}"]),

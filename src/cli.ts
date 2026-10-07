@@ -56,7 +56,7 @@ Commands:
       Stop the run's orchestrator with SIGTERM when it is still running, then
       tear down every environment the run still has and delete its leftover
       workspace copies.
-  prune
+  prune [--no-docker]
       Delete the directory of each run whose job has shipped: its orchestrator
       ended, its state.json has not changed for 24 hours, it ran without
       --dirty, its teardown left nothing, no run that prune keeps and no
@@ -65,7 +65,8 @@ Commands:
       commit that no pull request holds. A directory without state.json goes
       once it has not changed for 24 hours and its teardown left nothing.
       Files and symbolic links in the runs directory stay. Needs the GitHub
-      CLI, signed in.
+      CLI, signed in, and Docker, unless --no-docker says Docker is not
+      installed on the host, so no run has Docker objects to keep.
   help
       Print this help.
 
@@ -243,8 +244,8 @@ async function main(args: string[]): Promise<number> {
       return 0;
     }
     case "prune": {
-      parseArgs({ args: rest, options: {} });
-      await prune(print);
+      const { values } = parseArgs({ args: rest, options: { "no-docker": { type: "boolean", default: false } } });
+      await prune(print, !values["no-docker"]);
       return 0;
     }
     case "help":
