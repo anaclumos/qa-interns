@@ -925,8 +925,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
           testing(async (free) => {
             const result = await explore(ctx, entry, target, opts.minutes, free);
             ended[index] = result;
-            findings = ended.flatMap((one) => one.findings);
-            rejected = ended.flatMap((one) => one.rejected);
+            if (!ctx.stopping) {
+              findings = ended.flatMap((one) => one.findings);
+              rejected = ended.flatMap((one) => one.rejected);
+            }
             return result;
           }),
         ),

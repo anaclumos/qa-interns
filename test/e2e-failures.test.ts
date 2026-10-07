@@ -138,7 +138,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       try {
         for (const range of [`10.216.${third}.0/25`, `10.216.${third + 3}.128/25`]) {
           const name = `qair-f-e2e-${id}-range-${blockers.length}`;
-          await execute(["docker", "network", "create", "--internal", "--subnet", range, name]);
+          await execute(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", range, name]);
           blockers.push(name);
         }
         const loginsFile = await logins("report", [{ id: "claude-1", provider: "claude" }]);
@@ -154,6 +154,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
             loginsFile,
             replay: null,
             runnerImage: async () => fakeImage,
+            admit: () => () => {},
             print: (line) => {
               if (runDir === undefined) {
                 runDir = line;
