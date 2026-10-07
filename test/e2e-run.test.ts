@@ -158,6 +158,45 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   );
 
   test(
+    "the confirmation budget stops the confirmation that is running at its end and starts no later one, which the report lists as not confirmed",
+    async () => {
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 5,
+        confirmBudget: 2,
+        loginsFile: await logins("budget", { second: true, late: true }),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null, options: { concurrency: 1, confirmConcurrency: 1 } });
+      const [first, second] = ["c1", "c2"].map((internId) => intern(state, internId));
+      expect([first?.status, first?.detail]).toEqual(["done", "reproduced"]);
+      expect(Date.parse(first?.endedAt ?? "") - Date.parse(first?.startedAt ?? "")).toBeLessThan(4.5 * 60_000);
+      expect([second?.status, second?.detail]).toEqual(["failed", "the confirmation budget ended before its confirmation began"]);
+      expect(second?.model).toBeNull();
+      expect(await firstPrompt(runDir, "c1")).toMatch(/Time box: [12] minutes\./);
+
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.groups.map((group: { id: string; confirmed: boolean }) => [group.id, group.confirmed])).toEqual([
+        ["g1", true],
+        ["g2", false],
+      ]);
+      expect(report.groups[1].confirmation).toEqual({ intern: "c2", result: null, error: "the confirmation budget ended before its confirmation began" });
+      expect(await Bun.file(join(runDir, "report.md")).text()).toContain("Confirmation: c2 failed: the confirmation budget ended before its confirmation began");
+      expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "a confirming intern takes the login of the one before it once that intern's containers and networks are removed, before its teardown ends",
     async () => {
       const runDir = await runQa({

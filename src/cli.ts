@@ -28,7 +28,7 @@ Commands:
       HEAD), or with --dirty in a copy of its working tree, as run does before it
       builds images, with no logins and no values for hostEnv variables that no
       checked setting depends on.
-  run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--focus <n>]... [--logins <file>] [--on-end <command>]
+  run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--confirm-budget <n>] [--focus <n>]... [--logins <file>] [--on-end <command>]
       Run interns against the target at the commit, or with --dirty against a
       copy of its working tree: the tracked files as they are and the untracked
       files that Git does not ignore. Defaults: HEAD, 4 interns, 30 minutes
@@ -36,14 +36,19 @@ Commands:
       one confirming intern per group of findings, all at once, as far as login
       capacity, free network slots, free memory, and CPU pressure allow. Prints
       the run directory first.
+      With --confirm-budget, the confirming phase ends after that many minutes
+      in all (default: --interns times --minutes). A group that has not begun by
+      then is reported as not confirmed, and a running confirmation stops at it.
       With --focus, deal only the entries of the target's focus list at the
       given 1-based positions, in the order given, then the built-in charters.
       With --on-end, run the shell command when the run ends, done, failed, or
       interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
-  replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]
+  replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--confirm-budget <n>] [--logins <file>]
       Hand each confirmed group of the earlier run, or each group --group names,
       to a confirming intern against the run's target at the commit. Defaults:
-      HEAD, 10 minutes per confirmation. Prints the run directory first.
+      HEAD, 10 minutes per confirmation, no total budget. With --confirm-budget,
+      the replay ends after that many minutes in all, as run does. Prints the
+      run directory first.
   up <target-dir> [--commit <rev>]
       Start one environment of the target at the commit (default HEAD) with no
       interns, run its ready check and seed, and leave it running. Prints the run
@@ -130,6 +135,7 @@ async function main(args: string[]): Promise<number> {
           interns: { type: "string", default: "4" },
           minutes: { type: "string", default: "30" },
           "confirm-minutes": { type: "string", default: "10" },
+          "confirm-budget": { type: "string" },
           focus: { type: "string", multiple: true, default: [] },
           logins: { type: "string", default: defaultLoginsPath },
           "on-end": { type: "string" },
@@ -138,13 +144,16 @@ async function main(args: string[]): Promise<number> {
       const [dir, ...extra] = positionals;
       if (dir === undefined || extra.length > 0) throw new Error("run takes exactly one target directory. Run qa-interns help for usage.");
       if (values.dirty && values.commit !== undefined) throw new Error("--dirty runs the working tree, so it takes no --commit");
+      const interns = numberOption(countSchema, values.interns, "interns");
+      const minutes = numberOption(minutesSchema, values.minutes, "minutes");
       const options = {
         dir,
         rev: values.commit ?? "HEAD",
         dirty: values.dirty,
-        interns: numberOption(countSchema, values.interns, "interns"),
-        minutes: numberOption(minutesSchema, values.minutes, "minutes"),
+        interns,
+        minutes,
         confirmMinutes: numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes"),
+        confirmBudget: values["confirm-budget"] === undefined ? interns * minutes : numberOption(minutesSchema, values["confirm-budget"], "confirm-budget"),
         focus: values.focus.map((value) => numberOption(countSchema, value, "focus")),
         loginsFile: values.logins,
         onEnd: values["on-end"],
@@ -160,6 +169,7 @@ async function main(args: string[]): Promise<number> {
           commit: { type: "string", default: "HEAD" },
           group: { type: "string", multiple: true, default: [] },
           "confirm-minutes": { type: "string", default: "10" },
+          "confirm-budget": { type: "string" },
           logins: { type: "string", default: defaultLoginsPath },
         },
       });
@@ -178,6 +188,7 @@ async function main(args: string[]): Promise<number> {
           interns: 0,
           minutes: 0,
           confirmMinutes,
+          confirmBudget: values["confirm-budget"] === undefined ? undefined : numberOption(minutesSchema, values["confirm-budget"], "confirm-budget"),
           loginsFile: values.logins,
           replay,
           runnerImage: ensureRunnerImage,

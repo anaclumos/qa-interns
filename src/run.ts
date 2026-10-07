@@ -45,6 +45,7 @@ export type RunOptions = {
   interns: number;
   minutes: number;
   confirmMinutes: number;
+  confirmBudget?: number;
   focus?: number[];
   loginsFile: string;
   replay: Replay | null;
@@ -98,6 +99,7 @@ type Context = {
   unremoved: Set<string>;
   environments: EnvironmentStats[];
   waiting: Set<() => void>;
+  until: number;
   stopping: boolean;
   tearingDown: boolean;
   update(id: string, patch: Partial<InternState>): Promise<void>;
@@ -112,6 +114,7 @@ const writeUpMs = 4 * minute;
 const stopWaitMs = 30_000;
 const waitMs = 30_000;
 const noLogin = "no login has spare capacity";
+const budgetSpent = "the confirmation budget ended before its confirmation began";
 const copyName = "up";
 
 function now(): string {
@@ -165,6 +168,10 @@ function checkStopping(ctx: Context): void {
   if (ctx.stopping) throw new Error("interrupted");
 }
 
+function checkBudget(ctx: Context): void {
+  if (Date.now() >= ctx.until) throw new Error(budgetSpent);
+}
+
 function context(runId: string, runDir: string, runnerImage: string, scheduler: Scheduler | null, admit: Admit, update: Context["update"]): Context {
   return {
     runId,
@@ -178,6 +185,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     unremoved: new Set(),
     environments: [],
     waiting: new Set(),
+    until: Infinity,
     stopping: false,
     tearingDown: false,
     update,
@@ -187,6 +195,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
 async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null> {
   for (;;) {
     checkStopping(ctx);
+    checkBudget(ctx);
     const released = Promise.withResolvers<void>();
     const wake = () => released.resolve();
     const unwatch = watchReleases(wake);
@@ -213,6 +222,7 @@ async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null
 async function admitted(ctx: Context, memory: number): Promise<() => void> {
   for (;;) {
     checkStopping(ctx);
+    checkBudget(ctx);
     const released = Promise.withResolvers<void>();
     const wake = () => released.resolve();
     const unwatch = watchReleases(wake);
@@ -512,13 +522,14 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
   const { intern, group } = reproduced;
   const finding = lead(group);
   const outcome = await agentTask(ctx, intern.id, target, free, async (session, env, note) => {
+    checkBudget(ctx);
     reproduced.ran = true;
     const out = outDir(intern.id);
     const file = join(ctx.runDir, out, "confirmation.json");
-    const deadline = Date.now() + minutes * minute;
+    const deadline = Math.min(Date.now() + minutes * minute, ctx.until);
     let answer: Answer = { result: null, error: "no confirmation.json written" };
     let corrected = false;
-    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
+    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
       await pullDisk(env.out);
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
       answer = await check(ctx, intern.id);
@@ -980,6 +991,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     state.options.confirmConcurrency = Math.min(groups.length, width);
     await phase("confirming");
+    if (opts.confirmBudget !== undefined) ctx.until = Date.now() + opts.confirmBudget * minute;
     reproduced = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id), ran: false }));
     state.interns.push(...reproduced.map((entry) => entry.intern));
     await save();
