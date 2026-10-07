@@ -1,7 +1,8 @@
 import type { Subprocess } from "bun";
+import { dlopen, read } from "bun:ffi";
 import { createHash } from "node:crypto";
 import { closeSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync, type Stats } from "node:fs";
-import { homedir } from "node:os";
+import { constants, homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { opencodeAuthRule, opencodeLogin, providers } from "./providers.ts";
@@ -158,7 +159,12 @@ function mountedPath(provider: Provider, store: string): string {
   return realpathSync(mountSource(provider, store));
 }
 
-const lockHeld = 75;
+const libc = dlopen("libc.so.6", {
+  flock: { args: ["i32", "i32"], returns: "i32" },
+  __errno_location: { args: [], returns: "ptr" },
+});
+const lockModes = { shared: 1, exclusive: 2 };
+const lockNonblock = 4;
 const quotaMs = 60_000;
 
 export async function hasQuota(login: Login): Promise<boolean> {
@@ -195,19 +201,17 @@ async function seatStore(command: string[], leasePid: number, intern: string): P
   return exitCode === 0 && store !== undefined ? store : null;
 }
 
-export function flock(file: string, ...options: string[]): number | null {
+export function flock(file: string, mode: "shared" | "exclusive", wait: "block" | "nonblock"): number | null {
   const fd = openSync(file, "a", 0o600);
-  let code: number;
-  try {
-    code = Bun.spawnSync(["flock", ...options, "--conflict-exit-code", String(lockHeld), "3"], { stdio: ["ignore", "ignore", "inherit", fd] }).exitCode;
-  } catch (error) {
+  const operation = lockModes[mode] | (wait === "nonblock" ? lockNonblock : 0);
+  for (;;) {
+    if (libc.symbols.flock(fd, operation) === 0) return fd;
+    const errno = read.i32(libc.symbols.__errno_location()!);
+    if (errno === constants.errno.EINTR) continue;
     closeSync(fd);
-    throw error;
+    if (errno === constants.errno.EWOULDBLOCK) return null;
+    throw new Error(`flock on ${file} failed with errno ${errno}`);
   }
-  if (code === 0) return fd;
-  closeSync(fd);
-  if (code !== lockHeld) throw new Error(`flock on ${file} exited with ${code}`);
-  return null;
 }
 
 function ancestors(path: string): string[] {
@@ -238,14 +242,14 @@ function lockFile(dir: string, path: string, kind: string): string {
   return join(dir, `${createHash("sha256").update(path).digest("hex")}-${kind}.lock`);
 }
 
-function take(dir: string, file: string, ...options: string[]): number {
-  const fd = flock(file, ...options);
+function take(dir: string, file: string, mode: "shared" | "exclusive", wait: "block" | "nonblock"): number {
+  const fd = flock(file, mode, wait);
   if (fd === null) throw new Error(`${file} is locked by a process that does not hold ${join(dir, "acquire.lock")}`);
   return fd;
 }
 
 function exclusive<T>(dir: string, body: () => T): T {
-  const mutex = take(dir, join(dir, "acquire.lock"), "--exclusive");
+  const mutex = take(dir, join(dir, "acquire.lock"), "exclusive", "block");
   try {
     return body();
   } finally {
@@ -255,14 +259,14 @@ function exclusive<T>(dir: string, body: () => T): T {
 
 function claim(key: string): () => void {
   const dir = locksDir();
-  const fd = exclusive(dir, () => take(dir, lockFile(dir, key, "leased"), "--shared", "--nonblock"));
+  const fd = exclusive(dir, () => take(dir, lockFile(dir, key, "leased"), "shared", "nonblock"));
   return () => closeSync(fd);
 }
 
 function claimed(key: string): boolean {
   const dir = locksDir();
   return exclusive(dir, () => {
-    const fd = flock(lockFile(dir, key, "leased"), "--exclusive", "--nonblock");
+    const fd = flock(lockFile(dir, key, "leased"), "exclusive", "nonblock");
     if (fd !== null) closeSync(fd);
     return fd === null;
   });
@@ -271,12 +275,12 @@ function claimed(key: string): boolean {
 function slotLock(dir: string, mounted: string, provider: Provider, slots: number): number | null {
   const others = providerNames.filter((other) => other !== provider).map((other) => lockFile(dir, mounted, other));
   for (const test of [lockFile(dir, mounted, "under"), ...ancestors(mounted).map((path) => lockFile(dir, path, "at")), ...others]) {
-    const fd = flock(test, "--exclusive", "--nonblock");
+    const fd = flock(test, "exclusive", "nonblock");
     if (fd === null) return null;
     closeSync(fd);
   }
   for (let slot = 0; slot < slots; slot++) {
-    const fd = flock(lockFile(dir, mounted, String(slot)), "--exclusive", "--nonblock");
+    const fd = flock(lockFile(dir, mounted, String(slot)), "exclusive", "nonblock");
     if (fd !== null) return fd;
   }
   return null;
@@ -302,7 +306,7 @@ function lock(mounted: string, provider: Provider, slots: number): (() => void) 
     };
     try {
       for (const share of [lockFile(dir, mounted, "at"), lockFile(dir, mounted, provider), ...ancestors(mounted).map((path) => lockFile(dir, path, "under"))]) {
-        held.push(take(dir, share, "--shared", "--nonblock"));
+        held.push(take(dir, share, "shared", "nonblock"));
       }
     } catch (error) {
       release();
@@ -357,7 +361,7 @@ export function admit(memory: number, pressureLimit = cpuPressureLimit): (() => 
     let starting = 0;
     for (const name of readdirSync(dir).filter((entry) => entry.startsWith(startingPrefix))) {
       const file = join(dir, name);
-      const fd = flock(file, "--exclusive", "--nonblock");
+      const fd = flock(file, "exclusive", "nonblock");
       if (fd === null) {
         const bytes = Number(name.slice(startingPrefix.length).split("-")[0]);
         if (!Number.isSafeInteger(bytes)) throw new Error(`${file} does not name the memory of a starting environment`);
@@ -369,7 +373,7 @@ export function admit(memory: number, pressureLimit = cpuPressureLimit): (() => 
     }
     if (hostMemory().available - reserve - starting < memory) return null;
     const file = join(dir, `${startingPrefix}${memory}-${crypto.randomUUID()}`);
-    const fd = take(dir, file, "--exclusive", "--nonblock");
+    const fd = take(dir, file, "exclusive", "nonblock");
     let started = false;
     return () => {
       if (started) return;
