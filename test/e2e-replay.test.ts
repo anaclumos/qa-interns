@@ -237,14 +237,14 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 0,
         minutes: 0,
         confirmMinutes: 0.5,
-        loginsFile: await logins("replay-unremoved", [{ id: "claude-unremoved", provider: "claude" }]),
+        loginsFile: await logins("replay-unremoved"),
         replay,
         runnerImage: async () => fakeImage,
         admit: () => () => {},
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
-          if (dir !== undefined && line === "c1 starting on claude-unremoved (claude)") release = blockTeardown(dir, "c1");
+          if (dir !== undefined && line === "c1 starting on openrouter-1") release = blockTeardown(dir, "c1");
         },
       });
 

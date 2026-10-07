@@ -179,7 +179,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           await execute(["docker", "network", "create", "--internal", "--label", suiteLabel, "--subnet", range, name]);
           blockers.push(name);
         }
-        const loginsFile = await logins("report", [{ id: "claude-1", provider: "claude" }]);
+        const loginsFile = await logins("report");
         let runDir: string | undefined;
         await expect(
           runQa({
@@ -228,14 +228,14 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 1,
         minutes: 0.5,
         confirmMinutes: 0.5,
-        loginsFile: await logins("unremoved", [{ id: "claude-unremoved", provider: "claude" }]),
+        loginsFile: await logins("unremoved"),
         replay: null,
         runnerImage: async () => fakeImage,
         admit: () => () => {},
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
-          if (dir !== undefined && line === "i1 starting on claude-unremoved (claude)") release = blockTeardown(dir, "i1");
+          if (dir !== undefined && line === "i1 starting on openrouter-1") release = blockTeardown(dir, "i1");
         },
       });
 
@@ -249,7 +249,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const runDir = lines[0];
       if (runDir === undefined) throw new Error("runQa printed no run directory");
       const state = await readState(runDir);
-      expect(intern(state, "i1")).toMatchObject({ login: "claude-unremoved", status: "failed", findings: 0 });
+      expect(intern(state, "i1")).toMatchObject({ login: "openrouter-1", status: "failed", findings: 0 });
       expect(intern(state, "i1").detail).toEndWith("; its environment was not removed, so its runner may still write to /qa/out and its output was not read");
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups).toEqual([]);
@@ -273,7 +273,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         minutes: 0.5,
         confirmMinutes: 0.5,
         focus: [2, 3],
-        loginsFile: await logins("focus", [{ id: "claude-1", provider: "claude" }]),
+        loginsFile: await logins("focus"),
         replay: null,
         runnerImage: async () => {
           runnerImage = true;

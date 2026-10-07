@@ -227,7 +227,7 @@ const prompt = async (params) => {
     writeFileSync("/qa/out/evidence/auth.json", readFileSync(process.env.FAKE_CREDENTIAL));
   }
   if (limit === true) return limited;
-  if (hang === true) return slowTurn();
+  if (hang === true || (typeof hang === "string" && text.includes(hang))) return slowTurn();
   if (idle === true) {
     say("I have nothing to test.");
     return endTurn;

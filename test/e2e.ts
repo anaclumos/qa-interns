@@ -18,7 +18,7 @@ export const knownGap = "The environment has no video model.";
 export const runLocks = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs");
 export const intendedBehavior = "The invoices table scrolls sideways at narrow viewports instead of clipping its columns.";
 
-type FakeAgent = { limit?: true | "charter"; confirms?: false; late?: true; deaf?: true; swap?: true; flood?: true; idle?: true; hang?: true; stray?: true; second?: true; printKey?: true; nonce?: string };
+type FakeAgent = { limit?: true | "charter"; confirms?: false; late?: true; deaf?: true; swap?: true; flood?: true; idle?: true; hang?: true | string; stray?: true; second?: true; printKey?: true; nonce?: string };
 
 export function endToEnd() {
   const id = crypto.randomUUID().slice(0, 8);
