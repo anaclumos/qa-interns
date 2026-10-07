@@ -151,7 +151,7 @@ export type HeldSlot = { slot: number; release: () => void };
 export async function freeSlot(): Promise<HeldSlot> {
   const dir = runtimeDir("slots", "the locks of its network slots");
   for (const slot of openSlots(await usedBlocks())) {
-    const fd = flock(join(dir, `${slotAddress(slot, 0)}.lock`), "--exclusive", "--nonblock");
+    const fd = flock(join(dir, `${slotAddress(slot, 0)}.lock`), "exclusive", "nonblock");
     if (fd === null) continue;
     let free = false;
     try {
@@ -864,7 +864,7 @@ export function holdRun(runId: string, runDir: string): HeldRun {
   const dir = runtimeDir("runs", "the locks of its runs");
   const entry = join(dir, runId);
   const pending = join(dir, `.${runId}.${process.pid}`);
-  const fresh = flock(pending, "--exclusive", "--nonblock");
+  const fresh = flock(pending, "exclusive", "nonblock");
   if (fresh === null) throw new Error(`Another process holds ${pending}`);
   let fd = fresh;
   let created = true;
@@ -874,7 +874,7 @@ export function holdRun(runId: string, runDir: string): HeldRun {
   } catch (error) {
     closeSync(fresh);
     if (errorCode(error) !== "EEXIST") throw error;
-    const existing = flock(entry, "--exclusive", "--nonblock");
+    const existing = flock(entry, "exclusive", "nonblock");
     if (existing === null) throw new Error(`Another process holds run ${runId}`);
     if (!locksEntry(existing, entry)) {
       closeSync(existing);
@@ -905,7 +905,7 @@ export async function sweepRuns(image: string): Promise<string[]> {
   const errors = await Promise.all(
     runIds.map(async (runId) => {
       const entry = join(dir, runId);
-      const fd = flock(entry, "--exclusive", "--nonblock");
+      const fd = flock(entry, "exclusive", "nonblock");
       if (fd === null) return [];
       try {
         if (!locksEntry(fd, entry)) return [];

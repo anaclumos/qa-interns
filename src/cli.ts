@@ -161,7 +161,7 @@ async function main(args: string[]): Promise<number> {
       if (run === undefined || extra.length > 0) throw new Error("replay takes exactly one run id or run directory. Run qa-interns help for usage.");
       const confirmMinutes = numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes");
       const runDir = await resolveRunDir(run);
-      const lock = flock(replayLock(runDir), "--shared");
+      const lock = flock(replayLock(runDir), "shared", "block");
       if (lock === null) throw new Error(`flock on ${replayLock(runDir)} returned no lock`);
       try {
         const replay = await readReplay(runDir, values.group);

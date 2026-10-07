@@ -169,12 +169,12 @@ describe("run locks", () => {
       await holder.stdout.getReader().read();
       holder.kill("SIGKILL");
       await holder.exited;
-      const free = flock(entry, "--exclusive", "--nonblock");
+      const free = flock(entry, "exclusive", "nonblock");
       expect(free).toBeNull();
       expect(Bun.spawnSync(["pkill", "-f", `sleep ${duration}`]).exitCode).toBe(0);
       let released: number | null = null;
       for (let attempt = 0; attempt < 50 && released === null; attempt++) {
-        released = flock(entry, "--exclusive", "--nonblock");
+        released = flock(entry, "exclusive", "nonblock");
         if (released === null) await Bun.sleep(100);
       }
       expect(released).not.toBeNull();

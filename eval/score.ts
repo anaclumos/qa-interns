@@ -90,7 +90,7 @@ async function main(): Promise<void> {
   const [run, ...extra] = positionals;
   if (run === undefined || extra.length > 0) throw new Error("Usage: bun eval/score.ts <run> [--logins <file>]");
   const runDir = await resolveRunDir(run);
-  if (flock(replayLock(runDir), "--shared") === null) throw new Error(`flock on ${replayLock(runDir)} returned no lock`);
+  if (flock(replayLock(runDir), "shared", "block") === null) throw new Error(`flock on ${replayLock(runDir)} returned no lock`);
   const state =await readState(runDir);
   const { groups } = await readJson(join(runDir, "findings.json"), findingsSchema);
   const { defects } = await readJson(defectsFile, defectsSchema);

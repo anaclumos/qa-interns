@@ -125,7 +125,7 @@ export async function prune(print: (line: string) => void): Promise<void> {
   let removed = 0;
   try {
     for (const candidate of candidates.filter((candidate) => !unshipped.includes(candidate))) {
-      const lock = flock(replayLock(candidate.dir), "--exclusive", "--nonblock");
+      const lock = flock(replayLock(candidate.dir), "exclusive", "nonblock");
       if (lock === null) kept.replayed++;
       else locks.set(candidate, lock);
     }
