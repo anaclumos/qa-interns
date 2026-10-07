@@ -128,6 +128,48 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   );
 
   test(
+    "a run that SIGTERM interrupts during its teardown finishes the teardown and records the interrupt",
+    async () => {
+      const ended = join(root, "teardown-ended.txt");
+      const cli = Bun.spawn(
+        [
+          process.execPath,
+          cliScript,
+          "run",
+          target,
+          "--interns",
+          "1",
+          "--logins",
+          await logins("teardown-interrupt", [{ id: "claude-1", provider: "claude" }]),
+          "--on-end",
+          `printf '%s\\n' "$QA_INTERNS_PHASE" > '${ended}'`,
+        ],
+        { env: { ...process.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+      );
+      const reader = cli.stdout.getReader();
+      const decoder = new TextDecoder();
+      let out = "";
+      while (!out.includes("i1 limited:")) {
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error(`run exited before its teardown: ${out}${await new Response(cli.stderr).text()}`);
+        out += decoder.decode(chunk.value, { stream: true });
+      }
+      cli.kill("SIGTERM");
+      const [code, stderr] = await Promise.all([cli.exited, new Response(cli.stderr).text()]);
+
+      expect(code).toBe(130);
+      expect(stderr).toContain("Interrupted. Closing sessions and tearing down.\n");
+      expect(await Bun.file(ended).text()).toBe("failed\n");
+      const state = await readState(out.slice(0, out.indexOf("\n")));
+      expect(state).toMatchObject({ phase: "failed" });
+      expect(state.error).toStartWith("interrupted");
+      expect(state.error).not.toContain("teardown failed");
+      expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "a run that SIGTERM interrupts while an intern tests writes report.md, findings.json, and state.json with the findings of the interns that ended, before its teardown",
     async () => {
       const options = {
