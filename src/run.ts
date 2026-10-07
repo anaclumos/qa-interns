@@ -1040,8 +1040,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
         await finish(null);
         if (recorded !== undefined && !recorded.stopping) {
           record(recorded.error, recorded.teardowns);
-          await write();
-          await save();
+          try {
+            await write();
+          } finally {
+            await save();
+          }
         }
       } finally {
         const hook = await ended("failed");
