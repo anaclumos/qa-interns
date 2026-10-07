@@ -149,7 +149,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const reader = cli.stdout.getReader();
       const decoder = new TextDecoder();
       let out = "";
-      while (!out.includes("i1 limited:")) {
+      while (!out.includes("i1 failed:")) {
         const chunk = await reader.read();
         if (chunk.done) throw new Error(`run exited before its teardown: ${out}${await new Response(cli.stderr).text()}`);
         out += decoder.decode(chunk.value, { stream: true });

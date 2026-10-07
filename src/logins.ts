@@ -174,14 +174,11 @@ export function cpuPressure(): number {
   return value;
 }
 
-export function admit(memory: number, pressureLimit = cpuPressureLimit): (() => void) | null {
+export function admit(environmentMemory: number, pressureLimit = cpuPressureLimit): (() => void) | null {
   const dir = locksDir();
   return exclusive(dir, () => {
     const { total, reserve } = hostMemory();
-    if (memory + reserve > total) {
-      const gib = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
-      throw new Error(`An environment of this target can use ${gib(memory)} GiB, which with the reserve of ${gib(reserve)} GiB is more than the ${gib(total)} GiB of memory this host has`);
-    }
+    const memory = environmentMemory + reserve > total ? Math.floor(total / 2) : environmentMemory;
     if (cpuPressure() > pressureLimit) return null;
     let starting = 0;
     for (const name of readdirSync(dir).filter((entry) => entry.startsWith(startingPrefix))) {

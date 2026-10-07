@@ -366,7 +366,11 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, fre
   let outcome: Outcome<T>;
   try {
     const result = await leased(ctx, id, target, free, work, note);
-    if (result !== null && ctx.unremoved.has(id)) throw new Error("its environment was not removed, so its runner may still write to /qa/out and its output was not read");
+    if (result !== null && ctx.unremoved.has(id)) {
+      const unremoved = "its environment was not removed, so its runner may still write to /qa/out and its output was not read";
+      await note(unremoved);
+      throw new Error(unremoved);
+    }
     outcome = result === null ? { status: "limited" } : { status: "done", value: result.value };
     if (result === null) notes.push(noLogin);
   } catch (error) {
