@@ -1,8 +1,6 @@
 FROM node:24-trixie-slim
 
-RUN cp -a /usr/share/doc /usr/share/doc.copy \
- && rm -r /usr/share/doc \
- && mv /usr/share/doc.copy /usr/share/doc \
+RUN echo 'path-exclude=/usr/share/doc/*' > /etc/dpkg/dpkg.cfg.d/exclude-doc \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
