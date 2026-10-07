@@ -380,7 +380,16 @@ const server = Bun.serve({
       POST: page(async (req, ctx) => {
         const displayName = field(await readForm(req), "display_name");
         if (!displayName || displayName.length > 80) return html(profilePage(ctx, "Display name must be 1 to 80 characters.", false), 400);
-        await sql`update users set display_name = ${displayName} where id = ${ctx.user.id}`;
+        await sql.begin(async (tx) => {
+          const [user] = await tx`select display_name from users where id = ${ctx.user.id} for update`;
+          const oldTeamName = `${user.display_name}'s team`;
+          const newTeamName = `${displayName}'s team`;
+          await tx`update users set display_name = ${displayName} where id = ${ctx.user.id}`;
+          await tx`
+            update teams set name = ${newTeamName}
+            where name = ${oldTeamName}
+              and id in (select team_id from memberships where user_id = ${ctx.user.id} and role = 'owner')`;
+        });
         return redirect("/profile?saved=1");
       }),
     },

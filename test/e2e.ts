@@ -17,7 +17,7 @@ export const knownGap = "The environment has no video model.";
 export const runLocks = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs");
 export const intendedBehavior = "The invoices table scrolls sideways at narrow viewports instead of clipping its columns.";
 
-type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; late?: true; deaf?: true; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
+type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; late?: true; deaf?: true; swap?: true; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
 
 export function endToEnd() {
   const id = crypto.randomUUID().slice(0, 8);
@@ -109,6 +109,7 @@ USER qa
       name,
       loginsFile: await logins(`ask-${runId}`, [{ id: "claude-1", provider: "claude" }]),
       runnerImage: fakeImage,
+      admit: () => () => {},
       prompt: "Write /qa/out/groups.json.",
       file: "groups.json",
       parse: (raw) => JSON.parse(raw),
