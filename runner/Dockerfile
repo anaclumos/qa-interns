@@ -1,6 +1,9 @@
 FROM node:24-trixie-slim
 
-RUN apt-get update \
+RUN cp -a /usr/share/doc /usr/share/doc.copy \
+ && rm -r /usr/share/doc \
+ && mv /usr/share/doc.copy /usr/share/doc \
+ && apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
