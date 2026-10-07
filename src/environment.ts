@@ -299,7 +299,12 @@ export async function writeChromePolicy(runDir: string, urls: Record<string, str
   const hosts = urlHosts(urls).filter((host) => !host.includes("."));
   const parsed = Object.values(urls).map((url) => new URL(url));
   const insecure = [...new Set(parsed.filter((url) => url.protocol === "http:").map((url) => url.origin))];
-  const policy = { HSTSPolicyBypassList: hosts, OverrideSecurityRestrictionsOnInsecureOrigin: insecure };
+  const policy = {
+    HSTSPolicyBypassList: hosts,
+    OverrideSecurityRestrictionsOnInsecureOrigin: insecure,
+    RestoreOnStartup: 4,
+    RestoreOnStartupURLs: ["about:blank"],
+  };
   await Bun.write(join(runDir, "chrome-policy.json"), `${JSON.stringify(policy, null, 2)}\n`);
 }
 
