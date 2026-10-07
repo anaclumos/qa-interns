@@ -1,6 +1,6 @@
 FROM node:24-trixie-slim
 
-RUN mkdir /etc/t1.new; mv /etc/t1.new /etc/t1; echo "A new empty dir in /etc: $?"; mkdir /etc/t2.new; touch /etc/t2.new/f; mv /etc/t2.new /etc/t2; echo "B new dir with file in /etc: $?"; ls -ld /etc/cron.d /usr/lib/x86_64-linux-gnu/systemd; echo "C ls: $?"; mkdir /etc/t3.new; mv /etc/t3.new /etc/t3; echo "D second new dir: $?"; mv /usr/share/doc /usr/share/doc2; echo "E existing lower dir: $?"; mkdir -p /opt/t4.new; mv /opt/t4.new /opt/t4; echo "F new dir in /opt: $?"; mkdir /usr/lib/x86_64-linux-gnu/systemd.new; mv /usr/lib/x86_64-linux-gnu/systemd.new /usr/lib/x86_64-linux-gnu/systemd; echo "G new dir in libdir: $?"; mount | grep ' / '; true
+RUN --mount=type=tmpfs,target=/usr/share/doc apt-get update && apt-get install -y --no-install-recommends strace && cd /tmp && apt-get download e2fsprogs && { strace -f -s 120 -e trace=rename,renameat,renameat2,mkdir,mkdirat,chown,fchownat,chmod,fchmodat,utimensat,openat -o /tmp/st.txt dpkg --unpack /tmp/e2fsprogs_*.deb; grep -n -B4 -A2 'cron.d' /tmp/st.txt | head -80; true; }
 
 RUN --mount=type=tmpfs,target=/usr/share/doc \
     apt-get update \
