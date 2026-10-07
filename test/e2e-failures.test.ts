@@ -9,7 +9,7 @@ import { disks, dockerAvailable, endToEnd, intern, leftovers, runLocks, timeout,
 import { suiteLabel } from "./suite-lock.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
-  const { target, fakeImage, logins } = endToEnd();
+  const { target, fakeImage, logins, blockTeardown } = endToEnd();
 
   test(
     "an intern whose agent stops without a tool call, as Cursor does at its plan limit, fails, and so does a run with no other intern",
@@ -119,6 +119,50 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const state = await readState(runDir);
       expect(intern(state, "i1")).toMatchObject({ login: "claude-limit", status: "failed" });
       expect(intern(state, "i1").detail).toStartWith(`${failure}; teardown failed: docker compose down left objects of qa-${state.runId}-i1 behind`);
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(existsSync(join(runLocks, state.runId))).toBe(true);
+      rmSync(join(runLocks, state.runId));
+    },
+    timeout,
+  );
+
+  test(
+    "an intern whose environment is not removed at its teardown fails and the report holds none of its findings",
+    async () => {
+      const lines: string[] = [];
+      let release = async () => {};
+      const run = runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("unremoved", [{ id: "claude-unremoved", provider: "claude" }]),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
+        print: (line) => {
+          lines.push(line);
+          const [dir] = lines;
+          if (dir !== undefined && line === "i1 starting on claude-unremoved (claude)") release = blockTeardown(dir, "i1");
+        },
+      });
+
+      try {
+        await expect(run).rejects.toThrow("No testing intern completed: i1 failed: teardown failed: docker compose down left objects of");
+      } finally {
+        await release();
+        const [dir] = lines;
+        if (dir !== undefined) await stopRun(dir, basename(dir));
+      }
+      const runDir = lines[0];
+      if (runDir === undefined) throw new Error("runQa printed no run directory");
+      const state = await readState(runDir);
+      expect(intern(state, "i1")).toMatchObject({ login: "claude-unremoved", status: "failed", findings: 0 });
+      expect(intern(state, "i1").detail).toEndWith("; its environment was not removed, so its runner may still write to /qa/out and its output was not read");
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.groups).toEqual([]);
       expect(await leftovers(state.runId)).toEqual([]);
       expect(existsSync(join(runLocks, state.runId))).toBe(true);
       rmSync(join(runLocks, state.runId));

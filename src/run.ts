@@ -95,6 +95,7 @@ type Context = {
   images: Record<string, string>;
   sessions: Set<Session>;
   teardowns: string[];
+  unremoved: Map<string, number>;
   environments: EnvironmentStats[];
   waiting: Set<() => void>;
   stopping: boolean;
@@ -172,6 +173,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     images: {},
     sessions: new Set(),
     teardowns: [],
+    unremoved: new Map(),
     environments: [],
     waiting: new Set(),
     stopping: false,
@@ -293,6 +295,8 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
   let starting = () => {};
   let slot: HeldSlot | undefined;
   let started = false;
+  let current = 0;
+  let removed = false;
   let unread = null as EnvironmentStats | null;
   const releaseSlot = () => {
     starting();
@@ -303,13 +307,16 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     releaseSlot();
     lease.release();
   };
-  const teardown = async (removed: () => void) => {
+  const teardown = async (handOff: () => void) => {
     const environment = unread;
     unread = null;
     try {
       if (environment !== null) environment.containers = await containerStats(project);
     } finally {
-      await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage, removed);
+      await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage, () => {
+        removed = true;
+        handOff();
+      });
     }
   };
   try {
@@ -321,6 +328,8 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
       const environment: EnvironmentStats = { intern: id, attempt: count, startedAt: now(), readyAt: null, containers: null };
       ctx.environments.push(environment);
       started = true;
+      current = count;
+      removed = false;
       unread = environment;
       const env = await startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease, count), () => {
         environment.readyAt = now();
@@ -352,6 +361,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     try {
       if (started) await teardown(handOff);
     } catch (error) {
+      if (!removed) ctx.unremoved.set(id, current);
       ctx.teardowns.push(`${id}: ${message(error)}`);
       await note(`teardown failed: ${message(error)}`);
     } finally {
@@ -370,6 +380,7 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, fre
   let outcome: Outcome<T>;
   try {
     const result = await leased(ctx, id, target, free, work, note);
+    if (result !== null && ctx.unremoved.has(id)) throw new Error("its environment was not removed, so its runner may still write to /qa/out and its output was not read");
     outcome = result === null ? { status: "limited" } : { status: "done", value: result.value };
     if (result === null) notes.push(noLogin, ...ctx.scheduler.refusals(id));
   } catch (error) {
@@ -452,7 +463,7 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
 }
 
 async function collect(ctx: Context, { intern, attempts }: Explored): Promise<Collected> {
-  const results = await Promise.allSettled(attempts.map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
+  const results = await Promise.allSettled(attempts.filter((entry) => ctx.unremoved.get(intern.id) !== entry.attempt).map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
   const read = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
   return {
     findings: read.flatMap((result) => result.findings),
@@ -503,7 +514,7 @@ async function check(ctx: Context, id: string, attempt: number): Promise<Answer>
 
 async function recover(ctx: Context, { intern, attempts }: Reproduced, answer: Answer): Promise<NonNullable<Group["confirmation"]>> {
   let confirmation: NonNullable<Group["confirmation"]> = { intern: intern.id, provider: intern.provider, ...answer };
-  for (const entry of attempts.toReversed()) {
+  for (const entry of attempts.toReversed().filter((candidate) => ctx.unremoved.get(intern.id) !== candidate.attempt)) {
     const saved = await check(ctx, intern.id, entry.attempt);
     if (saved.result !== null || confirmation.error === null) confirmation = { intern: intern.id, provider: entry.provider, ...saved };
     if (saved.result !== null) break;
