@@ -5,7 +5,7 @@ import { basename, join } from "node:path";
 import { errorCode } from "../src/findings.ts";
 import { newRunId, readState, writeState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
-import { cliScript, dockerAvailable, endToEnd, intern, leftovers, timeout, title } from "./e2e.ts";
+import { cliScript, disks, dockerAvailable, endToEnd, intern, leftovers, timeout, title } from "./e2e.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   const { root, target, fakeImage, logins } = endToEnd();
@@ -68,8 +68,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         expect(await readState(runDir)).toMatchObject({ phase: "done", error: null });
         expect(await leftovers(state.runId)).toEqual([]);
         expect((await readdir(join(runDir, "envs", "up"))).filter((entry) => entry === project || entry === "tmp")).toEqual([]);
-        expect((await readdir(join(runDir, "interns", "up"))).filter((entry) => entry.includes(".img"))).toEqual([]);
-        expect(readFileSync("/proc/self/mountinfo", "utf8")).not.toContain(runDir);
+        expect(await disks(runDir, state)).toEqual([]);
       } finally {
         if (!removed && runDir !== "") expect(await cli("down", runDir)).toMatchObject({ code: 0 });
       }

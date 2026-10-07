@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { arch, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { createDisk, devcontainer, freeSlot, memoryPeak, removeDir, saveDisk, slotSubnets } from "./environment.ts";
+import { createDisk, devcontainer, execOut, freeSlot, memoryPeak, removeDir, saveDisk, slotSubnets } from "./environment.ts";
 import { message, oneLine } from "./findings.ts";
 import { cpuPressure, cpuPressureLimit, hostMemory, loadLogin, Scheduler } from "./logins.ts";
 import { ensureRunnerImage } from "./runner.ts";
@@ -65,15 +65,15 @@ async function checkDisk(image: string): Promise<string> {
     await mkdir(out);
     try {
       await createDisk(out, image, owner);
-      await Bun.write(join(out, "check.txt"), "saved\n");
+      await execOut(out, ["sh", "-c", "printf 'saved\\n' > /out/check.txt"]);
     } finally {
-      await saveDisk(out, image, owner);
+      await saveDisk(out);
     }
     const saved = await Bun.file(join(out, "check.txt")).text();
     if (saved !== "saved\n") throw new Error(`the saved disk holds ${JSON.stringify(saved)} instead of the file written to it`);
-    return `created, mounted, and saved an output disk in ${state}`;
+    return `created a size-limited output disk, wrote a file to it, and saved it in ${state}`;
   } finally {
-    await removeDir(dir, image, owner);
+    await removeDir(dir);
   }
 }
 
@@ -125,7 +125,6 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
   await check("isolated network", checkNetwork);
   await check("dev container cli", async () => `version ${(await execute([process.execPath, devcontainer, "--version"])).trim()}`);
   await check("git", async () => (await execute(["git", "--version"])).trim());
-  await check("findmnt", async () => (await execute(["findmnt", "--version"])).trim());
   let image: string | null = null;
   await check("runner image", async () => {
     image = await ensureRunnerImage();

@@ -1,14 +1,14 @@
 import { closeSync, existsSync, fstatSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, statfs } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { errorCode, message } from "./findings.ts";
 import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { writeAtomic } from "./state.ts";
-import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, runLocks, targetEnv, type Target } from "./target.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, runLocks, targetEnv, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type Mount, type RelayRecord } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; tmpfs: string[] };
@@ -36,19 +36,17 @@ const waitTimeoutSeconds = "600";
 const proxyUrl = "http://qa-proxy:3128";
 const relayProbe = "require('node:net').connect(443, '127.0.0.1').on('connect', () => process.exit(0)).on('error', () => process.exit(1))";
 const outLimit = gib;
+const outInodes = 65536;
+const runnerLimit = runnerMemory + outLimit;
 const outCheckMs = 1000;
 const fullBelow = 16 * mib;
-const diskSuffix = ".img";
 const diskLabel = "qa-interns.disk";
+const outLabel = "qa-interns.out";
 const helperTimeout = 10 * minute;
 const buildProject = "qa-build";
 const imagePrefix = `${buildProject}-`;
 const keyLength = 12;
 const keepImages = 30 * minute;
-const createDiskScript =
-  'if [ -e "$2" ] || mountpoint -q "$1"; then echo "$1 already has an output disk" >&2; exit 1; fi; { truncate -s "$4" "$2.new" && mkfs.ext4 -q -F -m 0 -E root_owner="$3" "$2.new" && mount -o loop "$2.new" /mnt && rmdir /mnt/lost+found && umount /mnt && mv "$2.new" "$2" && mount -o loop,nosuid,nodev "$2" "$1"; } || { rm -f "$2.new"; exit 1; }';
-const saveDiskScript =
-  'rm -f "$2.new"; [ -e "$2" ] || exit 0; mkdir /under && mount --bind "${1%/*}" /under && { if mountpoint -q "$1"; then src="$1"; else mount -o loop "$2" /mnt && src=/mnt; fi; } && find "/under/${1##*/}" -mindepth 1 -delete && cp -a "$src/." "/under/${1##*/}" && umount "$src" && umount /under && rm "$2"';
 
 const defaultSubnet = "10.213.0.0/16";
 const slotBits = 23;
@@ -173,6 +171,11 @@ function envDir(spec: EnvironmentSpec): string {
   return join(spec.runDir, "envs", spec.name);
 }
 
+function outVolume(owner: string, out: string): string {
+  return `${owner}-${basename(out)}`;
+}
+
+
 function bind(source: string, target: string, readOnly: boolean) {
   return { type: "bind", source, target, read_only: readOnly, bind: { create_host_path: false } };
 }
@@ -220,7 +223,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     logging,
   ];
   const volumes = [
-    bind(spec.runner.out, "/qa/out", false),
+    { type: "volume", source: outVolumeKey, target: "/qa/out" },
     bind(join(spec.runDir, "chrome-policy.json"), "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json", true),
     ...spec.runner.mounts.map((mount) => bind(mount.source, mount.target, mount.readOnly)),
   ];
@@ -252,7 +255,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...hardening,
     "    pids_limit: 4096",
     `    ulimits: ${y({ fsize: outLimit })}`,
-    `    mem_limit: ${y(String(runnerMemory))}`,
+    `    mem_limit: ${y(String(runnerLimit))}`,
     "    cpus: 2",
     `    networks: ${y(["qa_internal", ...(proxied ? ["qa_agent"] : [])])}`,
   );
@@ -277,6 +280,8 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...(relayHosts.length > 0 ? [`  qa_relay: !override ${y(isolated(relay))}`] : []),
     ...(proxied ? [`  qa_agent: !override ${y(isolated(agent))}`] : []),
     ...(proxied || relayHosts.length > 0 ? [`  qa_egress: !override ${y({ ipam: { config: [{ subnet: egress }] } })}`] : []),
+    "volumes:",
+    `  ${outVolumeKey}: !override ${y({ external: true, name: outVolume(projectName(spec.runId, spec.name), spec.runner.out) })}`,
   );
   return `${lines.join("\n")}\n`;
 }
@@ -284,7 +289,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
 export function environmentMemory(target: Target | null): number {
   const services = Object.values(target?.services ?? {}).filter((service) => service.active);
   const relay = (target?.settings.egress.length ?? 0) > 0 ? sidecarMemory : 0;
-  return services.reduce((sum, service) => sum + (service.memLimit ?? serviceMemory) * service.replicas, runnerMemory + sidecarMemory + relay);
+  return services.reduce((sum, service) => sum + (service.memLimit ?? serviceMemory) * service.replicas, runnerLimit + sidecarMemory + relay);
 }
 
 function urlHosts(urls: Record<string, string>): string[] {
@@ -544,7 +549,7 @@ export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void
   }
   const devContainer = result.data.containerId;
   const configFiles = await execute(["docker", "inspect", "--format", '{{index .Config.Labels "com.docker.compose.project.config_files"}}', devContainer]);
-  const violations = await devContainerViolations(project, composeFiles(spec), configFiles.trim().split(","), target.service, workspace, upEnv);
+  const violations = await devContainerViolations(project, composeFiles(spec), configFiles.trim().split(","), target.service, workspace, upEnv, outVolume(project, spec.runner.out));
   if (violations.length > 0) {
     throw new Error(`The dev container that devcontainer up created for ${project} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
   }
@@ -587,50 +592,91 @@ async function disableRestarts(project: string): Promise<void> {
   while ((await execute(["docker", "ps", "-aq", "--filter", label, "--filter", "status=restarting"])).trim() !== "") await Bun.sleep(1000);
 }
 
-async function diskHelper(out: string, image: string, owner: string, script: string, args: string[]): Promise<void> {
-  const dir = dirname(out);
-  const name = `${owner}-disk-${crypto.randomUUID().slice(0, 8)}`;
-  const mounts = ["-v", "/dev:/dev", "-v", `${dir}:${dir}:rshared`];
-  await execute(["docker", "run", "--rm", "--name", name, "--label", `${diskLabel}=${owner}`, "--privileged", "--network", "none", "--user", "0:0", ...mounts, image, "flock", dir, "sh", "-c", script, "sh", out, `${out}${diskSuffix}`, ...args]);
-}
+type Holder = { name: string; out: string; running: boolean };
 
 export async function createDisk(out: string, image: string, owner: string): Promise<void> {
   const { uid, gid } = userInfo();
-  await diskHelper(out, image, owner, createDiskScript, [`${uid}:${gid}`, String(outLimit)]);
-  if ((await stat(out)).dev === (await stat(dirname(out))).dev) {
-    throw new Error(`The output disk of ${out} is mounted where Docker runs but not where QA Interns runs. Put the state directory on a mount with shared propagation.`);
+  const name = outVolume(owner, out);
+  if ((await capture(["docker", "volume", "inspect", name])).code === 0) throw new Error(`${out} already has an output disk`);
+  const options = `size=${outLimit},nr_inodes=${outInodes},uid=${uid},gid=${gid},mode=0700,nosuid,nodev`;
+  await execute(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=${options}`, name]);
+  try {
+    await execute([
+      ...["docker", "run", "-d", "--init", "--name", name, "--label", `${outLabel}=${await realpath(out)}`, "--network", "none", "--user", "0:0"],
+      ...["--read-only", "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--security-opt", "no-new-privileges:true", "-v", `${name}:/out`, image, "sleep", "infinity"],
+    ]);
+  } catch (error) {
+    await capture(["docker", "rm", "-f", name]);
+    await execute(["docker", "volume", "rm", name]);
+    throw error;
   }
 }
 
-export async function saveDisk(out: string, image: string, owner: string): Promise<void> {
-  await diskHelper(out, image, owner, saveDiskScript, []);
+async function holders(dir: string): Promise<Holder[]> {
+  const real = existsSync(dir) ? await realpath(dir) : dir;
+  const listed = await execute(["docker", "ps", "-a", "--filter", `label=${outLabel}`, "--format", `{{.Names}}\t{{.State}}\t{{.Label "${outLabel}"}}`]);
+  return listed
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => ({ name: line.split("\t")[0] ?? "", running: line.split("\t")[1] === "running", out: line.split("\t")[2] ?? "" }))
+    .filter((holder) => holder.out === real || holder.out.startsWith(`${real}/`));
 }
 
-const mountsSchema = z.object({ filesystems: z.array(z.object({ target: z.string() })) });
+const archiveOut = '{ docker exec "$1" tar --sparse --warning=no-file-changed -C /out -cf - . || [ $? -eq 1 ]; } | tar -xf - -C "$2"; code=$?; chmod -R u+rwX "$2"; exit $code';
 
-async function mountTargets(): Promise<string[]> {
-  const { filesystems } = mountsSchema.parse(JSON.parse(await execute(["findmnt", "--list", "--json", "--output", "TARGET"])));
-  return filesystems.map((mount) => mount.target);
+async function copyOut({ name, out }: Holder): Promise<void> {
+  const next = `${out}.next`;
+  await rm(next, { recursive: true, force: true });
+  await mkdir(next);
+  await execute(["bash", "-o", "pipefail", "-c", archiveOut, "bash", name, next]);
+  for (const entry of await readdir(out)) await rm(join(out, entry), { recursive: true, force: true });
+  for (const entry of await readdir(next)) await rename(join(next, entry), join(out, entry));
+  await rm(next, { recursive: true, force: true });
 }
 
-export async function removeDir(dir: string, image: string, owner: string): Promise<void> {
+async function saveHolder(holder: Holder): Promise<void> {
+  if (holder.running && existsSync(holder.out)) await copyOut(holder);
+  await execute(["docker", "rm", "-f", holder.name]);
+  await execute(["docker", "volume", "rm", holder.name]);
+  if (!holder.running) throw new Error(`The output disk container ${holder.name} was not running, so the files that it held for ${holder.out} are lost`);
+}
+
+export async function saveDisk(out: string): Promise<void> {
+  for (const holder of await holders(out)) await saveHolder(holder);
+}
+
+export async function removeDir(dir: string): Promise<void> {
   if (!existsSync(dir)) return;
-  const real = await realpath(dir);
-  for (const target of (await mountTargets()).filter((target) => target.startsWith(`${real}/`))) await saveDisk(target, image, owner);
+  await saveDisk(dir);
   await rm(dir, { recursive: true, force: true });
 }
 
-async function diskOuts(dir: string): Promise<string[]> {
-  const names = existsSync(dir) ? await readdir(dir) : [];
-  const suffixes = [diskSuffix, `${diskSuffix}.new`];
-  return [...new Set(names.flatMap((name) => suffixes.filter((suffix) => name.endsWith(suffix)).map((suffix) => join(dir, name.slice(0, -suffix.length)))))];
+async function holderOf(out: string): Promise<Holder> {
+  const [holder] = await holders(out);
+  if (holder === undefined) throw new Error(`${out} has no output disk`);
+  return holder;
 }
 
+export async function pullDisk(out: string): Promise<void> {
+  await copyOut(await holderOf(out));
+}
+
+export async function execOut(out: string, command: string[]): Promise<string> {
+  const { uid, gid } = userInfo();
+  return execute(["docker", "exec", "--user", `${uid}:${gid}`, (await holderOf(out)).name, ...command]);
+}
+
+const spaceSchema = z
+  .string()
+  .transform((text) => text.trim().split(" ").map(Number))
+  .pipe(z.tuple([z.int(), z.int(), z.int()]));
+
 export async function watchOut(dir: string, signal: AbortSignal): Promise<string> {
+  const { name } = await holderOf(dir);
   for (;;) {
     await Bun.sleep(outCheckMs);
     signal.throwIfAborted();
-    const { bavail, bsize, ffree } = await statfs(dir);
+    const [bavail, bsize, ffree] = spaceSchema.parse(await execute(["docker", "exec", name, "stat", "-f", "-c", "%a %S %d", "/out"]));
     if (bavail * bsize < fullBelow || ffree === 0) return `${dir} filled its ${outLimit / gib} GiB disk`;
   }
 }
@@ -750,14 +796,14 @@ export async function removeCopy(runDir: string, runId: string, name: string, im
   if (paths.length > 0) await removeAsRoot(dir, image, projectName(runId, name), paths);
 }
 
-export async function stopEnvironment(runDir: string, name: string, project: string, image: string, removed?: () => void): Promise<void> {
+export async function stopEnvironment(runDir: string, name: string, project: string, removed?: () => void): Promise<void> {
   await down(project, join(runDir, "interns", name));
   removed?.();
-  await saveDisks(runDir, name, project, image);
+  await saveDisks(runDir, name);
 }
 
-export async function saveDisks(runDir: string, name: string, project: string, image: string): Promise<void> {
-  for (const out of await diskOuts(join(runDir, "interns", name))) await saveDisk(out, image, project);
+export async function saveDisks(runDir: string, name: string): Promise<void> {
+  await saveDisk(join(runDir, "interns", name));
 }
 
 async function diskHelpers(runId: string, state: "created" | "running"): Promise<string[]> {
@@ -778,28 +824,28 @@ async function settleDiskHelpers(runId: string): Promise<void> {
   }
 }
 
-async function leftCopies(runDir: string, runId: string): Promise<{ paths: string[]; disks: { out: string; owner: string }[] }> {
+async function leftCopies(runDir: string, runId: string): Promise<string[]> {
   const envs = join(runDir, "envs");
   const names = existsSync(envs) ? await readdir(envs) : [];
-  const paths = names.flatMap((name) => [join(name, projectName(runId, name)), join(name, "tmp")]).filter((path) => existsSync(join(envs, path)));
-  const disks = (await Promise.all(names.map(async (name) => (await diskOuts(join(runDir, "interns", name))).map((out) => ({ out, owner: projectName(runId, name) }))))).flat();
-  return { paths, disks };
+  return names.flatMap((name) => [join(name, projectName(runId, name)), join(name, "tmp")]).filter((path) => existsSync(join(envs, path)));
 }
 
 export async function removeCopies(runDir: string, runId: string, image: string): Promise<void> {
   await settleDiskHelpers(runId);
   const envs = join(runDir, "envs");
-  const { paths, disks } = await leftCopies(runDir, runId);
+  const paths = await leftCopies(runDir, runId);
+  const disks = await holders(join(runDir, "interns"));
   if (paths.length === 0 && disks.length === 0) return;
-  if ((await capture(["docker", "image", "inspect", image])).code !== 0) {
-    const left = [...paths.map((path) => join(envs, path)), ...disks.map((disk) => `the output disk of ${disk.out}`)];
-    throw new Error(`${runDir} still holds ${left.join(", ")}, which only a container of the runner image can save or remove, and the runner image ${image} does not exist. Build it with qa-interns doctor, then run qa-interns down again.`);
+  if (paths.length > 0) {
+    if ((await capture(["docker", "image", "inspect", image])).code !== 0) {
+      throw new Error(`${runDir} still holds ${paths.map((path) => join(envs, path)).join(", ")}, which only a container of the runner image can remove, and the runner image ${image} does not exist. Build it with qa-interns doctor, then run qa-interns down again.`);
+    }
+    await removeAsRoot(envs, image, projectName(runId, "envs"), paths);
   }
-  if (paths.length > 0) await removeAsRoot(envs, image, projectName(runId, "envs"), paths);
   const errors: string[] = [];
-  for (const { out, owner } of disks) {
+  for (const disk of disks) {
     try {
-      await saveDisk(out, image, owner);
+      await saveHolder(disk);
     } catch (error) {
       errors.push(String(error));
     }
@@ -827,26 +873,23 @@ export async function stopRun(runDir: string, runId: string): Promise<void> {
   await removeImages([prefix, `vsc-${prefix}`]);
 }
 
-export type HostObjects = { docker: string[]; mounts: string[] };
+export type HostObjects = { docker: string[] };
 
 export async function hostObjects(docker: boolean): Promise<HostObjects> {
-  if (!docker) return { docker: [], mounts: await mountTargets() };
-  const [projects, images, helpers, mounts] = await Promise.all([
+  if (!docker) return { docker: [] };
+  const [projects, images, helpers, outs] = await Promise.all([
     composeProjects(),
     execute(["docker", "image", "ls", "--format", "{{.Repository}}"]),
     execute(["docker", "ps", "-a", "--filter", `label=${diskLabel}`, "--format", `{{.Label "${diskLabel}"}}`]),
-    mountTargets(),
+    execute(["docker", "ps", "-a", "--filter", `label=${outLabel}`, "--format", "{{.Names}}"]),
   ]);
-  return { docker: [...projects, ...images.split("\n"), ...helpers.split("\n")], mounts };
+  return { docker: [...projects, ...images.split("\n"), ...helpers.split("\n"), ...outs.split("\n")] };
 }
 
 export async function leftBehind(host: HostObjects, runDir: string, runId: string): Promise<boolean> {
   const prefix = `qa-${runId}-`;
   if (host.docker.some((name) => name.startsWith(prefix) || name.startsWith(`vsc-${prefix}`))) return true;
-  const real = await realpath(runDir);
-  if (host.mounts.some((target) => target.startsWith(`${real}/`))) return true;
-  const { paths, disks } = await leftCopies(runDir, runId);
-  return paths.length > 0 || disks.length > 0;
+  return (await leftCopies(runDir, runId)).length > 0;
 }
 
 export type HeldRun = { end: () => void };

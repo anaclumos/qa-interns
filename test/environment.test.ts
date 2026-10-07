@@ -1,17 +1,19 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { closeSync, existsSync, readFileSync, rmSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readdir, stat, symlink, utimes } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, join } from "node:path";
 import { z } from "zod";
 import {
   buildImages,
   containerStats,
   createDisk,
   environmentMemory,
+  execOut,
   freeSlot,
   freeSlots,
   holdRun,
+  pullDisk,
   readRelayLogs,
   removeCopies,
   removeDir,
@@ -30,7 +32,7 @@ import {
 } from "../src/environment.ts";
 import { flock } from "../src/logins.ts";
 import { pi } from "../src/pi.ts";
-import { ensureRunnerImage, runnerImage } from "../src/runner.ts";
+import { ensureRunnerImage } from "../src/runner.ts";
 import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 import type { RelayRecord } from "../src/types.ts";
@@ -44,8 +46,7 @@ const ref = { repo: "/home/dev/ledger", path: "", commit: "4f1c2a9e0b7d3c5a8e6f1
 const roots: string[] = [];
 
 afterAll(async () => {
-  const image = await runnerImage();
-  for (const root of roots) await removeDir(root, image, "qair-t-cleanup");
+  for (const root of roots) await (dockerAvailable ? removeDir(root) : rm(root, { recursive: true, force: true }));
 });
 
 async function scratch(): Promise<string> {
@@ -101,6 +102,7 @@ function spec(runDir: string, target: Target | null, overrides: Partial<Environm
 type Normalized = {
   services: Record<string, Record<string, unknown> & { networks?: Record<string, unknown> }>;
   networks: Record<string, Record<string, unknown>>;
+  volumes: Record<string, Record<string, unknown>>;
 };
 
 async function withSubnet(subnet: string, check: () => void | Promise<void>): Promise<void> {
@@ -324,7 +326,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
       read_only: true,
       cap_drop: ["ALL"],
       security_opt: ["no-new-privileges:true"],
-      mem_limit: "4294967296",
+      mem_limit: "5368709120",
       cpus: 2,
       pids_limit: 4096,
       ulimits: { fsize: 1073741824 },
@@ -338,7 +340,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
     expect(Object.keys(runner?.networks ?? {}).sort()).toEqual(["qa_agent", "qa_internal"]);
     const volumes = z.array(z.object({ type: z.string(), source: z.string(), target: z.string(), read_only: z.boolean().default(false) }));
     expect(volumes.parse(runner?.volumes)).toEqual([
-      { type: "bind", source: join(runDir, "interns", "i1", "out"), target: "/qa/out", read_only: false },
+      { type: "volume", source: "qa_out", target: "/qa/out", read_only: false },
       {
         type: "bind",
         source: join(runDir, "chrome-policy.json"),
@@ -362,6 +364,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
     expect(config.networks.qa_egress).toMatchObject({ ipam: { config: [{ subnet: "10.213.7.128/25" }] } });
     expect(config.networks.qa_egress?.internal).toBeUndefined();
     expect(config.networks.qa_relay).toBeUndefined();
+    expect(config.volumes.qa_out).toMatchObject({ name: "qa-3f9a1c2e-i1-out", external: true });
   });
 
   test("relay the target's egress hosts through qa-relay on a network the runner does not join", async () => {
@@ -609,14 +612,14 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     const gib = 1024 ** 3;
     const mib = 1024 ** 2;
     const target = await loadTarget(ref, ledgerSource);
-    expect(environmentMemory(target)).toBe(6 * gib + 128 * mib);
+    expect(environmentMemory(target)).toBe(7 * gib + 128 * mib);
     const limited: Target = { ...target, services: { ...target.services, db: { build: false, image: "postgres:17.11-alpine", tags: [], memLimit: 512 * mib, networkMode: null, aliases: [], hasCpus: false, hasPidsLimit: false, deployLimits: false, replicas: 1, active: true } } };
-    expect(environmentMemory(limited)).toBe(5 * gib + 640 * mib);
+    expect(environmentMemory(limited)).toBe(6 * gib + 640 * mib);
     const replicated: Target = { ...limited, services: { ...limited.services, db: { ...limited.services.db!, replicas: 3 } } };
-    expect(environmentMemory(replicated)).toBe(6 * gib + 640 * mib);
+    expect(environmentMemory(replicated)).toBe(7 * gib + 640 * mib);
     const relayed: Target = { ...target, settings: { ...target.settings, egress: ["api.pwnedpasswords.com"] } };
-    expect(environmentMemory(relayed)).toBe(6 * gib + 256 * mib);
-    expect(environmentMemory(null)).toBe(4 * gib + 128 * mib);
+    expect(environmentMemory(relayed)).toBe(7 * gib + 256 * mib);
+    expect(environmentMemory(null)).toBe(5 * gib + 128 * mib);
   });
 
   test("leave inactive services out of the environment's memory and the image build", async () => {
@@ -936,7 +939,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
   });
 
   test(
-    "remove a directory that holds a mounted output disk under a space and a symbolic link, and leave no mount behind",
+    "remove a directory that holds an output disk under a space and a symbolic link, and leave no output disk behind",
     async () => {
       const root = await scratch();
       await mkdir(join(root, "real dir"));
@@ -946,38 +949,106 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       const out = join(dir, "interns", "i1", "out");
       await mkdir(out, { recursive: true });
       await createDisk(out, image, "qair-t-remove");
-      await Bun.write(join(out, "left.txt"), "left\n");
-      await removeDir(dir, image, "qair-t-remove");
+      await execOut(out, ["sh", "-c", "echo left > /out/left.txt"]);
+      await removeDir(dir);
       expect(existsSync(join(root, "real dir", "run"))).toBe(false);
-      expect(readFileSync("/proc/self/mountinfo", "utf8")).not.toContain(root);
+      expect((await execute(["docker", "ps", "-a", "-q", "--filter", "name=qair-t-remove-out"])).trim()).toBe("");
+      expect((await execute(["docker", "volume", "ls", "-q", "--filter", "name=qair-t-remove-out"])).trim()).toBe("");
     },
     20 * 60_000,
   );
 
   test(
-    "a save of an output disk that a process holds fails and keeps the disk's files readable, and a later save copies them into the folder",
+    "a save of an output disk into a folder that cannot be written fails and keeps the disk's files readable, and a later save copies them into the folder",
     async () => {
       const root = await scratch();
       const image = await ensureRunnerImage();
       const out = join(root, "interns", "i1", "out");
       await mkdir(out, { recursive: true });
       await createDisk(out, image, "qair-t-busy");
-      await mkdir(join(out, "findings"));
-      await Bun.write(join(out, "findings", "a.json"), "{}\n");
-      const mounted = () => readFileSync("/proc/self/mountinfo", "utf8").includes(` ${out} `);
-      const holder = Bun.spawn(["sleep", "infinity"], { cwd: out });
+      await execOut(out, ["sh", "-c", "mkdir /out/findings && echo '{}' > /out/findings/a.json"]);
+      await chmod(out, 0o500);
+      await expect(saveDisk(out)).rejects.toThrow();
+      expect(await execOut(out, ["cat", "/out/findings/a.json"])).toContain("{}");
+      await chmod(out, 0o700);
+      await saveDisk(out);
+      expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
+      expect((await execute(["docker", "ps", "-a", "-q", "--filter", "name=qair-t-busy-out"])).trim()).toBe("");
+    },
+    20 * 60_000,
+  );
+
+  test(
+    "pull the files of an output disk into its folder, and drop the files that the runner deleted since the last pull",
+    async () => {
+      const root = await scratch();
+      const image = await ensureRunnerImage();
+      const out = join(root, "interns", "i1", "out");
+      await mkdir(out, { recursive: true });
       try {
-        await expect(saveDisk(out, image, "qair-t-busy")).rejects.toThrow(`exited with 32: umount: ${out}: target is busy.`);
-        expect(mounted()).toBe(true);
+        await createDisk(out, image, "qair-t-pull");
+        await execOut(out, ["sh", "-c", "mkdir /out/findings && echo '{}' > /out/findings/a.json && echo old > /out/old.txt"]);
+        await pullDisk(out);
+        expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
+        expect(await Bun.file(join(out, "old.txt")).text()).toBe("old\n");
+        await execOut(out, ["rm", "/out/old.txt"]);
+        await pullDisk(out);
+        expect(existsSync(join(out, "old.txt"))).toBe(false);
+        expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
+        await execOut(out, ["sh", "-c", "chmod 000 /out/findings && chmod 000 /out"]);
+        await pullDisk(out);
         expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
       } finally {
-        holder.kill();
-        await holder.exited;
+        await saveDisk(out);
       }
-      await saveDisk(out, image, "qair-t-busy");
-      expect(mounted()).toBe(false);
-      expect(await readdir(dirname(out))).toEqual(["out"]);
-      expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
+    },
+    20 * 60_000,
+  );
+
+  test(
+    "copy sparse files of the output disk with their holes, so the folder uses no more space than the disk",
+    async () => {
+      const root = await scratch();
+      const image = await ensureRunnerImage();
+      const out = join(root, "interns", "i1", "out");
+      await mkdir(out, { recursive: true });
+      try {
+        await createDisk(out, image, "qair-t-sparse");
+        await execOut(out, ["sh", "-c", "for n in 1 2 3 4 5 6 7 8; do truncate -s 1G /out/sparse$n; done; echo data > /out/data.txt; echo secret > /out/locked.txt; chmod 000 /out/locked.txt"]);
+        await saveDisk(out);
+        expect((await stat(join(out, "locked.txt"))).mode & 0o700).toBe(0o600);
+        expect(await Bun.file(join(out, "locked.txt")).text()).toBe("secret\n");
+        for (const n of [1, 8]) {
+          const file = await stat(join(out, `sparse${n}`));
+          expect(file.size).toBe(1024 ** 3);
+          expect(file.blocks).toBeLessThan(1024);
+        }
+        expect(await Bun.file(join(out, "data.txt")).text()).toBe("data\n");
+      } finally {
+        await saveDisk(out);
+      }
+    },
+    20 * 60_000,
+  );
+
+  test(
+    "give the output disk 1 GiB and 65536 inodes, and fail a write past either",
+    async () => {
+      const root = await scratch();
+      const image = await ensureRunnerImage();
+      const out = join(root, "interns", "i1", "out");
+      await mkdir(out, { recursive: true });
+      try {
+        await createDisk(out, image, "qair-t-limit");
+        expect((await execOut(out, ["stat", "-f", "-c", "%b %S %c", "/out"])).trim()).toBe(`${1024 ** 3 / 4096} 4096 65536`);
+        const full = await execOut(out, ["sh", "-c", "dd if=/dev/zero of=/out/big bs=1M count=1100 2>/dev/null; echo $?; rm /out/big"]);
+        expect(Number(full.trim())).toBeGreaterThan(0);
+        const files = await execOut(out, ["sh", "-c", 'n=0; while ( : > "/out/f$n" ) 2>/dev/null; do n=$((n + 1)); done; echo $n']);
+        expect(Number(files.trim())).toBeGreaterThan(60000);
+        expect(Number(files.trim())).toBeLessThan(65536);
+      } finally {
+        await saveDisk(out);
+      }
     },
     20 * 60_000,
   );
@@ -1001,8 +1072,8 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         await removeCopies(runDir, runId, image);
       }
       expect(await Bun.file(join(out, "findings", "left.json")).text()).toBe("{}\n");
-      expect(existsSync(`${out}.img`)).toBe(false);
-      expect((await stat(out)).dev).toBe((await stat(dirname(out))).dev);
+      expect((await execute(["docker", "ps", "-a", "-q", "--filter", `name=qa-${runId}-`])).trim()).toBe("");
+      expect((await execute(["docker", "volume", "ls", "-q", "--filter", `name=qa-${runId}-`])).trim()).toBe("");
     },
     20 * 60_000,
   );
@@ -1235,7 +1306,7 @@ ${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", 
         await execute(["docker", "wait", worker]);
 
         const stats = await containerStats(environment.project);
-        await stopEnvironment(runDir, "i1", environment.project, image);
+        await stopEnvironment(runDir, "i1", environment.project);
         expect(stats.map(({ memoryPeak, ...rest }) => rest)).toEqual([
           { service: "flaky", number: 1, state: "running", oomKilled: false, restarts: 1 },
           { service: "hog", number: 1, state: "running", oomKilled: true, restarts: 0 },

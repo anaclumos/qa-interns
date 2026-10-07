@@ -400,6 +400,11 @@ describe.skipIf(!dockerAvailable)("loadTarget", () => {
       "  web:\n    image: nginx:1.29-alpine\n    networks:\n      default:\n        aliases: [\"qa-proxy\"]\n",
       "service web declares network alias qa-proxy, a name QA Interns reserves",
     ],
+    [
+      "a volume named qa_out",
+      "  web:\n    image: nginx:1.29-alpine\n    volumes: [\"qa_out:/data\"]\nvolumes:\n  qa_out: {}\n",
+      "volume qa_out uses a name QA Interns reserves",
+    ],
     ["a service named qa-relay", "  web:\n    image: nginx:1.29-alpine\n  qa-relay:\n    image: nginx:1.29-alpine\n", "service qa-relay uses a name QA Interns reserves"],
     ["a service named QA-Proxy", "  web:\n    image: nginx:1.29-alpine\n  QA-Proxy:\n    image: nginx:1.29-alpine\n", "service QA-Proxy uses a name QA Interns reserves"],
     [
