@@ -9,6 +9,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 - Linux 5.19 or later on x86-64, with cgroup v2. Chrome for Testing has no Linux ARM64 build. QA Interns reads the peak memory of each container from the `memory.peak` file of its cgroup, which older kernels and cgroup v1 do not have. `qa-interns doctor` checks that it can read that file.
 - Docker Engine with Compose 5.0 or later, the `isolated` bridge gateway mode, and privileged containers that can use loop devices. QA Interns mounts each intern's output disk from such a container, so the state directory must be on a mount with shared propagation, which is the systemd default. `qa-interns doctor` checks all of these. Compose 2 drops `env_file` paths from `docker compose config --no-env-resolution`, which the target checks read.
 - Bun 1.4 or later, glibc, Git, and `findmnt` from util-linux. QA Interns takes its file locks with `flock(2)` from glibc's `libc.so.6`.
+- For `prune` only, the GitHub CLI `gh`, signed in to an account that can read the target repositories, or with `GH_TOKEN` set.
 - `XDG_RUNTIME_DIR` set to a directory that only you can use, as a systemd login session sets it. QA Interns keeps the locks of its network blocks and runs there.
 - At least one agent login: Claude Code, Codex, Cursor, Grok, or OpenCode with an OpenCode Go or OpenRouter API key (see [Logins](#logins)).
 - Memory for one environment and a reserve of one eighth of `MemTotal`. An environment caps its runner at 4 GiB, its proxy at 128 MiB, its relay at 128 MiB when the target lists `egress` hosts, and each container of a service at the service's `mem_limit`, or 1 GiB when the service sets none. The sum of these caps is the memory the environment can use. Docker also lets each of these containers use as much swap as its memory cap. `qa-interns doctor` prints the available memory and the reserve.
@@ -47,6 +48,7 @@ qa-interns doctor
 | `qa-interns status [<run>]` | Prints the phase and every intern's status. |
 | `qa-interns report [<run>]` | Prints `report.md`. |
 | `qa-interns down [<run>]` | Stops the run's orchestrator with SIGTERM when that process, matched by its pid and start time, is still running. Then tears down every environment the run still has, saves the relay log of each of those environments and each output disk the run left into its folder, and deletes the run's leftover workspace copies, with containers of the current runner image. When disks or copies are left and that image does not exist, it fails; build the image with `qa-interns doctor` and run `down` again. Last, it removes the shared image names that the end of a run removes (see [What a run does](#what-a-run-does)). |
+| `qa-interns prune` | Deletes the run directory of each run whose job has shipped. See [Prune](#prune). |
 
 `<run>` is a run id or a run directory. Without it, the command uses the most recent run.
 
@@ -184,6 +186,7 @@ Runs live in `~/.local/state/qa-interns/runs/<run-id>/` (`$XDG_STATE_HOME` when 
 - `interns/<id>/relay-<container>.jsonl`: the log of the relay container of one of the intern's environments, saved after the environment's containers stop and before they are removed. It has one JSON line for each connection that a target service opened through that relay, with `n`, the line's position in the relay's log, and `host`, `outcome`, and `error`.
 - `build.log`: the output of `docker compose build`, which builds the target's images: the build's progress and errors. When the build fails, the run's error names this file. A run that tags shared images instead of building has no `build.log`.
 - `state.json`: the run's phase and every intern's status. `options.concurrency` and `options.confirmConcurrency` hold the most interns that the testing phase and the confirming phase run at once.
+- `replay.lock`: the lock that `qa-interns replay` holds on the run it replays. It exists once the run has been replayed. See [Prune](#prune).
 
 A finding is confirmed when two or more interns reproduced it, unless its confirmation shows the failure with the steps but not with the task through the page's own controls. A confirming intern reproduced it when both of its results show the failure. The report names both results.
 
@@ -229,6 +232,22 @@ A signal to `run` while the command runs after a done or failed run, such as the
 `qa-interns replay <run>` reruns the confirmed findings of an earlier run against a fresh copy of the target, for example at the commit of a change. It resolves `--commit` in the repository that the earlier run tested, then exports, checks, and builds the target at the earlier run's path, as steps 1 and 2 of a run do. It hands the first finding of each confirmed group to a confirming intern in a fresh environment, as step 6 does, and runs no testing intern and no judge. `--group <id>` limits the replay to one confirmed group; repeat it to name more. The replay fails when no intern records a result for any group.
 
 A replay is a run of its own, with its own run directory, and `status`, `report`, and `down` work on it. Its `report.md` lists the groups that the interns reproduced, then the groups that they did not reproduce, then the groups that no intern checked. It ends with the interns, the connections through the relay, and the environments, as the report of a run does. Each group keeps the id it has in the earlier run and shows the finding the intern followed and the intern's confirmation. `findings.json` carries the same data. Each finding in it is as the earlier run recorded it, so its evidence paths are relative to the earlier run's directory. A replay writes no ticket drafts. A replay cannot be replayed; replay the earlier run again.
+
+## Prune
+
+Nothing else deletes a run directory, so run `qa-interns prune` on a schedule, such as from a systemd timer, on every host that runs QA Interns. It deletes the directory of each run whose job has shipped, and keeps a run directory while any of these is true:
+
+- The run's orchestrator, matched by its pid and start time, still runs, or the run's `state.json` changed in the last 24 hours. The process that started a run reads its report after the run ends, and a run at a commit of the default branch has shipped as soon as it ends.
+- The run used `--dirty`. No commit holds the uncommitted changes it tested, so no pull request shows whether they shipped.
+- The run's teardown left a container, network, volume, or image of the run, a disk helper, a mounted output disk or a disk image, or a workspace copy. `qa-interns down` removes these, and it needs the run directory to do so.
+- The run's job has not shipped.
+- A run that `prune` keeps, or a replay that still runs, replays the run's findings. The replay's report cites the evidence in the run's directory, and `qa-interns replay` takes the run, never its replay. A replay, and `eval/score.ts`, hold a shared lock on the run's `replay.lock` from before they read the run until they end, and `prune` deletes a run only while it holds that lock exclusively. `prune` takes the locks of every run it can delete before it reads which runs the other run directories replay, so a replay that ends while `prune` runs keeps its run too.
+
+A run directory without `state.json`, such as one whose run failed to start on a full disk, has no job. `prune` deletes it once the directory has not changed for 24 hours and its teardown left nothing. `prune` reads and deletes only directories in `runs/`. It leaves a file or a symbolic link there, and what the link points to.
+
+A run's job has shipped when one or more pull requests hold the commit the run tested and none of them is open. A pull request holds a commit when the commit is one of its commits or its merge commit, including the commit of a squash merge. A commit that no pull request holds and that has two or more parents, such as a batch commit that merges several pull request heads, has shipped when each of its parents has shipped. `prune` reads those parents from the run's target repository, so such a run stays once that repository or the commit is gone from the host.
+
+`prune` finds the pull requests that hold a commit with GitHub search through `gh api graphql`, in every repository the account can read, so a pull request in a fork also counts. It deletes the files of a run directory before its `state.json`, and `replay.lock` with the directory itself, so a `prune` that stops partway leaves a run directory that the next `prune` deletes. It prints a line for each run directory it deletes, then the number it deleted and the number it kept for each reason above.
 
 ## Isolation
 
@@ -278,6 +297,9 @@ A replay is a run of its own, with its own run directory, and `status`, `report`
 - A replay intern follows the steps as the earlier run wrote them, with the seed output of the replayed commit. When a change alters the seed output, the steps can name accounts or data that the seed no longer creates, and the intern reports what it saw.
 - A replay reads the earlier run's `findings.json`, so a value that `secrets` named there reads `[redacted]` in the steps a replay intern follows. The intern still gets the seed output of the replayed commit unchanged.
 - A replay hands each group to one intern, so a failure that shows only some of the time can land under Not reproduced.
+- `prune` keeps a run that used `--dirty`, and a run whose commit has one parent and no pull request, such as a commit pushed straight to the default branch or a commit that was never pushed. Delete those run directories by hand.
+- `prune` finds the runs that a kept replay cites through the replay's `findings.json` in the same run store. A replay run with `XDG_STATE_HOME` set to another directory than the source run's store, and a replay that fails before it writes `findings.json`, name their source to no `prune`, so `prune` can delete a source run that such a replay's report cites.
+- GitHub search can miss a pull request for a short time after it opens or after a push to it. When a merged or closed pull request holds a commit and an open pull request that also holds it is missing from the search, `prune` deletes the run. When more than 100 pull requests hold a commit, the run stays.
 - A finding that two testing interns reported is confirmed even when its confirming intern names an intended behavior in `observed`, because a confirmation that does not reproduce a finding outweighs no reporter. The testing intern prompt tells each intern not to write such a finding.
 - The login store of a Claude, Cursor, or Grok intern is a host directory outside the output disk. The runner can write any number of files there, each up to 1 GiB. The Codex credential file and the generated Codex configuration file are single host files, each capped at 1 GiB.
 - The runner's limit of four agent-browser sessions reads a command's session from `--session` and `AGENT_BROWSER_SESSION`, and counts the sessions of the namespace that `AGENT_BROWSER_NAMESPACE` names. A session that a command names through `--namespace` or an agent-browser configuration file is neither counted nor limited.
@@ -291,4 +313,4 @@ qa-interns run eval/ledger --interns 4
 bun eval/score.ts <run>
 ```
 
-`eval/score.ts` runs one agent on a login from your logins file and writes its files under `envs/score/` and `interns/score/` in the run directory. When the agent writes no `score.json` within 10 minutes, the script starts it once more in a fresh environment, as a run does for the judge. When its teardown succeeds, it replaces the API key of an OpenCode login with `[redacted]` in those files, as a run does.
+`eval/score.ts` holds the run's shared `replay.lock` until it ends, so `qa-interns prune` keeps the run. It runs one agent on a login from your logins file and writes its files under `envs/score/` and `interns/score/` in the run directory. When the agent writes no `score.json` within 10 minutes, the script starts it once more in a fresh environment, as a run does for the judge. When its teardown succeeds, it replaces the API key of an OpenCode login with `[redacted]` in those files, as a run does.

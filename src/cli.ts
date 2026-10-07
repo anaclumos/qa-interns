@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { closeSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,11 +8,12 @@ import { z } from "zod";
 import { doctor } from "./doctor.ts";
 import { imageBuilders, removeCopies, stopRun, sweepImages } from "./environment.ts";
 import { errorCode, message, stripControl } from "./findings.ts";
-import { admit, defaultLoginsPath } from "./logins.ts";
-import { readReplay } from "./report.ts";
+import { admit, defaultLoginsPath, flock } from "./logins.ts";
+import { prune } from "./prune.ts";
+import { readReplay, replayLock } from "./report.ts";
 import { runQa, startCopy } from "./run.ts";
 import { ensureRunnerImage, runnerImage } from "./runner.ts";
-import { formatStatus, processStart, readState, resolveRunDir, writeState } from "./state.ts";
+import { formatStatus, readState, resolveRunDir, running, writeState } from "./state.ts";
 import { exportTree, loadTarget, resolveTarget } from "./target.ts";
 
 const usage = `Usage: qa-interns <command> [options]
@@ -54,6 +56,16 @@ Commands:
       Stop the run's orchestrator with SIGTERM when it is still running, then
       tear down every environment the run still has and delete its leftover
       workspace copies.
+  prune
+      Delete the directory of each run whose job has shipped: its orchestrator
+      ended, its state.json has not changed for 24 hours, it ran without
+      --dirty, its teardown left nothing, no run that prune keeps and no
+      running replay replays its findings, and a merged or closed pull
+      request and no open one hold its commit, or each parent of a merge
+      commit that no pull request holds. A directory without state.json goes
+      once it has not changed for 24 hours and its teardown left nothing.
+      Files and symbolic links in the runs directory stay. Needs the GitHub
+      CLI, signed in.
   help
       Print this help.
 
@@ -72,15 +84,6 @@ function numberOption(schema: z.ZodType<number>, value: string, option: string):
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error(`--${option} ${parsed.error.issues[0]?.message}, got ${value}`);
   return parsed.data;
-}
-
-function running(pid: number, start: number): boolean {
-  try {
-    return processStart(pid) === start;
-  } catch (error) {
-    if (errorCode(error) === "ENOENT" || errorCode(error) === "ESRCH") return false;
-    throw error;
-  }
 }
 
 function runArg(command: string, args: string[]): string | undefined {
@@ -161,20 +164,27 @@ async function main(args: string[]): Promise<number> {
       const [run, ...extra] = positionals;
       if (run === undefined || extra.length > 0) throw new Error("replay takes exactly one run id or run directory. Run qa-interns help for usage.");
       const confirmMinutes = numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes");
-      const replay = await readReplay(await resolveRunDir(run), values.group);
-      await runQa({
-        dir: join(replay.target.repo, replay.target.path),
-        rev: values.commit,
-        dirty: false,
-        interns: 0,
-        minutes: 0,
-        confirmMinutes,
-        loginsFile: values.logins,
-        replay,
-        runnerImage: ensureRunnerImage,
-        admit,
-        print,
-      });
+      const runDir = await resolveRunDir(run);
+      const lock = flock(replayLock(runDir), "shared", "block");
+      if (lock === null) throw new Error(`flock on ${replayLock(runDir)} returned no lock`);
+      try {
+        const replay = await readReplay(runDir, values.group);
+        await runQa({
+          dir: join(replay.target.repo, replay.target.path),
+          rev: values.commit,
+          dirty: false,
+          interns: 0,
+          minutes: 0,
+          confirmMinutes,
+          loginsFile: values.logins,
+          replay,
+          runnerImage: ensureRunnerImage,
+          admit,
+          print,
+        });
+      } finally {
+        closeSync(lock);
+      }
       return 0;
     }
     case "up": {
@@ -230,6 +240,11 @@ async function main(args: string[]): Promise<number> {
         await writeState(dir, { ...after, phase: "done", updatedAt: ended, endedAt: ended });
       }
       print(`Run ${state.runId} has no environments left.`);
+      return 0;
+    }
+    case "prune": {
+      parseArgs({ args: rest, options: {} });
+      await prune(print);
       return 0;
     }
     case "help":

@@ -34,7 +34,7 @@ import { providers } from "./providers.ts";
 import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
-import { newRunId, processStart, runDirFor, runsDir, writeState } from "./state.ts";
+import { newRunId, processStart, runDirFor, runsDir, writeAtomic, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Answer, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Login, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
@@ -872,8 +872,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
       opts.replay === null
         ? renderReport(runDir, redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
         : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
+    writeAtomic(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await Bun.write(join(runDir, "report.md"), report.markdown);
-    await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
     await writeTickets(runDir, report.tickets);
     await save();
     return teardowns.length === 0 ? null : teardowns.join("; ");

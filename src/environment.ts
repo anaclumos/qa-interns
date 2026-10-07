@@ -613,11 +613,15 @@ export async function saveDisk(out: string, image: string, owner: string): Promi
 
 const mountsSchema = z.object({ filesystems: z.array(z.object({ target: z.string() })) });
 
+async function mountTargets(): Promise<string[]> {
+  const { filesystems } = mountsSchema.parse(JSON.parse(await execute(["findmnt", "--list", "--json", "--output", "TARGET"])));
+  return filesystems.map((mount) => mount.target);
+}
+
 export async function removeDir(dir: string, image: string, owner: string): Promise<void> {
   if (!existsSync(dir)) return;
   const real = await realpath(dir);
-  const { filesystems } = mountsSchema.parse(JSON.parse(await execute(["findmnt", "--list", "--json", "--output", "TARGET"])));
-  for (const { target } of filesystems.filter((mount) => mount.target.startsWith(`${real}/`))) await saveDisk(target, image, owner);
+  for (const target of (await mountTargets()).filter((target) => target.startsWith(`${real}/`))) await saveDisk(target, image, owner);
   await rm(dir, { recursive: true, force: true });
 }
 
@@ -778,12 +782,18 @@ async function settleDiskHelpers(runId: string): Promise<void> {
   }
 }
 
-export async function removeCopies(runDir: string, runId: string, image: string): Promise<void> {
-  await settleDiskHelpers(runId);
+async function leftCopies(runDir: string, runId: string): Promise<{ paths: string[]; disks: { out: string; owner: string }[] }> {
   const envs = join(runDir, "envs");
   const names = existsSync(envs) ? await readdir(envs) : [];
   const paths = names.flatMap((name) => [join(name, projectName(runId, name)), join(name, "tmp")]).filter((path) => existsSync(join(envs, path)));
   const disks = (await Promise.all(names.map(async (name) => (await diskOuts(join(runDir, "interns", name))).map((out) => ({ out, owner: projectName(runId, name) }))))).flat();
+  return { paths, disks };
+}
+
+export async function removeCopies(runDir: string, runId: string, image: string): Promise<void> {
+  await settleDiskHelpers(runId);
+  const envs = join(runDir, "envs");
+  const { paths, disks } = await leftCopies(runDir, runId);
   if (paths.length === 0 && disks.length === 0) return;
   if ((await capture(["docker", "image", "inspect", image])).code !== 0) {
     const left = [...paths.map((path) => join(envs, path)), ...disks.map((disk) => `the output disk of ${disk.out}`)];
@@ -801,20 +811,45 @@ export async function removeCopies(runDir: string, runId: string, image: string)
   if (errors.length > 0) throw new Error(`Saving the output disks of ${runDir} failed:\n${errors.join("\n")}`);
 }
 
-export async function stopRun(runDir: string, runId: string): Promise<void> {
-  const prefix = `qa-${runId}-`;
+async function composeProjects(): Promise<string[]> {
   const listing = ["--filter", "label=com.docker.compose.project", "--format", '{{.Label "com.docker.compose.project"}}'];
   const found = await Promise.all([
     execute(["docker", "ps", "-a", ...listing]),
     execute(["docker", "network", "ls", ...listing]),
     execute(["docker", "volume", "ls", ...listing]),
   ]);
-  const projects = [...new Set(found.join("\n").split("\n"))].filter((project) => project.startsWith(prefix));
+  return [...new Set(found.join("\n").split("\n"))];
+}
+
+export async function stopRun(runDir: string, runId: string): Promise<void> {
+  const prefix = `qa-${runId}-`;
+  const projects = (await composeProjects()).filter((project) => project.startsWith(prefix));
   const kept = existsSync(runDir);
   const results = await Promise.allSettled(projects.map((project) => down(project, kept ? join(runDir, "interns", project.slice(prefix.length)) : null)));
   const errors = results.flatMap((result) => (result.status === "rejected" ? [String(result.reason)] : []));
   if (errors.length > 0) throw new Error(`Teardown of run ${runId} failed:\n${errors.join("\n")}`);
   await removeImages([prefix, `vsc-${prefix}`]);
+}
+
+export type HostObjects = { docker: string[]; mounts: string[] };
+
+export async function hostObjects(): Promise<HostObjects> {
+  const [projects, images, helpers, mounts] = await Promise.all([
+    composeProjects(),
+    execute(["docker", "image", "ls", "--format", "{{.Repository}}"]),
+    execute(["docker", "ps", "-a", "--filter", `label=${diskLabel}`, "--format", `{{.Label "${diskLabel}"}}`]),
+    mountTargets(),
+  ]);
+  return { docker: [...projects, ...images.split("\n"), ...helpers.split("\n")], mounts };
+}
+
+export async function leftBehind(host: HostObjects, runDir: string, runId: string): Promise<boolean> {
+  const prefix = `qa-${runId}-`;
+  if (host.docker.some((name) => name.startsWith(prefix) || name.startsWith(`vsc-${prefix}`))) return true;
+  const real = await realpath(runDir);
+  if (host.mounts.some((target) => target.startsWith(`${real}/`))) return true;
+  const { paths, disks } = await leftCopies(runDir, runId);
+  return paths.length > 0 || disks.length > 0;
 }
 
 export type HeldRun = { end: () => void };
