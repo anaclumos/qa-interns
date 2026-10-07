@@ -1025,6 +1025,6 @@ export async function runQa(opts: RunOptions): Promise<string> {
         if (hook !== null) process.stderr.write(`${hook}\n`);
       }
     },
-    () => snapshot("interrupted"),
+    () => snapshot(null),
   );
 }
