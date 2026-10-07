@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, stat, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -28,6 +28,7 @@ import {
   type EnvironmentSpec,
   type HeldSlot,
 } from "../src/environment.ts";
+import { flock } from "../src/logins.ts";
 import { ensureRunnerImage, runnerImage } from "../src/runner.ts";
 import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
@@ -147,6 +148,42 @@ describe("run locks", () => {
       holder.kill("SIGKILL");
       await holder.exited;
       rmSync(join(locks, runId), { force: true });
+    }
+  });
+
+  test("keep the lock of a killed run held until the commands that it started end", async () => {
+    const runId = `qair-t-cmd-${crypto.randomUUID().slice(0, 8)}`;
+    const entry = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs", runId);
+    const duration = `30.${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+    const target = join(import.meta.dir, "..", "src", "target.ts");
+    const environment = join(import.meta.dir, "..", "src", "environment.ts");
+    const holder = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `const { holdRun } = await import(${JSON.stringify(environment)}); const { capture } = await import(${JSON.stringify(target)}); holdRun(${JSON.stringify(runId)}, "/runs/cmd"); capture(["sleep", ${JSON.stringify(duration)}]); console.log("held"); await Bun.sleep(600000);`,
+      ],
+      { env: { ...process.env }, stdout: "pipe" },
+    );
+    try {
+      await holder.stdout.getReader().read();
+      holder.kill("SIGKILL");
+      await holder.exited;
+      const free = flock(entry, "--exclusive", "--nonblock");
+      expect(free).toBeNull();
+      expect(Bun.spawnSync(["pkill", "-f", `sleep ${duration}`]).exitCode).toBe(0);
+      let released: number | null = null;
+      for (let attempt = 0; attempt < 50 && released === null; attempt++) {
+        released = flock(entry, "--exclusive", "--nonblock");
+        if (released === null) await Bun.sleep(100);
+      }
+      expect(released).not.toBeNull();
+      if (released !== null) closeSync(released);
+    } finally {
+      holder.kill("SIGKILL");
+      await holder.exited;
+      Bun.spawnSync(["pkill", "-f", `sleep ${duration}`]);
+      rmSync(entry, { force: true });
     }
   });
 });
