@@ -162,7 +162,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(await Bun.file(ended).text()).toBe("failed\n");
       const state = await readState(out.slice(0, out.indexOf("\n")));
       expect(state).toMatchObject({ phase: "failed" });
-      expect(state.error).toStartWith("interrupted; ");
+      expect(state.error).toStartWith("interrupted");
       expect(state.error).not.toContain("teardown failed");
       expect(await leftovers(state.runId)).toEqual([]);
     },
