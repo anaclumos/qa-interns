@@ -98,10 +98,10 @@ async function runDirs(root: string): Promise<string[]> {
     : [];
 }
 
-export async function prune(print: (line: string) => void): Promise<void> {
+export async function prune(print: (line: string) => void, docker: boolean): Promise<void> {
   const root = runsDir();
   const dirs = await runDirs(root);
-  const host = await hostObjects();
+  const host = await hostObjects(docker);
   const kept = { active: 0, dirty: 0, leftovers: 0, unshipped: 0, replayed: 0 };
   const candidates: Candidate[] = [];
   for (const dir of dirs) {
@@ -135,7 +135,7 @@ export async function prune(print: (line: string) => void): Promise<void> {
       const source = held.has(dir) ? null : await replaySource(dir);
       if (source !== null) sources.add(source);
     }
-    const locked = await hostObjects();
+    const locked = await hostObjects(docker);
     for (const { dir, runId } of locks.keys()) {
       if (sources.has(runId)) {
         kept.replayed++;
