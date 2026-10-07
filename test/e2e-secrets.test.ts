@@ -6,7 +6,7 @@ import { ask, runQa } from "../src/run.ts";
 import { redact } from "../src/secrets.ts";
 import { newRunId, readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
-import { disks, dockerAvailable, endToEnd, intern, leftovers, timeout, workspaces } from "./e2e.ts";
+import { disks, dockerAvailable, endToEnd, leftovers, timeout, workspaces } from "./e2e.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   const { root, target, fakeImage, logins, askOptions } = endToEnd();
@@ -26,7 +26,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       await execute([...git, "commit", "-q", "-m", "Ledger with secrets"]);
       const token = `tok_${crypto.randomUUID()}`;
       const passwords = ["acme-owner-pass", "acme-editor-pass", "acme-viewer-pass", "globex-owner-pass"];
-      const loginsFile = await logins("secret", [{ id: "claude-1", provider: "claude", stray: true }]);
+      const loginsFile = await logins("secret", { stray: true });
 
       const lines: string[] = [];
       const previous = process.env.QA_SECRET_TOKEN;
@@ -76,16 +76,16 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   );
 
   test(
-    "a run and ask replace the API key of an OpenCode login with [redacted] in the files they leave, the lines run prints, and the errors ask throws",
+    "a run and ask replace the API key of the login with [redacted] in the files they leave, the lines run prints, and the errors ask throws",
     async () => {
-      const key = `sk-or-v1-${crypto.randomUUID()}`;
-      const loginsFile = await logins("login-key", [{ id: "opencode-1", provider: "opencode", openrouter: { type: "api", key } }]);
+      const fake = { printKey: true as const, nonce: crypto.randomUUID() };
+      const key = `fake-agent:${JSON.stringify(fake)}`;
+      const loginsFile = await logins("login-key", fake);
       const lines: string[] = [];
       const runDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: (line) => lines.push(line) });
 
       const state = await readState(runDir);
       expect(state.phase).toBe("done");
-      expect(intern(state, "i1").provider).toBe("opencode");
       const options = { runDir, runId: state.runId, loginsFile, runnerImage: fakeImage, admit: () => () => {} };
       expect(await ask({ ...options, name: "score", prompt: "Write /qa/out/groups.json.", file: "groups.json", parse: (raw) => JSON.parse(raw) })).toEqual({ groups: [] });
       const failed = ask({
@@ -97,7 +97,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           throw new Error(`unreadable ${raw}`);
         },
       });
-      await expect(failed).rejects.toThrow('/qa/out/evidence/auth.json is still invalid after one correction: unreadable {"openrouter":{"type":"api","key":"[redacted]"}}');
+      await expect(failed).rejects.toThrow('/qa/out/evidence/auth.json is still invalid after one correction: unreadable {"openrouter":{"type":"api_key","key":"[redacted]"}}');
       expect(redact(key)).toBe(key);
       const entries = await readdir(runDir, { recursive: true, withFileTypes: true });
       const files = entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
@@ -105,7 +105,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(lines.join("\n")).not.toContain(key);
       for (const name of ["i1", "score", "score-fail"]) {
         expect(readFileSync(join(runDir, "interns", name, "transcript.jsonl"), "utf8")).toContain('"text":"The login key is [redacted]."');
-        expect(JSON.parse(readFileSync(join(runDir, "interns", name, "out", "evidence", "auth.json"), "utf8"))).toEqual({ openrouter: { type: "api", key: "[redacted]" } });
+        expect(JSON.parse(readFileSync(join(runDir, "interns", name, "out", "evidence", "auth.json"), "utf8"))).toEqual({ openrouter: { type: "api_key", key: "[redacted]" } });
       }
 
       expect(await leftovers(state.runId)).toEqual([]);
@@ -118,10 +118,9 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   test(
     "an ask that ends while another ask runs leaves the login key of the other ask in the secret set until that ask ends",
     async () => {
-      const key = `sk-or-v1-${crypto.randomUUID()}`;
-      const loginsFile = await logins("overlap-key", [{ id: "opencode-1", provider: "opencode", openrouter: { type: "api", key } }]);
-      const seatlessFile = join(root, "overlap-seatless-logins.json");
-      await Bun.write(seatlessFile, JSON.stringify({ logins: [{ id: "claude-seatless", provider: "claude", seat: ["false"] }] }));
+      const fake = { printKey: true as const, nonce: crypto.randomUUID() };
+      const key = `fake-agent:${JSON.stringify(fake)}`;
+      const loginsFile = await logins("overlap-key", fake);
       const keyed = {
         ...(await askOptions(newRunId(), "keyed")),
         loginsFile,
@@ -131,7 +130,12 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           throw new Error(`unreadable ${raw}`);
         },
       };
-      const seatless = { ...(await askOptions(newRunId(), "seatless")), loginsFile: seatlessFile };
+      const refused = {
+        ...(await askOptions(newRunId(), "refused")),
+        admit: (): never => {
+          throw new Error("refused before the environment starts");
+        },
+      };
       const running = ask(keyed);
       let ended = false;
       const outcome = Promise.allSettled([running]).finally(() => {
@@ -139,7 +143,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       });
       while (redact(key) === key && !ended) await Bun.sleep(20);
       expect(ended).toBe(false);
-      await expect(ask(seatless)).rejects.toThrow("No login has spare capacity for seatless");
+      await expect(ask(refused)).rejects.toThrow("refused before the environment starts");
       expect(redact(key)).toBe("[redacted]");
       const [result] = await outcome;
       expect(result.status).toBe("rejected");
@@ -147,7 +151,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(readFileSync(join(keyed.runDir, "interns", "keyed", "transcript.jsonl"), "utf8")).not.toContain(key);
       expect(redact(key)).toBe(key);
       expect(await leftovers(keyed.runId)).toEqual([]);
-      expect(await leftovers(seatless.runId)).toEqual([]);
+      expect(await leftovers(refused.runId)).toEqual([]);
     },
     timeout,
   );

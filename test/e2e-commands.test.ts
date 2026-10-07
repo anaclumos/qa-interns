@@ -97,7 +97,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           "--interns",
           "1",
           "--logins",
-          await logins("interrupt", [{ id: "claude-1", provider: "claude" }]),
+          await logins("interrupt"),
           "--on-end",
           `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; echo 'no notification' >&2; exit 3`,
         ],
@@ -139,7 +139,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           "--interns",
           "1",
           "--logins",
-          await logins("teardown-interrupt", [{ id: "claude-1", provider: "claude" }]),
+          await logins("teardown-interrupt"),
           "--on-end",
           `printf '%s\\n' "$QA_INTERNS_PHASE" > '${ended}'`,
         ],
@@ -148,7 +148,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const reader = cli.stdout.getReader();
       const decoder = new TextDecoder();
       let out = "";
-      while (!out.includes("i1 limited:")) {
+      while (!out.includes("i1 failed:")) {
         const chunk = await reader.read();
         if (chunk.done) throw new Error(`run exited before its teardown: ${out}${await new Response(cli.stderr).text()}`);
         out += decoder.decode(chunk.value, { stream: true });
@@ -178,10 +178,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 2,
         minutes: 10,
         confirmMinutes: 0.5,
-        loginsFile: await logins("snapshot", [
-          { id: "claude-1", provider: "claude" },
-          { id: "grok-hang", provider: "grok", hang: true },
-        ]),
+        loginsFile: await logins("snapshot", { hang: "What owners, editors, and viewers can see" }, 2),
         replay: null,
       };
       const module = join(import.meta.dir, "..", "src", "run.ts");
@@ -247,7 +244,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     "down ends a run whose orchestrator ended before it recorded the end of the run or of an intern",
     async () => {
       const started = new Date().toISOString();
-      const member = { role: "confirm" as const, charter: title, provider: "claude" as const, login: "claude-1", model: null, findings: 0, rejected: 0, startedAt: started };
+      const member = { role: "confirm" as const, charter: title, login: "openrouter-1", model: null, findings: 0, rejected: 0, startedAt: started };
       for (const [phase, error, expected] of [
         ["confirming", null, "The orchestrator process ended in phase confirming"],
         ["failed", "interrupted", "interrupted"],
@@ -309,7 +306,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           "run",
           bare,
           "--logins",
-          await logins("down", [{ id: "claude-1", provider: "claude" }]),
+          await logins("down"),
           "--on-end",
           `sleep 600 & echo $! > '${child}'; printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}.tmp' && mv '${ended}.tmp' '${ended}'; wait`,
         ],

@@ -21,7 +21,7 @@ const usage = `Usage: qa-interns <command> [options]
 Commands:
   doctor [--logins <file>]
       Check Docker, Compose, the isolated network mode, the Dev Container CLI,
-      the runner image and its agents, the logins, and the host's available
+      the runner image and its agent, the login, and the host's available
       memory and CPU pressure.
   validate <target-dir> [--commit <rev> | --dirty]
       Check the target's dev container and Compose files at the commit (default

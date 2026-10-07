@@ -7,7 +7,6 @@ const sessionId = "fake-session-1";
 const pending = new Map();
 let nextId = 1;
 let cancelTurn = null;
-let chosenModel = null;
 
 const send = (message) => process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
 
@@ -83,7 +82,14 @@ const seededAccount = (text) => {
 
 const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 
-const login = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8"));
+const fakePrefix = "fake-agent:";
+
+const loginKey = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8")).openrouter.key;
+
+const login = () => {
+  const key = loginKey();
+  return key.startsWith(fakePrefix) ? JSON.parse(key.slice(fakePrefix.length)) : {};
+};
 
 const chunk = randomBytes(1024 ** 2);
 
@@ -207,30 +213,29 @@ const slowTurn = async () => {
   return { result: { stopReason: "cancelled" } };
 };
 
-const limited = { error: { code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } } };
+const limited = { error: { code: -32603, message: "Internal error", data: { errorKind: "billing_error", message: "provider billing or quota wall" } } };
 
 const prompt = async (params) => {
   const text = params.prompt
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit, upgrade, hang, late, openrouter } = login();
-  if (openrouter !== undefined) {
-    say(`The login key is ${openrouter.key}.`);
+  const { limit, idle, hang, late, printKey } = login();
+  if (printKey === true) {
+    say(`The login key is ${loginKey()}.`);
     mkdirSync("/qa/out/evidence", { recursive: true });
     writeFileSync("/qa/out/evidence/auth.json", readFileSync(process.env.FAKE_CREDENTIAL));
   }
   if (limit === true) return limited;
-  if (hang === true) return slowTurn();
-  if (upgrade === true) {
-    say("\n\nUpgrade your plan to continue");
+  if (hang === true || (typeof hang === "string" && text.includes(hang))) return slowTurn();
+  if (idle === true) {
+    say("I have nothing to test.");
     return endTurn;
   }
   if (text.includes("/qa/out/groups.json")) return groupsTurn(text);
   if (text.includes("/qa/out/confirmation.json")) {
     if (late === true && text.includes("Another intern reported")) return slowTurn();
-    const result = confirmationTurn();
-    return limit === "confirmation" ? limited : result;
+    return confirmationTurn();
   }
   if (text.includes("Charter:")) {
     const result = await charterTurn(text);
@@ -251,22 +256,16 @@ const handlers = {
     result: { protocolVersion: 1, agentCapabilities: { loadSession: false }, agentInfo: { name: "fake-agent", version: "1.0.0" }, authMethods: [] },
   }),
   "session/new": (params) => {
-    writeJson("/qa/out/fake-agent-session.json", { mcpServers: params.mcpServers, _meta: params._meta ?? null });
+    writeJson("/qa/out/fake-agent-session.json", { mcpServers: params.mcpServers });
     return { result: { sessionId, configOptions: [modelOption(login().model ?? "fake-model-1")] } };
   },
   "session/set_config_option": (params) => {
-    if (params.configId === "fast" && (params.value === "true" || params.value === "false")) {
-      const fast = { id: "fast", name: "Fast", category: "model_config", type: "select", currentValue: params.value, options: [{ value: "false", name: "false" }, { value: "true", name: "true" }] };
-      return { result: { configOptions: [modelOption(chosenModel), fast] } };
-    }
     const option = modelOption(params.value);
     if (params.configId !== "model" || !option.options.some((entry) => entry.value === params.value)) {
       return { error: { code: -32602, message: "Invalid params", data: { message: `Invalid model value: ${params.value}` } } };
     }
-    chosenModel = params.value;
     return { result: { configOptions: [option] } };
   },
-  "session/set_mode": () => ({ result: {} }),
   "session/prompt": prompt,
 };
 

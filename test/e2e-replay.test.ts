@@ -18,7 +18,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   let next = "";
 
   beforeAll(async () => {
-    loginsFile = await logins("replay", [{ id: "claude-1", provider: "claude" }]);
+    loginsFile = await logins("replay");
     sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
     source = await readState(sourceDir);
     const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false"];
@@ -73,10 +73,10 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         id: "g1",
         reproduced: true,
         finding: { id: "i1/fake-home", title, environment: { commit: source.target.commit, environment: `qa-${source.runId}-i1` } },
-        confirmation: { intern: "c1", provider: "claude", result: { steps: true, task: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] }, error: null },
+        confirmation: { intern: "c1", result: { steps: true, task: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] }, error: null },
       });
-      expect(report.environments.map((entry: EnvironmentStats) => [entry.intern, entry.attempt, entry.readyAt === null, entry.containers?.map((container) => container.service)])).toEqual([
-        ["c1", 1, false, ["db", "qa-proxy", "qa-runner", "web"]],
+      expect(report.environments.map((entry: EnvironmentStats) => [entry.intern, entry.readyAt === null, entry.containers?.map((container) => container.service)])).toEqual([
+        ["c1", false, ["db", "qa-proxy", "qa-runner", "web"]],
       ]);
       const markdown = await Bun.file(join(runDir, "report.md")).text();
       expect(markdown).toContain(`- Replay of: run \`${source.runId}\` at commit \`${source.target.commit}\`\n`);
@@ -104,7 +104,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           interns: 0,
           minutes: 0,
           confirmMinutes: 0.5,
-          loginsFile: await logins("replay-silent", [{ id: "claude-no-confirm", provider: "claude", confirms: false }]),
+          loginsFile: await logins("replay-silent", { confirms: false }),
           replay,
           runnerImage: async () => fakeImage,
           admit: () => () => {},
@@ -134,7 +134,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 0,
         minutes: 0,
         confirmMinutes: 0.5,
-        loginsFile: await logins("replay-late", [{ id: "claude-late", provider: "claude", late: true }]),
+        loginsFile: await logins("replay-late", { late: true }),
         replay,
         runnerImage: async () => fakeImage,
         admit: () => () => {},
@@ -170,7 +170,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           interns: 0,
           minutes: 0,
           confirmMinutes: 0.5,
-          loginsFile: await logins("replay-deaf", [{ id: "claude-deaf", provider: "claude", late: true, deaf: true }]),
+          loginsFile: await logins("replay-deaf", { late: true, deaf: true }),
           replay,
           runnerImage: async () => fakeImage,
           admit: () => () => {},
@@ -205,7 +205,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           interns: 0,
           minutes: 0,
           confirmMinutes: 0.5,
-          loginsFile: await logins("replay-swap", [{ id: "claude-swap", provider: "claude", swap: true }]),
+          loginsFile: await logins("replay-swap", { swap: true }),
           replay,
           runnerImage: async () => fakeImage,
           admit: () => () => {},
@@ -237,14 +237,14 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 0,
         minutes: 0,
         confirmMinutes: 0.5,
-        loginsFile: await logins("replay-unremoved", [{ id: "claude-unremoved", provider: "claude" }]),
+        loginsFile: await logins("replay-unremoved"),
         replay,
         runnerImage: async () => fakeImage,
         admit: () => () => {},
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
-          if (dir !== undefined && line === "c1 starting on claude-unremoved (claude)") release = blockTeardown(dir, "c1");
+          if (dir !== undefined && line === "c1 starting on openrouter-1") release = blockTeardown(dir, "c1");
         },
       });
 

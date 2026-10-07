@@ -143,8 +143,8 @@ function inside(dir: string, file: string) {
   return relative !== "" && relative !== ".." && !relative.startsWith("../") && !path.isAbsolute(relative);
 }
 
-export function outDir(intern: string, attempt: number): string {
-  return path.join("interns", intern, attempt === 1 ? "out" : `out-${attempt}`);
+export function outDir(intern: string): string {
+  return path.join("interns", intern, "out");
 }
 
 async function evidence(runDir: string, out: string, list: string[]) {
@@ -186,12 +186,10 @@ async function evidence(runDir: string, out: string, list: string[]) {
 export async function readFindings(
   runDir: string,
   intern: string,
-  attempt: number,
   environment: FindingEnvironment,
 ): Promise<{ findings: Finding[]; rejected: Rejected[] }> {
-  const out = outDir(intern, attempt);
+  const out = outDir(intern);
   const folder = path.join(out, "findings");
-  const prefix = attempt === 1 ? intern : path.relative("interns", out);
   const findings: Finding[] = [];
   const rejected: Rejected[] = [];
   let handle: FileHandle | null = null;
@@ -216,7 +214,7 @@ export async function readFindings(
         const contradicts = data.contradicts ?? null;
         if (data.kind === "inconsistency" && contradicts === null) throw new Invalid("contradicts is required when kind is inconsistency");
         findings.push({
-          id: `${prefix}/${name.slice(0, -".json".length)}`,
+          id: `${intern}/${name.slice(0, -".json".length)}`,
           intern,
           title: data.title,
           kind: data.kind,
@@ -252,8 +250,8 @@ export function parseGroups(raw: string, ids: string[]): string[][] {
   return groups;
 }
 
-export async function readConfirmation(runDir: string, intern: string, attempt: number): Promise<Confirmation> {
-  const out = outDir(intern, attempt);
+export async function readConfirmation(runDir: string, intern: string): Promise<Confirmation> {
+  const out = outDir(intern);
   const data = parse(confirmationSchema, await readAgentFile(path.join(runDir, out, "confirmation.json")));
   return { steps: data.steps, task: data.task, observed: data.observed, evidence: await evidence(runDir, out, data.evidence) };
 }

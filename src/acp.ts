@@ -12,7 +12,6 @@ import { appendFileSync, statSync } from "node:fs";
 import { z } from "zod";
 import { version } from "../package.json";
 import { oneLine, stripControl } from "./findings.ts";
-import type { ProviderSpec } from "./providers.ts";
 import { longestSecret, redact, redactAcross } from "./secrets.ts";
 
 const startupMs = 5 * 60_000;
@@ -58,14 +57,8 @@ function appender(path: string): (data: string | Uint8Array) => void {
   };
 }
 
-export async function openSession(opts: {
-  container: string;
-  provider: ProviderSpec;
-  model: string | null;
-  transcript: string;
-  adapterLog: string;
-}): Promise<Session> {
-  const argv = ["docker", "exec", "-i", "-w", "/qa/out", opts.container, ...opts.provider.adapter];
+export async function openSession(opts: { container: string; adapter: string[]; model: string | null; transcript: string; adapterLog: string }): Promise<Session> {
+  const argv = ["docker", "exec", "-i", "-w", "/qa/out", opts.container, ...opts.adapter];
   const log = appender(opts.adapterLog);
   const transcript = appender(opts.transcript);
   const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
@@ -202,19 +195,14 @@ export async function openSession(opts: {
   const setup = async () => {
     await connection.agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, _meta: opts.provider.clientMeta ?? undefined },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       clientInfo: { name: "qa-interns", version },
     });
-    const started = await connection.agent
-      .buildSession({ cwd: "/qa/out", mcpServers: [], _meta: opts.provider.sessionMeta ?? undefined })
-      .start();
-    if (opts.provider.modeId !== null) {
-      await connection.agent.request(methods.agent.session.setMode, { sessionId: started.sessionId, modeId: opts.provider.modeId });
-    }
-    let chosen: NewSessionResponse | SetSessionConfigOptionResponse = started.newSessionResponse;
-    for (const { configId, value } of opts.model === null ? [] : opts.provider.modelConfig(opts.model)) {
-      chosen = await connection.agent.request(methods.agent.session.setConfigOption, { sessionId: started.sessionId, configId, value });
-    }
+    const started = await connection.agent.buildSession({ cwd: "/qa/out", mcpServers: [] }).start();
+    const chosen =
+      opts.model === null
+        ? started.newSessionResponse
+        : await connection.agent.request(methods.agent.session.setConfigOption, { sessionId: started.sessionId, configId: "model", value: opts.model });
     return { started, model: modelOf(chosen) };
   };
 

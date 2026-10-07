@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
 import { errorCode, oneLine } from "./findings.ts";
-import { internStatuses, providerNames, roles, runPhases, type RunState } from "./types.ts";
+import { internStatuses, roles, runPhases, type RunState } from "./types.ts";
 
 export const stateSchema = z.object({
   runId: z.string().min(1),
@@ -24,7 +24,6 @@ export const stateSchema = z.object({
       role: z.enum(roles),
       charter: z.string(),
       group: z.string().nullable(),
-      provider: z.enum(providerNames).nullable(),
       login: z.string().nullable(),
       model: z.string().nullable(),
       project: z.string().nullable(),
@@ -134,11 +133,10 @@ export function formatStatus(state: RunState): string {
     ...(state.error === null ? [] : [["Error", state.error]]),
   ];
   const interns = [
-    ["Intern", "Role", "Provider", "Status", "Findings", "Detail"],
+    ["Intern", "Role", "Status", "Findings", "Detail"],
     ...state.interns.map((intern) => [
       intern.id,
       intern.role,
-      intern.provider ?? "-",
       intern.status,
       String(intern.findings),
       oneLine(intern.detail ?? ""),
