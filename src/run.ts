@@ -612,14 +612,19 @@ async function stop(ctx: Context, running: Promise<unknown> | undefined): Promis
   await within(Promise.allSettled([running]), stopWaitMs);
 }
 
-async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () => Promise<void>): Promise<T> {
+async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () => Promise<void>, snapshot: () => Promise<void> = async () => {}): Promise<T> {
   let running: Promise<T> | undefined;
   let signalled = false;
   const handler = () => {
     if (signalled) return;
     signalled = true;
     process.stderr.write("Interrupted. Closing sessions and tearing down.\n");
-    stop(ctx, running)
+    Promise.all([
+      stop(ctx, running),
+      snapshot().catch((error) => {
+        process.stderr.write(`Writing the report after the interrupt failed: ${redact(message(error))}\n`);
+      }),
+    ])
       .then(interrupted)
       .then(
         () => process.exit(130),
@@ -827,7 +832,35 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let browser: string | null = null;
   let releaseImages = async () => {};
 
+  const record = (error: string | null, teardowns: string[]) => {
+    const problems = [ctx.stopping ? "interrupted" : null, error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+    state.phase = problems.length === 0 ? "done" : "failed";
+    state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
+    state.endedAt = now();
+  };
+
+  const write = async () => {
+    const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
+    const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
+    const traffic = redactJson({ hosts: egress, relays: logs.flat() });
+    const environments = redactJson(ctx.environments);
+    const report =
+      opts.replay === null
+        ? renderReport(runDir, redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
+        : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
+    writeAtomic(join(runDir, "report.md"), report.markdown);
+    writeAtomic(join(runDir, "findings.json"),`${JSON.stringify(report.json, null, 2)}\n`);
+    return report.tickets;
+  };
+
+  const snapshot = once(async (error: string | null) => {
+    if (error !== null || ctx.stopping) record(error, ctx.teardowns);
+    await write();
+    await save();
+  });
+
   const finish = finisher(ctx, async (error: string | null): Promise<string | null> => {
+    await Promise.allSettled([snapshot(error)]);
     const teardowns: string[] = [];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
@@ -871,21 +904,16 @@ export async function runQa(opts: RunOptions): Promise<string> {
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
-    const problems = [ctx.stopping ? "interrupted" : null, error, ...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`), ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
-    state.phase = problems.length === 0 ? "done" : "failed";
-    state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
-    state.endedAt = now();
-    const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
-    const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
-    const traffic = redactJson({ hosts: egress, relays: logs.flat() });
-    const environments = redactJson(ctx.environments);
-    const report =
-      opts.replay === null
-        ? renderReport(runDir, redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
-        : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
-    writeAtomic(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
-    await Bun.write(join(runDir, "report.md"), report.markdown);
-    await writeTickets(runDir, report.tickets);
+    const problem = [error,...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`)].filter((entry) => entry !== null).join("; ");
+    try {
+      record(problem === "" ? null : problem, teardowns);
+      await writeTickets(runDir, await write());
+    } catch (reason) {
+      const failed = [problem, `writing the report failed: ${message(reason)}`].filter((entry) => entry !== "").join("; ");
+      record(failed, teardowns);
+      await save();
+      throw new Error(redact(failed));
+    }
     await save();
     return teardowns.length === 0 ? null : teardowns.join("; ");
   });
@@ -920,7 +948,20 @@ export async function runQa(opts: RunOptions): Promise<string> {
       await phase("testing");
       const testing = limit(state.options.concurrency);
       explored = state.interns.map((intern) => ({ intern, attempts: [] }));
-      const results = await settle(explored.map((entry) => testing((free) => explore(ctx, entry, target, opts.minutes, free))));
+      const ended: Awaited<ReturnType<typeof explore>>[] = [];
+      const results = await settle(
+        explored.map((entry, index) =>
+          testing(async (free) => {
+            const result = await explore(ctx, entry, target, opts.minutes, free);
+            ended[index] = result;
+            if (!ctx.stopping) {
+              findings = ended.flatMap((one) => one.findings);
+              rejected = ended.flatMap((one) => one.rejected);
+            }
+            return result;
+          }),
+        ),
+      );
       checkStopping(ctx);
       findings = results.flatMap((result) => result.findings);
       rejected = results.flatMap((result) => result.rejected);
@@ -999,5 +1040,6 @@ export async function runQa(opts: RunOptions): Promise<string> {
         if (hook !== null) process.stderr.write(`${hook}\n`);
       }
     },
+    () => snapshot(null),
   );
 }
