@@ -16,6 +16,12 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 - One exclusive `flock` on `$XDG_RUNTIME_DIR/qa-interns/suite.lock` covers each suite, so the suites of one user on one host run one at a time. `bun run test` runs `test/suite-lock.ts` as a script, which takes the lock and then starts `bun test --parallel=2`. `bunfig.toml` preloads the same file into every `bun test` process: a serial `bun test` takes the lock itself, and a `--parallel` worker fails unless it or a process above it holds the lock, because the workers of one suite are separate processes and a lock that one worker takes blocks the others. A process under a lock holder takes no second lock.
 - Each network that a test creates itself, and each container that a test starts on one, carries the `suiteLabel` that `test/suite-lock.ts` exports. The process that takes the suite lock removes every container and network with that label, which earlier suites left, before it runs a test.
 
+## Host
+
+- `~/Developer/qa-interns` is the host's machine checkout of this repository. Every `qa-interns` command on the host runs its working tree, and `qa-interns` on `PATH` is a link to its `src/cli.ts`.
+- No session edits a tracked file in `~/Developer/qa-interns`.
+- After a merge, the shipping session runs `git -C ~/Developer/qa-interns pull --ff-only` and `bun install --frozen-lockfile` in that checkout, and confirms with `git merge-base --is-ancestor <merge commit> HEAD` there that the merge reached it.
+
 ## Invariants
 
 - An intern never fixes, suggests, ranks, or explains. Prompts, the report, the ticket drafts, and the finding format carry no field or instruction for any of those.
