@@ -441,7 +441,11 @@ async function resourceViolations(project: ComposeProject, projectName: string, 
     ["network", project.networks ?? {}],
   ] as const) {
     for (const [key, entry] of Object.entries(entries)) {
-      if (kind === "volume" && key === outVolumeKey && entry.external === true && entry.name === outVolume) continue;
+      if (kind === "volume" && key === outVolumeKey) {
+        if (outVolume === null) violations.push(`volume ${key} uses a name QA Interns reserves`);
+        else if (entry.external !== true || entry.name !== outVolume) violations.push(`volume ${key} is not the output disk of this attempt`);
+        continue;
+      }
       if (entry.external === true) violations.push(`${kind} ${key} is external (${entry.name})`);
       else if (entry.name !== `${projectName}_${key}`) violations.push(`${kind} ${key} sets name ${entry.name}`);
     }

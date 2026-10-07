@@ -1016,8 +1016,9 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
       await mkdir(out, { recursive: true });
       try {
         await createDisk(out, image, "qair-t-sparse");
-        await execOut(out, ["sh", "-c", "for n in 1 2 3 4 5 6 7 8; do truncate -s 1G /out/sparse$n; done; echo data > /out/data.txt"]);
+        await execOut(out, ["sh", "-c", "for n in 1 2 3 4 5 6 7 8; do truncate -s 1G /out/sparse$n; done; echo data > /out/data.txt; echo secret > /out/locked.txt; chmod 000 /out/locked.txt"]);
         await saveDisk(out);
+        expect((await stat(join(out, "locked.txt"))).mode & 0o777).toBe(0);
         for (const n of [1, 8]) {
           const file = await stat(join(out, `sparse${n}`));
           expect(file.size).toBe(1024 ** 3);

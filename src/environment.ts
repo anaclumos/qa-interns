@@ -597,7 +597,7 @@ async function disableRestarts(project: string): Promise<void> {
   while ((await execute(["docker", "ps", "-aq", "--filter", label, "--filter", "status=restarting"])).trim() !== "") await Bun.sleep(1000);
 }
 
-type Holder = { name: string; out: string };
+type Holder = { name: string; out: string; running: boolean };
 
 export async function createDisk(out: string, image: string, owner: string): Promise<void> {
   const { uid, gid } = userInfo();
@@ -607,10 +607,11 @@ export async function createDisk(out: string, image: string, owner: string): Pro
   await execute(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=${options}`, name]);
   try {
     await execute([
-      ...["docker", "run", "-d", "--init", "--name", name, "--label", `${outLabel}=${await realpath(out)}`, "--network", "none", "--user", `${uid}:${gid}`],
-      ...["--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "-v", `${name}:/out`, image, "sleep", "infinity"],
+      ...["docker", "run", "-d", "--init", "--name", name, "--label", `${outLabel}=${await realpath(out)}`, "--network", "none", "--user", "0:0"],
+      ...["--read-only", "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--security-opt", "no-new-privileges:true", "-v", `${name}:/out`, image, "sleep", "infinity"],
     ]);
   } catch (error) {
+    await capture(["docker", "rm", "-f", name]);
     await execute(["docker", "volume", "rm", name]);
     throw error;
   }
@@ -618,15 +619,15 @@ export async function createDisk(out: string, image: string, owner: string): Pro
 
 async function holders(dir: string): Promise<Holder[]> {
   const real = existsSync(dir) ? await realpath(dir) : dir;
-  const listed = await execute(["docker", "ps", "-a", "--filter", `label=${outLabel}`, "--format", `{{.Names}}\t{{.Label "${outLabel}"}}`]);
+  const listed = await execute(["docker", "ps", "-a", "--filter", `label=${outLabel}`, "--format", `{{.Names}}\t{{.State}}\t{{.Label "${outLabel}"}}`]);
   return listed
     .split("\n")
     .filter((line) => line !== "")
-    .map((line) => ({ name: line.split("\t")[0] ?? "", out: line.split("\t")[1] ?? "" }))
+    .map((line) => ({ name: line.split("\t")[0] ?? "", running: line.split("\t")[1] === "running", out: line.split("\t")[2] ?? "" }))
     .filter((holder) => holder.out === real || holder.out.startsWith(`${real}/`));
 }
 
-const archiveOut = '{ docker exec "$1" tar --sparse --ignore-failed-read --warning=no-file-changed -C /out -cf - . || [ $? -eq 1 ]; } | tar -xf - -C "$2"';
+const archiveOut = '{ docker exec "$1" tar --sparse --warning=no-file-changed -C /out -cf - . || [ $? -eq 1 ]; } | tar -xf - -C "$2"';
 
 async function copyOut({ name, out }: Holder): Promise<void> {
   const next = `${out}.next`;
@@ -639,9 +640,10 @@ async function copyOut({ name, out }: Holder): Promise<void> {
 }
 
 async function saveHolder(holder: Holder): Promise<void> {
-  if (existsSync(holder.out)) await copyOut(holder);
+  if (holder.running && existsSync(holder.out)) await copyOut(holder);
   await execute(["docker", "rm", "-f", holder.name]);
   await execute(["docker", "volume", "rm", holder.name]);
+  if (!holder.running) throw new Error(`The output disk container ${holder.name} was not running, so the files that it held for ${holder.out} are lost`);
 }
 
 export async function saveDisk(out: string): Promise<void> {
@@ -665,7 +667,8 @@ export async function pullDisk(out: string): Promise<void> {
 }
 
 export async function execOut(out: string, command: string[]): Promise<string> {
-  return execute(["docker", "exec", (await holderOf(out)).name, ...command]);
+  const { uid, gid } = userInfo();
+  return execute(["docker", "exec", "--user", `${uid}:${gid}`, (await holderOf(out)).name, ...command]);
 }
 
 const spaceSchema = z
