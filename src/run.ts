@@ -798,6 +798,28 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let egress: string[] = [];
   let browser: string | null = null;
   let releaseImages = async () => {};
+  let outcome: { error: string | null; failures: unknown[]; teardowns: string[] } | undefined;
+
+  const publish = async () => {
+    if (outcome === undefined) throw new Error("A run publishes its output after its teardown");
+    const error = outcome.error ?? (ctx.stopping ? "interrupted" : null);
+    const problems = [error, ...outcome.failures.map((failure) => `reading the interns' output failed: ${message(failure)}`), ...outcome.teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+    state.phase = problems.length === 0 ? "done" : "failed";
+    state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
+    state.endedAt = now();
+    const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
+    const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
+    const traffic = redactJson({ hosts: egress, relays: logs.flat() });
+    const environments = redactJson(ctx.environments);
+    const report =
+      opts.replay === null
+        ? renderReport(runDir, redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
+        : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
+    await Bun.write(join(runDir, "report.md"), report.markdown);
+    await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
+    await writeTickets(runDir, report.tickets);
+    await save();
+  };
 
   const finish = once(async (error: string | null): Promise<string | null> => {
     const teardowns: string[] = [];
@@ -842,22 +864,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
-    const problems = [error, ...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`), ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
-    state.phase = problems.length === 0 ? "done" : "failed";
-    state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
-    state.endedAt = now();
-    const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
-    const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
-    const traffic = redactJson({ hosts: egress, relays: logs.flat() });
-    const environments = redactJson(ctx.environments);
-    const report =
-      opts.replay === null
-        ? renderReport(runDir, redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
-        : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
-    await Bun.write(join(runDir, "report.md"), report.markdown);
-    await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
-    await writeTickets(runDir, report.tickets);
-    await save();
+    outcome = { error, failures, teardowns };
+    await publish();
     return teardowns.length === 0 ? null : teardowns.join("; ");
   });
 
@@ -965,6 +973,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     async () => {
       try {
         await finish("interrupted");
+        if (state.phase === "done") await publish();
       } finally {
         const hook = await ended("failed");
         if (hook !== null) process.stderr.write(`${hook}\n`);
