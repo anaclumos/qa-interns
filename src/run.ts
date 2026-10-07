@@ -818,9 +818,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let outcome: { error: string | null; failures: unknown[]; teardowns: string[] } | undefined;
 
   let ticketsWritten = false;
+  let publishedStopping = false;
   const publish = async () => {
     if (outcome === undefined) throw new Error("A run publishes its output after its teardown");
-    const problems = [ctx.stopping ? "interrupted" : null, outcome.error, ...outcome.failures.map((failure) => `reading the interns' output failed: ${message(failure)}`), ...outcome.teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+    publishedStopping = ctx.stopping;
+    const problems = [publishedStopping ? "interrupted" : null, outcome.error, ...outcome.failures.map((failure) => `reading the interns' output failed: ${message(failure)}`), ...outcome.teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
@@ -992,7 +994,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     async () => {
       try {
         await finish(null);
-        if (state.phase === "done") await publish();
+        if (!publishedStopping) await publish();
       } finally {
         const hook = await ended("failed");
         if (hook !== null) process.stderr.write(`${hook}\n`);
