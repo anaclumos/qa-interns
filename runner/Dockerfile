@@ -1,20 +1,22 @@
 FROM node:24-trixie-slim
 
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      ca-certificates \
-      curl \
-      e2fsprogs \
-      ffmpeg \
-      procps \
-      ripgrep \
+RUN --mount=type=tmpfs,target=/usr/share/doc \
+    packages="ca-certificates curl e2fsprogs ffmpeg procps ripgrep \
       libxcb-shm0 libx11-xcb1 libx11-6 libxcb1 libxext6 libxrandr2 libxcomposite1 \
       libxcursor1 libxdamage1 libxfixes3 libxi6 libgtk-3-0t64 libpangocairo-1.0-0 \
       libpango-1.0-0 libatk1.0-0t64 libcairo-gobject2 libcairo2 libgdk-pixbuf-2.0-0 \
       libxrender1 libasound2t64 libfreetype6 libfontconfig1 libdbus-1-3 libnss3 \
       libnss3-tools libnspr4 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 \
       libatspi2.0-0t64 libcups2t64 libxshmfence1 libgbm1 \
-      fonts-noto-cjk fonts-noto-color-emoji fonts-freefont-ttf fonts-liberation \
+      fonts-noto-cjk fonts-noto-color-emoji fonts-freefont-ttf fonts-liberation" \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends --download-only $packages \
+ && for deb in /var/cache/apt/archives/*.deb; do \
+      dpkg-deb --fsys-tarfile "$deb" | tar -t | while read -r path; do \
+        case "$path" in */) mkdir -p "/$path";; esac; \
+      done; \
+    done \
+ && apt-get install -y --no-install-recommends $packages \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g --no-audit --no-fund \
@@ -48,7 +50,7 @@ RUN curl -fsSLo /tmp/opencode.tar.gz https://github.com/anomalyco/opencode/relea
 ARG QA_UID
 ARG QA_GID
 RUN if [ -z "$QA_UID" ] || [ -z "$QA_GID" ] || [ "$QA_UID" -eq 0 ] || [ "$QA_GID" -eq 0 ]; then echo "QA_UID and QA_GID must be set to a uid and gid other than 0 (root). Build the runner image with qa-interns doctor, or pass --build-arg QA_UID=<uid> --build-arg QA_GID=<gid>." >&2; exit 1; fi
-RUN userdel --remove node \
+RUN userdel node \
  && groupadd --non-unique --gid "$QA_GID" qa \
  && useradd --non-unique --uid "$QA_UID" --gid qa --create-home --home-dir /home/qa --shell /bin/bash qa \
  && mkdir -p /qa/out \
