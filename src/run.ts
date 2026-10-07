@@ -34,7 +34,7 @@ import { providers } from "./providers.ts";
 import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
-import { newRunId, processStart, replaceFile, runDirFor, runsDir, writeState } from "./state.ts";
+import { newRunId, processStart, runDirFor, runsDir, writeAtomic, writeState } from "./state.ts";
 import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Answer, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Login, Provider, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
@@ -837,8 +837,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
       opts.replay === null
         ? renderReport(runDir, redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
         : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
-    replaceFile(join(runDir, "report.md"), report.markdown);
-    replaceFile(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
+    writeAtomic(join(runDir, "report.md"), report.markdown);
+    writeAtomic(join(runDir, "findings.json"),`${JSON.stringify(report.json, null, 2)}\n`);
     return report.tickets;
   };
 
