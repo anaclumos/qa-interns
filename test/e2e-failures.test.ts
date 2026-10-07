@@ -150,7 +150,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       });
 
       try {
-        await expect(run).rejects.toThrow("No testing intern completed: i1 failed: teardown failed: docker compose down left objects of");
+        await expect(run).rejects.toThrow("No testing intern completed: i1 failed: stopped at minute 0: \"Nothing more to test.\"; teardown failed: docker compose down left objects of");
       } finally {
         await release();
         const [dir] = lines;

@@ -249,7 +249,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       });
 
       try {
-        await expect(run).rejects.toThrow("No confirming intern recorded a result: c1 failed: teardown failed: docker compose down left objects of");
+        await expect(run).rejects.toThrow("No confirming intern recorded a result: c1 failed: reproduced; teardown failed: docker compose down left objects of");
       } finally {
         await release();
         const [dir] = lines;
