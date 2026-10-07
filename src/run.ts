@@ -96,6 +96,7 @@ type Context = {
   images: Record<string, string>;
   sessions: Set<Session>;
   teardowns: string[];
+  unremoved: Map<string, number>;
   environments: EnvironmentStats[];
   waiting: Set<() => void>;
   stopping: boolean;
@@ -175,6 +176,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     images: {},
     sessions: new Set(),
     teardowns: [],
+    unremoved: new Map(),
     environments: [],
     waiting: new Set(),
     stopping: false,
@@ -297,6 +299,8 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
   let starting = () => {};
   let slot: HeldSlot | undefined;
   let started = false;
+  let current = 0;
+  let removed = false;
   let unread = null as EnvironmentStats | null;
   const releaseSlot = () => {
     starting();
@@ -307,13 +311,16 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     releaseSlot();
     lease.release();
   };
-  const teardown = async (removed: () => void) => {
+  const teardown = async (handOff: () => void) => {
     const environment = unread;
     unread = null;
     try {
       if (environment !== null) environment.containers = await containerStats(project);
     } finally {
-      await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage, removed);
+      await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage, () => {
+        removed = true;
+        handOff();
+      });
     }
   };
   try {
@@ -325,6 +332,8 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
       const environment: EnvironmentStats = { intern: id, attempt: count, startedAt: now(), readyAt: null, containers: null };
       ctx.environments.push(environment);
       started = true;
+      current = count;
+      removed = false;
       unread = environment;
       const env = await startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease, count), () => {
         environment.readyAt = now();
@@ -356,6 +365,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     try {
       if (started) await teardown(handOff);
     } catch (error) {
+      if (!removed) ctx.unremoved.set(id, current);
       ctx.teardowns.push(`${id}: ${message(error)}`);
       await note(`teardown failed: ${message(error)}`);
     } finally {
@@ -374,6 +384,7 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, fre
   let outcome: Outcome<T>;
   try {
     const result = await leased(ctx, id, target, free, work, note);
+    if (result !== null && ctx.unremoved.has(id)) throw new Error("its environment was not removed, so its runner may still write to /qa/out and its output was not read");
     outcome = result === null ? { status: "limited" } : { status: "done", value: result.value };
     if (result === null) notes.push(noLogin, ...ctx.scheduler.refusals(id));
   } catch (error) {
@@ -456,7 +467,7 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
 }
 
 async function collect(ctx: Context, { intern, attempts }: Explored): Promise<Collected> {
-  const results = await Promise.allSettled(attempts.map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
+  const results = await Promise.allSettled(attempts.filter((entry) => ctx.unremoved.get(intern.id) !== entry.attempt).map((entry) => readFindings(ctx.runDir, intern.id, entry.attempt, entry.environment)));
   const read = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
   return {
     findings: read.flatMap((result) => result.findings),
@@ -507,7 +518,7 @@ async function check(ctx: Context, id: string, attempt: number): Promise<Answer>
 
 async function recover(ctx: Context, { intern, attempts }: Reproduced, answer: Answer): Promise<NonNullable<Group["confirmation"]>> {
   let confirmation: NonNullable<Group["confirmation"]> = { intern: intern.id, provider: intern.provider, ...answer };
-  for (const entry of attempts.toReversed()) {
+  for (const entry of attempts.toReversed().filter((candidate) => ctx.unremoved.get(intern.id) !== candidate.attempt)) {
     const saved = await check(ctx, intern.id, entry.attempt);
     if (saved.result !== null || confirmation.error === null) confirmation = { intern: intern.id, provider: entry.provider, ...saved };
     if (saved.result !== null) break;
@@ -601,14 +612,19 @@ async function stop(ctx: Context, running: Promise<unknown> | undefined): Promis
   await within(Promise.allSettled([running]), stopWaitMs);
 }
 
-async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () => Promise<void>): Promise<T> {
+async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () => Promise<void>, snapshot: () => Promise<void> = async () => {}): Promise<T> {
   let running: Promise<T> | undefined;
   let signalled = false;
   const handler = () => {
     if (signalled) return;
     signalled = true;
     process.stderr.write("Interrupted. Closing sessions and tearing down.\n");
-    stop(ctx, running)
+    Promise.all([
+      stop(ctx, running),
+      snapshot().catch((error) => {
+        process.stderr.write(`Writing the report after the interrupt failed: ${redact(message(error))}\n`);
+      }),
+    ])
       .then(interrupted)
       .then(
         () => process.exit(130),
@@ -815,17 +831,18 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let egress: string[] = [];
   let browser: string | null = null;
   let releaseImages = async () => {};
-  let outcome: { error: string | null; failures: unknown[]; teardowns: string[] } | undefined;
 
-  let ticketsWritten = false;
-  let publishedStopping = false;
-  const publish = async () => {
-    if (outcome === undefined) throw new Error("A run publishes its output after its teardown");
-    publishedStopping = ctx.stopping;
-    const problems = [publishedStopping ? "interrupted" : null, outcome.error, ...outcome.failures.map((failure) => `reading the interns' output failed: ${message(failure)}`), ...outcome.teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+  let recorded: { error: string | null; teardowns: string[]; stopping: boolean } | undefined;
+
+  const record = (error: string | null, teardowns: string[]) => {
+    recorded = { error, teardowns, stopping: ctx.stopping };
+    const problems = [ctx.stopping ? "interrupted" : null, error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
+  };
+
+  const write = async () => {
     const singles = findings.map((finding, index) => ({ id: `g${index + 1}`, findings: [finding], confirmation: null }));
     const logs = await Promise.all(state.interns.map(async (intern) => (await readRelayLogs(join(runDir, "interns", intern.id))).map((records) => ({ intern: intern.id, records }))));
     const traffic = redactJson({ hosts: egress, relays: logs.flat() });
@@ -834,14 +851,19 @@ export async function runQa(opts: RunOptions): Promise<string> {
       opts.replay === null
         ? renderReport(runDir, redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
         : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
-    writeAtomic(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
-    await Bun.write(join(runDir, "report.md"), report.markdown);
-    if (!ticketsWritten) await writeTickets(runDir, report.tickets);
-    ticketsWritten = true;
-    await save();
+    writeAtomic(join(runDir, "report.md"), report.markdown);
+    writeAtomic(join(runDir, "findings.json"),`${JSON.stringify(report.json, null, 2)}\n`);
+    return report.tickets;
   };
 
+  const snapshot = once(async (error: string | null) => {
+    if (error !== null || ctx.stopping) record(error, ctx.teardowns);
+    await write();
+    await save();
+  });
+
   const finish = finisher(ctx, async (error: string | null): Promise<string | null> => {
+    await Promise.allSettled([snapshot(error)]);
     const teardowns: string[] = [];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
@@ -885,8 +907,17 @@ export async function runQa(opts: RunOptions): Promise<string> {
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
-    outcome = { error, failures, teardowns };
-    await publish();
+    const problem = [error,...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`)].filter((entry) => entry !== null).join("; ");
+    try {
+      record(problem === "" ? null : problem, teardowns);
+      await writeTickets(runDir, await write());
+    } catch (reason) {
+      const failed = [problem, `writing the report failed: ${message(reason)}`].filter((entry) => entry !== "").join("; ");
+      record(failed, teardowns);
+      await save();
+      throw new Error(redact(failed));
+    }
+    await save();
     return teardowns.length === 0 ? null : teardowns.join("; ");
   });
 
@@ -920,7 +951,20 @@ export async function runQa(opts: RunOptions): Promise<string> {
       await phase("testing");
       const testing = limit(state.options.concurrency);
       explored = state.interns.map((intern) => ({ intern, attempts: [] }));
-      const results = await settle(explored.map((entry) => testing((free) => explore(ctx, entry, target, opts.minutes, free))));
+      const ended: Awaited<ReturnType<typeof explore>>[] = [];
+      const results = await settle(
+        explored.map((entry, index) =>
+          testing(async (free) => {
+            const result = await explore(ctx, entry, target, opts.minutes, free);
+            ended[index] = result;
+            if (!ctx.stopping) {
+              findings = ended.flatMap((one) => one.findings);
+              rejected = ended.flatMap((one) => one.rejected);
+            }
+            return result;
+          }),
+        ),
+      );
       checkStopping(ctx);
       findings = results.flatMap((result) => result.findings);
       rejected = results.flatMap((result) => result.rejected);
@@ -994,11 +1038,16 @@ export async function runQa(opts: RunOptions): Promise<string> {
     async () => {
       try {
         await finish(null);
-        if (!publishedStopping) await publish();
+        if (recorded !== undefined && !recorded.stopping) {
+          record(recorded.error, recorded.teardowns);
+          await write();
+          await save();
+        }
       } finally {
         const hook = await ended("failed");
         if (hook !== null) process.stderr.write(`${hook}\n`);
       }
     },
+    () => snapshot(null),
   );
 }

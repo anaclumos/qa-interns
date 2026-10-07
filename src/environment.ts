@@ -7,6 +7,7 @@ import { z } from "zod";
 import { errorCode, message } from "./findings.ts";
 import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
+import { writeAtomic } from "./state.ts";
 import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, runLocks, targetEnv, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type GeneratedFile, type Mount, type RelayRecord } from "./types.ts";
 
@@ -722,7 +723,8 @@ export async function readRelayLogs(dir: string): Promise<RelayRecord[][]> {
 async function saveRelayLogs(project: string, dir: string): Promise<void> {
   const labels = ["--filter", `label=com.docker.compose.project=${project}`, "--filter", "label=com.docker.compose.service=qa-relay"];
   const ids = (await execute(["docker", "ps", "-aq", ...labels])).split("\n").filter((id) => id !== "");
-  for (const id of ids) await Bun.write(join(dir, `${relayPrefix}${id}${relaySuffix}`), await execute(["docker", "logs", id]));
+  if (ids.length > 0) mkdirSync(dir, { recursive: true });
+  for (const id of ids) writeAtomic(join(dir, `${relayPrefix}${id}${relaySuffix}`), await execute(["docker", "logs", id]));
 }
 
 async function down(project: string, relayDir: string | null): Promise<void> {
@@ -833,7 +835,8 @@ export async function stopRun(runDir: string, runId: string): Promise<void> {
 
 export type HostObjects = { docker: string[]; mounts: string[] };
 
-export async function hostObjects(): Promise<HostObjects> {
+export async function hostObjects(docker: boolean): Promise<HostObjects> {
+  if (!docker) return { docker: [], mounts: await mountTargets() };
   const [projects, images, helpers, mounts] = await Promise.all([
     composeProjects(),
     execute(["docker", "image", "ls", "--format", "{{.Repository}}"]),

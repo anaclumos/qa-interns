@@ -6,8 +6,9 @@ import { basename, join } from "node:path";
 import { removeDir, writeChromePolicy } from "../src/environment.ts";
 import type { AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
-import { execute } from "../src/target.ts";
+import { capture, execute } from "../src/target.ts";
 import type { Provider, RunState } from "../src/types.ts";
+import { suiteLabel } from "./suite-lock.ts";
 
 export const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 export const timeout = 20 * 60_000;
@@ -116,7 +117,17 @@ USER qa
     };
   }
 
-  return { id, root, fakeImage, target, logins, askOptions };
+  function blockTeardown(runDir: string, internId: string): () => Promise<void> {
+    const held = `qair-f-e2e-held-${basename(runDir)}-${internId}`;
+    Bun.spawnSync(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${basename(runDir)}-${internId}`, "--label", suiteLabel, held], { stdout: "ignore" });
+    Bun.spawnSync(["docker", "run", "-d", "--rm", "--label", suiteLabel, "--name", held, "--network", held, fakeImage], { stdout: "ignore" });
+    return async () => {
+      await capture(["docker", "rm", "-f", held]);
+      await capture(["docker", "network", "rm", held]);
+    };
+  }
+
+  return { id, root, fakeImage, target, logins, askOptions, blockTeardown };
 }
 
 export async function leftovers(runId: string): Promise<string[]> {

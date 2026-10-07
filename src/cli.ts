@@ -55,8 +55,9 @@ Commands:
   down [<run>]
       Stop the run's orchestrator with SIGTERM when it is still running, then
       tear down every environment the run still has and delete its leftover
-      workspace copies.
-  prune
+      workspace copies. When the orchestrator ended before it recorded the end
+      of the run or of an intern, set that phase or status to failed.
+  prune [--no-docker]
       Delete the directory of each run whose job has shipped: its orchestrator
       ended, its state.json has not changed for 24 hours, it ran without
       --dirty, its teardown left nothing, no run that prune keeps and no
@@ -65,7 +66,8 @@ Commands:
       commit that no pull request holds. A directory without state.json goes
       once it has not changed for 24 hours and its teardown left nothing.
       Files and symbolic links in the runs directory stay. Needs the GitHub
-      CLI, signed in.
+      CLI, signed in, and Docker, unless --no-docker says Docker is not
+      installed on the host, so no run has Docker objects to keep.
   help
       Print this help.
 
@@ -235,16 +237,25 @@ async function main(args: string[]): Promise<number> {
         print(message(error));
       }
       const after = await readState(dir);
-      if (after.phase === "up") {
+      const live = after.interns.filter((intern) => intern.status === "queued" || intern.status === "starting" || intern.status === "testing");
+      if ((after.phase !== "done" && after.phase !== "failed") || live.length > 0) {
         const ended = new Date().toISOString();
-        await writeState(dir, { ...after, phase: "done", updatedAt: ended, endedAt: ended });
+        const done = after.phase === "up" || after.phase === "done";
+        await writeState(dir, {
+          ...after,
+          phase: done ? "done" : "failed",
+          error: after.error ?? (done ? null : `The orchestrator process ended in phase ${after.phase}`),
+          updatedAt: ended,
+          endedAt: after.endedAt ?? ended,
+          interns: after.interns.map((intern) => (live.includes(intern) ? { ...intern, status: "failed", endedAt: ended } : intern)),
+        });
       }
       print(`Run ${state.runId} has no environments left.`);
       return 0;
     }
     case "prune": {
-      parseArgs({ args: rest, options: {} });
-      await prune(print);
+      const { values } = parseArgs({ args: rest, options: { "no-docker": { type: "boolean", default: false } } });
+      await prune(print, !values["no-docker"]);
       return 0;
     }
     case "help":
