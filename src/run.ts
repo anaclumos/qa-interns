@@ -102,6 +102,7 @@ type Context = {
 };
 
 const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+let guarded = 0;
 const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
@@ -604,6 +605,7 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
       );
   };
   for (const signal of signals) process.on(signal, handler);
+  guarded += 1;
   try {
     running = body();
     const [result] = await Promise.allSettled([running]);
@@ -612,7 +614,8 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
     return result.value;
   } finally {
     for (const signal of signals) process.off(signal, handler);
-    forgetSecrets();
+    guarded -= 1;
+    if (guarded === 0) forgetSecrets();
   }
 }
 
