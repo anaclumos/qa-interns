@@ -7,7 +7,7 @@ import { removeDir, writeChromePolicy } from "../src/environment.ts";
 import type { AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { capture, execute } from "../src/target.ts";
-import type { Provider, RunState } from "../src/types.ts";
+import type { RunState } from "../src/types.ts";
 import { suiteLabel } from "./suite-lock.ts";
 
 export const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
@@ -18,7 +18,7 @@ export const knownGap = "The environment has no video model.";
 export const runLocks = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs");
 export const intendedBehavior = "The invoices table scrolls sideways at narrow viewports instead of clipping its columns.";
 
-type FakeLogin = { id: string; provider: Provider; quota?: string[]; limit?: true | "charter" | "confirmation"; model?: string; confirms?: false; late?: true; deaf?: true; swap?: true; flood?: true; upgrade?: true; hang?: true; stray?: true; second?: true; openrouter?: { type: "api"; key: string } };
+type FakeAgent = { limit?: true | "charter"; confirms?: false; late?: true; deaf?: true; swap?: true; flood?: true; idle?: true; hang?: true | string; stray?: true; second?: true; printKey?: true; nonce?: string };
 
 export function endToEnd() {
   const id = crypto.randomUUID().slice(0, 8);
@@ -55,12 +55,9 @@ export function endToEnd() {
       `FROM ${base}
 USER root
 COPY fake-agent.mjs /opt/qa-fake/fake-agent.mjs
-RUN rm /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok /usr/local/bin/opencode \\
- && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$CLAUDE_SECURESTORAGE_CONFIG_DIR/.credentials.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/claude-agent-acp \\
- && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$XDG_CONFIG_HOME/cursor/auth.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/cursor-agent \\
- && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$GROK_AUTH_PATH" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/grok \\
- && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$XDG_DATA_HOME/opencode/auth.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/opencode \\
- && chmod 755 /usr/local/bin/claude-agent-acp /usr/local/bin/cursor-agent /usr/local/bin/grok /usr/local/bin/opencode
+RUN rm /usr/local/bin/pi-acp \\
+ && printf '#!/bin/sh\\nexec env FAKE_CREDENTIAL="$PI_CODING_AGENT_DIR/auth.json" node /opt/qa-fake/fake-agent.mjs "$@"\\n' > /usr/local/bin/pi-acp \\
+ && chmod 755 /usr/local/bin/pi-acp
 USER qa
 `,
     );
@@ -87,16 +84,12 @@ USER qa
     if (unused.length > 0) await execute(["docker", "image", "rm", "-f", ...unused]);
   }, timeout);
 
-  async function logins(name: string, entries: FakeLogin[]): Promise<string> {
-    const list = [];
-    for (const { id: login, provider, quota, ...credentials } of entries) {
-      const store = join(root, "stores", name, login);
-      await mkdir(store, { recursive: true });
-      await Bun.write(join(store, provider === "claude" ? ".credentials.json" : "auth.json"), JSON.stringify(credentials));
-      list.push({ id: login, provider, store, quota });
-    }
+  async function logins(name: string, fake: FakeAgent = {}, concurrency = 1): Promise<string> {
+    const store = join(root, "stores", name);
+    await mkdir(store, { recursive: true });
+    await Bun.write(join(store, "auth.json"), JSON.stringify({ openrouter: { type: "api_key", key: `fake-agent:${JSON.stringify(fake)}` } }));
     const file = join(root, `${name}-logins.json`);
-    await Bun.write(file, JSON.stringify({ logins: list }));
+    await Bun.write(file, JSON.stringify({ id: "openrouter-1", store, concurrency }));
     return file;
   }
 
@@ -108,7 +101,7 @@ USER qa
       runDir,
       runId,
       name,
-      loginsFile: await logins(`ask-${runId}`, [{ id: "claude-1", provider: "claude" }]),
+      loginsFile: await logins(`ask-${runId}`),
       runnerImage: fakeImage,
       admit: () => () => {},
       prompt: "Write /qa/out/groups.json.",

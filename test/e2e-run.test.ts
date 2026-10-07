@@ -14,7 +14,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   const { id, root, target, fakeImage, logins } = endToEnd();
 
   test(
-    "two interns on Grok and Cursor logins report one defect, the judge groups it, and a confirmation reproduces it",
+    "two interns report one defect, the judge groups it, and a confirmation reproduces it",
     async () => {
       const lines: string[] = [];
       const ended = join(root, "pair-ended.txt");
@@ -25,10 +25,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 2,
         minutes: 0.5,
         confirmMinutes: 0.5,
-        loginsFile: await logins("pair", [
-          { id: "grok-1", provider: "grok" },
-          { id: "cursor-1", provider: "cursor" },
-        ]),
+        loginsFile: await logins("pair", {}, 2),
         replay: null,
         onEnd: `test -f "$QA_INTERNS_RUN_DIR/report.md" && printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'`,
         runnerImage: async () => fakeImage,
@@ -56,8 +53,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         "Project focus: How invoices calculate, store, and show money across currencies, lists, and exports.",
         "Project focus: What owners, editors, and viewers can see and change, in the pages and in the API.",
       ]);
-      expect(["i1", "i2"].map((internId) => intern(state, internId).provider).sort()).toEqual(["cursor", "grok"]);
-      expect(intern(state, "judge").provider).toBe("grok");
+      expect(state.interns.map((entry) => entry.login)).toEqual(["openrouter-1", "openrouter-1", "openrouter-1", "openrouter-1"]);
+      expect(lines).toContain("i1 starting on openrouter-1");
       const [charterPrompt, confirmationPrompt] = await Promise.all(["i1", "c1"].map((internId) => firstPrompt(runDir, internId)));
       expect(charterPrompt).toContain(`  - ${knownGap}`);
       expect(confirmationPrompt).toContain("/qa/out/confirmation.json");
@@ -74,7 +71,6 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         reproductions: ["i1", "i2", "c1"],
         confirmation: {
           intern: "c1",
-          provider: "grok",
           result: { steps: true, task: true, observed: "fake reproduction", evidence: ["interns/c1/out/evidence/reproduction.txt"] },
           error: null,
         },
@@ -83,7 +79,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(report.groups[0].findings[0]).toMatchObject({
         title,
         evidence: ["interns/i1/out/evidence/page.html"],
-        environment: { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, provider: intern(state, "i1").provider, model: "fake-model-1" },
+        environment: { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, model: "fake-model-1" },
       });
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "page.html")).text()).toContain("<form");
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "browser.json")).json()).toEqual({
@@ -94,7 +90,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       });
 
       const environments: EnvironmentStats[] = report.environments;
-      expect(environments.map((entry) => `${entry.intern}/${entry.attempt}`).sort()).toEqual(["c1/1", "i1/1", "i2/1", "judge/1"]);
+      expect(environments.map((entry) => entry.intern).sort()).toEqual(["c1", "i1", "i2", "judge"]);
       for (const entry of environments) {
         expect(Date.parse(entry.readyAt ?? "")).toBeGreaterThan(Date.parse(entry.startedAt));
         expect(entry.containers?.filter((container) => container.state !== "running" || container.oomKilled || container.restarts !== 0 || (container.memoryPeak ?? 0) <= 0)).toEqual([]);
@@ -111,7 +107,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(markdown.split("\n")).toContain(`- Browser: ${report.run.browser}`);
       expect(confirmed).toContain(`  - Browser version: ${report.run.browser}`);
       const usage = markdown.slice(markdown.indexOf("## Environments"));
-      expect(usage).toContain("### judge, attempt 1\n\n- Started: ");
+      expect(usage).toContain("### judge\n\n- Started: ");
       const web = usage.split("\n").filter((line) => line.startsWith("| web-1 | running | "));
       expect(web).toHaveLength(3);
       for (const line of web) expect(line).toEndWith(" MiB | no | 0 |");
@@ -140,10 +136,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 1,
         minutes: 0.5,
         confirmMinutes: 0.5,
-        loginsFile: await logins("wide", [
-          { id: "claude-wide-1", provider: "claude", second: true },
-          { id: "claude-wide-2", provider: "claude", second: true },
-        ]),
+        loginsFile: await logins("wide", { second: true }, 2),
         replay: null,
         runnerImage: async () => fakeImage,
         admit: () => () => {},
@@ -174,7 +167,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 1,
         minutes: 0.5,
         confirmMinutes: 0.5,
-        loginsFile: await logins("handoff", [{ id: "claude-handoff", provider: "claude", second: true }]),
+        loginsFile: await logins("handoff", { second: true }),
         replay: null,
         runnerImage: async () => fakeImage,
         admit: () => () => {},
@@ -224,7 +217,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         deadHolder.kill("SIGKILL");
         await deadHolder.exited;
         process.env.QA_INTERNS_SUBNET = `10.214.${third}.0/23`;
-        const loginsFile = await logins("swept", [{ id: "claude-1", provider: "claude" }]);
+        const loginsFile = await logins("swept");
         const run = runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
         await expect(run).rejects.toThrow("No free network slot");
         expect(await leftovers(dead)).toEqual([]);

@@ -4,7 +4,6 @@ import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { openSession, type Session } from "../src/acp.ts";
-import { providers } from "../src/providers.ts";
 import { forgetSecrets, keepSeedSecrets } from "../src/secrets.ts";
 import { suiteLabel } from "./suite-lock.ts";
 
@@ -18,7 +17,12 @@ const web = `${name}-web`;
 const root = path.join(tmpdir(), name);
 const out = path.join(root, "out");
 const login = path.join(root, "login");
-const credentials = path.join(login, ".credentials.json");
+const credentials = path.join(login, "auth.json");
+const adapter = ["node", "/opt/qa/fake-agent.mjs"];
+
+function auth(options: object): string {
+  return JSON.stringify({ openrouter: { type: "api_key", key: `fake-agent:${JSON.stringify(options)}` } });
+}
 const internDir = path.join(root, "intern");
 const transcript = path.join(internDir, "transcript.jsonl");
 const adapterLog = path.join(internDir, "adapter.log");
@@ -73,7 +77,7 @@ async function until(check: () => boolean | Promise<boolean>, what: string) {
 function fakeSession(label: string, model: string | null = null): Promise<Session> {
   return openSession({
     container: agent,
-    provider: { ...providers.claude, adapter: ["node", "/opt/qa/fake-agent.mjs"] },
+    adapter,
     model,
     transcript: path.join(internDir, `${label}-transcript.jsonl`),
     adapterLog: path.join(internDir, `${label}-adapter.log`),
@@ -107,7 +111,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     mkdirSync(root);
     mkdirSync(out);
     mkdirSync(login);
-    writeFileSync(credentials, "{}");
+    writeFileSync(credentials, auth({}));
     mkdirSync(internDir);
     await docker("network", "create", "--label", suiteLabel, name);
     const server = `require("node:http").createServer((request, response) => response.end(${JSON.stringify(page)})).listen(8080)`;
@@ -124,7 +128,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
       "--user",
       `${process.getuid?.()}:${process.getgid?.()}`,
       "-e",
-      "FAKE_CREDENTIAL=/qa/login/.credentials.json",
+      "FAKE_CREDENTIAL=/qa/login/auth.json",
       "-v",
       `${path.join(import.meta.dir, "fake-agent.mjs")}:/opt/qa/fake-agent.mjs:ro`,
       "-v",
@@ -149,21 +153,10 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     rmSync(root, { recursive: true, force: true });
   }, 30_000);
 
-  test("opens a session with no MCP servers, the Claude meta, and the Claude mode", async () => {
-    session = await openSession({
-      container: agent,
-      provider: { ...providers.claude, adapter: ["node", "/opt/qa/fake-agent.mjs"] },
-      model: null,
-      transcript,
-      adapterLog,
-    });
+  test("opens a session with no MCP servers and reports the agent's model", async () => {
+    session = await openSession({ container: agent, adapter, model: null, transcript, adapterLog });
     expect(session.model).toBe("fake-model-1");
-    expect(JSON.parse(readFileSync(path.join(out, "fake-agent-session.json"), "utf8"))).toEqual({
-      mcpServers: [],
-      _meta: { claudeCode: { options: { strictMcpConfig: true } } },
-    });
-    const setMode = transcriptLines().find((line) => line.from === "client" && line.message.method === "session/set_mode");
-    expect(setMode?.message.params).toEqual({ sessionId: "fake-session-1", modeId: "bypassPermissions" });
+    expect(JSON.parse(readFileSync(path.join(out, "fake-agent-session.json"), "utf8"))).toEqual({ mcpServers: [] });
   });
 
   test("an intern prompt makes one tool call and writes a finding with evidence", async () => {
@@ -184,18 +177,17 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     expect(session.toolCalls()).toBe(1);
   });
 
-  test("a usage limit rejects the prompt with a RequestError that Claude counts as a login failure", async () => {
-    writeFileSync(credentials, JSON.stringify({ limit: true }));
+  test("a provider failure rejects the prompt with the agent's RequestError", async () => {
+    writeFileSync(credentials, auth({ limit: true }));
     let error: unknown;
     try {
       await session.prompt("You have 11 minutes left. Keep testing your charter.");
     } catch (reason) {
       error = reason;
     }
-    writeFileSync(credentials, "{}");
+    writeFileSync(credentials, auth({}));
     expect(error).toBeInstanceOf(RequestError);
-    expect(error).toMatchObject({ code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } });
-    expect(error instanceof RequestError && providers.claude.isLoginFailure(error)).toBe(true);
+    expect(error).toMatchObject({ code: -32603, message: "Internal error", data: { errorKind: "billing_error" } });
   });
 
   test("cancel during a slow prompt resolves it as cancelled", async () => {
@@ -229,7 +221,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     expect(results.map((line) => line.message.result ?? line.message.error)).toEqual([
       { stopReason: "end_turn" },
       { stopReason: "end_turn" },
-      { code: -32603, message: "Internal error: You've hit your limit", data: { errorKind: "rate_limit" } },
+      { code: -32603, message: "Internal error", data: { errorKind: "billing_error", message: "provider billing or quota wall" } },
       { stopReason: "cancelled" },
     ]);
   });
@@ -281,32 +273,6 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
       expect(set?.message.params).toEqual({ sessionId: "fake-session-1", configId: "model", value: "fake-model-2" });
     } finally {
       await chosen.close();
-    }
-  });
-
-  test("a Cursor model with parameters in brackets asks for the parameterized model picker, then sets the model and each parameter", async () => {
-    const cursor = await openSession({
-      container: agent,
-      provider: { ...providers.cursor, adapter: ["node", "/opt/qa/fake-agent.mjs"] },
-      model: "fake-model-2[fast=false]",
-      transcript: path.join(internDir, "cursor-transcript.jsonl"),
-      adapterLog: path.join(internDir, "cursor-adapter.log"),
-    });
-    try {
-      expect(cursor.model).toBe("fake-model-2");
-      const sent = readFileSync(path.join(internDir, "cursor-transcript.jsonl"), "utf8")
-        .split("\n")
-        .filter((line) => line !== "")
-        .map((line): Line => JSON.parse(line))
-        .filter((line) => line.from === "client")
-        .map((line) => line.message);
-      expect(sent.find((message) => message.method === "initialize")?.params).toMatchObject({ clientCapabilities: { _meta: { parameterizedModelPicker: true } } });
-      expect(sent.filter((message) => message.method === "session/set_config_option").map((message) => message.params)).toEqual([
-        { sessionId: "fake-session-1", configId: "model", value: "fake-model-2" },
-        { sessionId: "fake-session-1", configId: "fast", value: "false" },
-      ]);
-    } finally {
-      await cursor.close();
     }
   });
 

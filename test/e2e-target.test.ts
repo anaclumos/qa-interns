@@ -39,7 +39,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 1,
         minutes: 0.5,
         confirmMinutes: 0.5,
-        loginsFile: await logins("relayed", [{ id: "claude-1", provider: "claude" }]),
+        loginsFile: await logins("relayed"),
         replay: null,
         runnerImage: async () => fakeImage,
         admit: () => () => {},
@@ -98,7 +98,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       await execute([...git, "commit", "-q", "-m", "Hostile Ledger"]);
       const probe = join(root, "probe");
       await mkdir(probe);
-      const loginsFile = await logins("hostile", [{ id: "claude-1", provider: "claude" }]);
+      const loginsFile = await logins("hostile");
 
       const lines: string[] = [];
       const previous = process.env.QA_PROBE_DIR;
@@ -131,7 +131,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(await Bun.file(join(runDir, "interns", "i1", "transcript.jsonl")).exists()).toBe(false);
       const [environment, ...others] = (await Bun.file(join(runDir, "findings.json")).json()).environments as EnvironmentStats[];
       expect(others).toEqual([]);
-      expect(environment).toMatchObject({ intern: "i1", attempt: 1, readyAt: null });
+      expect(environment).toMatchObject({ intern: "i1", readyAt: null });
       expect(environment?.containers?.map((container) => container.service)).toContain("web");
 
       expect(await leftovers(state.runId)).toEqual([]);
@@ -153,7 +153,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 1,
         minutes: 5,
         confirmMinutes: 0.5,
-        loginsFile: await logins("flood", [{ id: "claude-flood", provider: "claude", flood: true }]),
+        loginsFile: await logins("flood", { flood: true }),
         replay: null,
         onEnd: `printf '%s\\n' "$QA_INTERNS_RUN_DIR" "$QA_INTERNS_PHASE" > '${ended}'; exit 3`,
         runnerImage: async () => fakeImage,
@@ -212,7 +212,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         interns: 1,
         minutes: 0.5,
         confirmMinutes: 0.5,
-        loginsFile: await logins("dirty", [{ id: "claude-1", provider: "claude" }]),
+        loginsFile: await logins("dirty"),
         replay: null,
         runnerImage: async () => fakeImage,
         admit: () => () => {},
@@ -225,7 +225,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(await Bun.file(join(runDir, "source", "node_modules", "ignored.txt")).exists()).toBe(false);
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.run.target).toEqual(state.target);
-      expect(report.groups[0].findings[0].environment).toEqual({ commit: head, dirty: true, environment: `qa-${state.runId}-i1`, provider: "claude", model: "fake-model-1" });
+      expect(report.groups[0].findings[0].environment).toEqual({ commit: head, dirty: true, environment: `qa-${state.runId}-i1`, model: "fake-model-1" });
       expect((await Bun.file(join(runDir, "report.md")).text()).split("\n")).toContain(`- Commit: \`${head}\`, with the uncommitted changes and untracked files of the working tree`);
 
       expect(await leftovers(state.runId)).toEqual([]);

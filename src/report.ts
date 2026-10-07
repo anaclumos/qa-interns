@@ -2,7 +2,7 @@ import { basename, extname, join, resolve } from "node:path";
 import { z } from "zod";
 import { linkEvidence, stripControl } from "./findings.ts";
 import { readJson, readState } from "./state.ts";
-import { kinds, providerNames, type Confirmation, type EnvironmentStats, type Finding, type Group, type InternState, type RelayRecord, type Rejected, type Replay, type RunState } from "./types.ts";
+import { kinds, type Confirmation, type EnvironmentStats, type Finding, type Group, type InternState, type RelayRecord, type Rejected, type Replay, type RunState } from "./types.ts";
 
 export type Egress = { hosts: string[]; relays: { intern: string; records: RelayRecord[] }[] };
 
@@ -80,10 +80,6 @@ function files(list: string[]) {
   return list.length > 0 ? block(list.join("\n")) : ["No evidence files."];
 }
 
-function who(outcome: NonNullable<Group["confirmation"]>) {
-  return outcome.provider === null ? outcome.intern : `${outcome.intern} (${outcome.provider})`;
-}
-
 function cell(value: string | number | null) {
   return inline(String(value ?? ""));
 }
@@ -118,9 +114,9 @@ function verdict(result: Confirmation) {
 function confirmation(group: Group, root: string) {
   const outcome = group.confirmation;
   if (outcome === null) return ["Confirmation: not attempted."];
-  if (outcome.result === null) return [`Confirmation: ${who(outcome)} failed: ${inline(outcome.error)}`];
+  if (outcome.result === null) return [`Confirmation: ${outcome.intern} failed: ${inline(outcome.error)}`];
   return [
-    `Confirmation: ${who(outcome)} ${verdict(outcome.result)}.`,
+    `Confirmation: ${outcome.intern} ${verdict(outcome.result)}.`,
     "",
     ...quote(outcome.result.observed),
     "",
@@ -212,9 +208,9 @@ function ticket(state: RunState, browserVersion: string | null, group: Group, in
   lines.push("## Confirmation", "");
   const outcome = group.confirmation;
   if (outcome === null) lines.push("Not attempted.", "");
-  else if (outcome.result === null) lines.push(`${who(outcome)} failed:`, "", ...block(outcome.error), "");
+  else if (outcome.result === null) lines.push(`${outcome.intern} failed:`, "", ...block(outcome.error), "");
   else {
-    lines.push(`${who(outcome)} ${verdict(outcome.result)}.`, "", ...block(outcome.result.observed), "");
+    lines.push(`${outcome.intern} ${verdict(outcome.result)}.`, "", ...block(outcome.result.observed), "");
     lines.push("Confirmation evidence:", "", ...files(outcome.result.evidence), ...images(outcome.result.evidence, ""), "");
   }
   const evidence = [...new Set([...first.evidence, ...(outcome?.result?.evidence ?? [])])];
@@ -239,10 +235,6 @@ function role(state: RunState, name: InternState["role"]) {
   return state.interns.filter((intern) => intern.role === name).length;
 }
 
-function providersOf(state: RunState) {
-  return [...new Set(state.interns.flatMap((intern) => (intern.provider === null ? [] : [intern.provider])))];
-}
-
 function commit(target: RunState["target"]) {
   return `\`${target.commit}\`${target.dirty ? ", with the uncommitted changes and untracked files of the working tree" : ""}`;
 }
@@ -259,9 +251,9 @@ function ran(state: RunState, browser: string | null) {
 function internTable(state: RunState) {
   const lines = ["## Interns", ""];
   if (state.interns.length === 0) return [...lines, "No intern ran."];
-  lines.push("| Id | Role | Provider | Model | Status | Findings | Detail |", "| --- | --- | --- | --- | --- | --- | --- |");
+  lines.push("| Id | Role | Model | Status | Findings | Detail |", "| --- | --- | --- | --- | --- | --- |");
   for (const intern of state.interns) {
-    lines.push(`| ${[intern.id, intern.role, intern.provider, intern.model, intern.status, intern.findings, intern.detail].map(cell).join(" | ")} |`);
+    lines.push(`| ${[intern.id, intern.role, intern.model, intern.status, intern.findings, intern.detail].map(cell).join(" | ")} |`);
   }
   return lines;
 }
@@ -278,7 +270,7 @@ function egressTable(connections: EgressRow[]) {
 
 function usage(environment: EnvironmentStats) {
   const ready = environment.readyAt === null ? "not reached" : `after ${((Date.parse(environment.readyAt) - Date.parse(environment.startedAt)) / 1000).toFixed(1)} s`;
-  const lines = [`### ${environment.intern}, attempt ${environment.attempt}`, "", `- Started: ${environment.startedAt}`, `- Ready: ${ready}`, ""];
+  const lines = [`### ${environment.intern}`, "", `- Started: ${environment.startedAt}`, `- Ready: ${ready}`, ""];
   if (environment.containers === null) return [...lines, "No container was read before teardown."];
   lines.push("| Container | State | Peak memory | Out-of-memory kill | Restarts |", "| --- | --- | --- | --- | --- |");
   for (const container of environment.containers) {
@@ -318,7 +310,6 @@ export function renderReport(
     startedAt: state.startedAt,
     endedAt: state.endedAt,
     interns: { testing: role(state, "intern"), confirming: role(state, "confirm"), judging: role(state, "judge") },
-    providers: providersOf(state),
     confirmedGroups: confirmed.length,
     notConfirmedGroups: notConfirmed.length,
     rejectedFiles: rejected.length,
@@ -329,7 +320,6 @@ export function renderReport(
     "",
     ...ran(state, browser),
     `- Interns: ${summary.interns.testing} testing, ${summary.interns.confirming} confirming, ${summary.interns.judging} judging`,
-    `- Providers: ${summary.providers.length > 0 ? summary.providers.join(", ") : "none"}`,
     `- Confirmed groups: ${summary.confirmedGroups}`,
     `- Groups not confirmed: ${summary.notConfirmedGroups}`,
     `- Rejected finding files: ${summary.rejectedFiles}`,
@@ -387,7 +377,6 @@ export function renderReplay(runDir: string, state: RunState, browser: string | 
     startedAt: state.startedAt,
     endedAt: state.endedAt,
     interns: { confirming: role(state, "confirm") },
-    providers: providersOf(state),
     reproducedGroups: reproduced.length,
     notReproducedGroups: notReproduced.length,
     uncheckedGroups: unchecked.length,
@@ -399,7 +388,6 @@ export function renderReplay(runDir: string, state: RunState, browser: string | 
     `- Replay of: run \`${replay.runId}\` at commit ${commit(replay.target)}`,
     ...ran(state, browser),
     `- Interns: ${summary.interns.confirming} confirming`,
-    `- Providers: ${summary.providers.length > 0 ? summary.providers.join(", ") : "none"}`,
     `- Groups reproduced: ${summary.reproducedGroups}`,
     `- Groups not reproduced: ${summary.notReproducedGroups}`,
     `- Groups not checked: ${summary.uncheckedGroups}`,
@@ -451,7 +439,6 @@ export const storedFindingSchema = z.object({
     commit: z.string(),
     dirty: z.boolean(),
     environment: z.string(),
-    provider: z.enum(providerNames),
     model: z.string().nullable(),
   }),
 });

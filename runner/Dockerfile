@@ -21,31 +21,12 @@ RUN --mount=type=tmpfs,target=/usr/share/doc \
 
 RUN npm install -g --no-audit --no-fund \
       agent-browser@0.38.1 \
-      @agentclientprotocol/claude-agent-acp@0.81.2 \
-      @agentclientprotocol/codex-acp@1.13.1 \
+      @automatalabs/pi-acp@0.9.4 \
  && npm cache clean --force
 
 RUN HOME=/opt/agent-browser agent-browser install \
  && ln -s /opt/agent-browser/.agent-browser/browsers/chrome-*/chrome /usr/local/bin/chrome \
  && chrome --version
-
-RUN curl -fsSLo /tmp/cursor-agent.tar.gz https://downloads.cursor.com/lab/2026.09.26-dd393fe/linux/x64/agent-cli-package.tar.gz \
- && echo "8085fd120f5c71f4eae7fea26a043718e5644e3071e4fab3220a0e58c51f9593  /tmp/cursor-agent.tar.gz" | sha256sum -c \
- && mkdir /opt/cursor-agent \
- && tar -xzf /tmp/cursor-agent.tar.gz --no-same-owner --strip-components=1 -C /opt/cursor-agent \
- && rm /tmp/cursor-agent.tar.gz \
- && ln -s /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent
-
-RUN curl -fsSLo /usr/local/bin/grok https://x.ai/cli/grok-1.0.41-linux-x86_64 \
- && echo "9ce03ed23e16ea01072b4496263d6213a27899e1e3e107f008d36edf82e70407  /usr/local/bin/grok" | sha256sum -c \
- && chmod 0755 /usr/local/bin/grok \
- && mkdir /etc/grok \
- && printf '%s\n' 'allowed_mcp_servers = []' '[managed_mcps]' 'enabled = false' 'gateway_tools_enabled = false' '[features]' 'telemetry = false' '[telemetry]' 'trace_upload = false' > /etc/grok/requirements.toml
-
-RUN curl -fsSLo /tmp/opencode.tar.gz https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-linux-x64-baseline.tar.gz \
- && echo "24b0d458d21ef548b2752166303defcf7f4945b049fb4876ab78dfaf86d81b27  /tmp/opencode.tar.gz" | sha256sum -c \
- && tar -xzf /tmp/opencode.tar.gz --no-same-owner -C /usr/local/bin opencode \
- && rm /tmp/opencode.tar.gz
 
 ARG QA_UID
 ARG QA_GID

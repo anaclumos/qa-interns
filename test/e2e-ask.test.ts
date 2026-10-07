@@ -28,7 +28,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       process.env.QA_INTERNS_SUBNET = subnet;
       try {
         await block(`10.214.${third}.0/25`);
-        const loginsFile = await logins("range", [{ id: "claude-1", provider: "claude", second: true }]);
+        const loginsFile = await logins("range", { second: true });
         const run = () => runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
         const runDir = await run();
         const state = await readState(runDir);
@@ -98,7 +98,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   );
 
   test(
-    "ask waits for a login that another process holds and runs once that process ends, and fails at once when no process holds a login",
+    "ask waits for a login that another process holds and runs once that process ends",
     async () => {
       const runId = newRunId();
       const options = await askOptions(runId, "score");
@@ -106,8 +106,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       await Bun.write(
         script,
         [
-          `import { loadLogins, Scheduler } from ${JSON.stringify(join(import.meta.dir, "..", "src", "logins.ts"))};`,
-          "const lease = await new Scheduler(await loadLogins(process.argv[2])).acquire(\"h1\");",
+          `import { loadLogin, Scheduler } from ${JSON.stringify(join(import.meta.dir, "..", "src", "logins.ts"))};`,
+          "const lease = new Scheduler(await loadLogin(process.argv[2])).acquire();",
           "console.log(lease === null ? \"none\" : \"held\");",
           "for await (const _ of Bun.stdin.stream()) {}",
           "",
@@ -131,12 +131,6 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         await holder.exited;
       }
       expect(await leftovers(runId)).toEqual([]);
-
-      const seatless = await askOptions(newRunId(), "score");
-      const file = join(root, `seatless-${runId}-logins.json`);
-      await Bun.write(file, JSON.stringify({ logins: [{ id: "claude-seatless", provider: "claude", seat: ["false"] }] }));
-      await expect(ask({ ...seatless, loginsFile: file })).rejects.toThrow("No login has spare capacity for score");
-      expect(await leftovers(seatless.runId)).toEqual([]);
     },
     timeout,
   );
