@@ -165,7 +165,7 @@ The confirming phase has a total budget, `--confirm-budget <n>` minutes of wall-
 
 - A group whose confirmation has not begun when the budget ends, including one that waits for a login or free memory, does not start. The report records it as not confirmed with `failed: the confirmation budget ended before its confirmation began`, and its confirming intern ends as `failed` with that detail. The run still ends as `done`.
 - A confirmation that is running when the budget ends stops testing at that time, instead of at its `--confirm-minutes`, and then takes its usual write-up turn. The intern's prompt names the minutes that remain, which is at most `--confirm-minutes`.
-- The run therefore ends at most about 5 minutes after the budget, which is the write-up turn of 4 minutes and the teardown of the environments that were running. Set the budget at least that much below the time that the caller leaves for the confirming phase. The time before the confirming phase, which is the build, the testing phase, and the judge, is outside the budget.
+- The budget does not interrupt the start of an environment. A confirmation whose environment is starting when the budget ends finishes that start, which the target's own start-up limits bound, then ends without testing. The run therefore ends after the budget by the start-up time of the confirmations that were starting, plus at most the write-up turn of 4 minutes and the teardown of the environments that were running. Set the budget below the time that the caller leaves for the confirming phase by that much. The time before the confirming phase, which is the build, the testing phase, and the judge, is outside the budget.
 
 ## Run directory and report
 
