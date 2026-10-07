@@ -53,7 +53,7 @@ export function keepSeedSecrets(seed: unknown, fields: string[]): string | null 
 function forms(): string[] {
   const escape = (text: string) => JSON.stringify(text).slice(1, -1);
   const formEncode = (text: string) => new URLSearchParams({ k: text }).toString().slice(2);
-  cached ??= [...new Set([...secrets].flatMap((value) => [value, escape(value), escape(escape(value)), stripControl(value), encodeURIComponent(value), formEncode(value)]))].sort((a, b) => b.length - a.length);
+  cached ??= [...new Set([...secrets].flatMap((value) => [value, escape(value), escape(escape(value)), stripControl(value), encodeURIComponent(value.toWellFormed()), formEncode(value)]))].sort((a, b) => b.length - a.length);
   return cached;
 }
 

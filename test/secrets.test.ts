@@ -92,6 +92,11 @@ describe("redact", () => {
     expect(redact("GET /login?password=p%40ss%20w%26rd%3D1%2B%252!")).toBe("GET /login?password=[redacted]");
   });
 
+  test("keep redacting every value after a seed value with a lone surrogate", () => {
+    keepSeedSecrets({ keys: ["abcdefgh\ud800", "sk_east_77aa91bc"] }, ["keys"]);
+    expect(redact("keys sk_east_77aa91bc and abcdefgh\ud800")).toBe("keys [redacted] and [redacted]");
+  });
+
   test("replace a longer value before a value it contains", () => {
     keepSeedSecrets({ keys: ["sk_west_4f9a", "sk_west_4f9a1c2e7b"] }, ["keys"]);
     expect(redact("keys sk_west_4f9a1c2e7b and sk_west_4f9a")).toBe("keys [redacted] and [redacted]");
