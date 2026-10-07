@@ -45,6 +45,7 @@ export type RunOptions = {
   interns: number;
   minutes: number;
   confirmMinutes: number;
+  focus?: number[];
   loginsFile: string;
   replay: Replay | null;
   onEnd?: string;
@@ -909,16 +910,16 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const phases = async () => {
     const source = join(runDir, "source");
     await exportTree(ref, source);
+    const target = await loadTarget(ref, source);
+    egress = target.settings.egress;
+    const cards = deck(target.settings.focus, opts.focus);
     ctx.runnerImage = await opts.runnerImage();
     for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
     browser = await browserVersion(ctx.runnerImage);
-    const target = await loadTarget(ref, source);
-    egress = target.settings.egress;
     const slots = await freeSlots();
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
     const width = Math.min(scheduler.capacity(), slots);
     state.options.concurrency = Math.min(opts.interns, width);
-    const cards = deck(target.settings.focus);
     state.interns = Array.from({ length: opts.interns }, (_, index) => {
       const charter = cards[index % cards.length];
       if (charter === undefined) throw new Error("The charter deck is empty");
