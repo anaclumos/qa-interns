@@ -886,7 +886,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     });
   });
 
-  test("bypass HSTS only for single-label hosts and treat every http origin as secure", async () => {
+  test("bypass HSTS only for single-label hosts, treat every http origin as secure, and start Chrome on about:blank", async () => {
     const runDir = await scratch();
     await writeChromePolicy(runDir, {
       app: "http://app:3000",
@@ -898,6 +898,8 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     expect(await Bun.file(join(runDir, "chrome-policy.json")).json()).toEqual({
       HSTSPolicyBypassList: ["app", "dev"],
       OverrideSecurityRestrictionsOnInsecureOrigin: ["http://app:3000", "http://dev:5173", "http://docs.shop.test"],
+      RestoreOnStartup: 4,
+      RestoreOnStartupURLs: ["about:blank"],
     });
   });
 
