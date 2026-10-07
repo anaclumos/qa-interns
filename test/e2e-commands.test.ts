@@ -148,7 +148,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         [
           process.execPath,
           "-e",
-          `const { runQa } = await import(${JSON.stringify(module)}); await runQa({ ...${JSON.stringify(options)}, runnerImage: async () => ${JSON.stringify(fakeImage)}, print: (line) => process.stdout.write(line + "\\n") });`,
+          `const { runQa } = await import(${JSON.stringify(module)}); await runQa({ ...${JSON.stringify(options)}, runnerImage: async () => ${JSON.stringify(fakeImage)}, admit: () => () => {}, print: (line) => process.stdout.write(line + "\\n") });`,
         ],
         { env: { ...process.env }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
       );
