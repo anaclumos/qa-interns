@@ -1,7 +1,7 @@
 FROM node:24-trixie-slim
 
-RUN { ls -ld /usr/share/doc /usr/share/doc/libcom-err2 /usr/share/doc/libss2 /usr/share/doc/logsave /usr/share/doc/libext2fs2t64 /usr/share/doc/e2fsprogs; ls -la /usr/share/doc/libcom-err2; ls /usr/share/doc | wc -l; cat /etc/dpkg/dpkg.cfg.d/*; dpkg -l | grep -E 'e2fs|com-err|libss|logsave'; mount | grep -E ' / '; true; } 2>&1 \
- && apt-get update \
+RUN --mount=type=tmpfs,target=/usr/share/doc \
+    apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
