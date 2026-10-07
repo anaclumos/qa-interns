@@ -1,23 +1,22 @@
 FROM node:24-trixie-slim
 
-RUN --mount=type=tmpfs,target=/usr/share/doc apt-get update && apt-get install -y --no-install-recommends strace && cd /tmp && apt-get download e2fsprogs && { strace -f -s 120 -e trace=rename,renameat,renameat2,mkdir,mkdirat,chown,fchownat,chmod,fchmodat,utimensat,openat -o /tmp/st.txt dpkg --unpack /tmp/e2fsprogs_*.deb; grep -n -B4 -A2 'cron.d' /tmp/st.txt | head -80; true; }
-
 RUN --mount=type=tmpfs,target=/usr/share/doc \
-    apt-get update \
- && apt-get install -y --no-install-recommends \
-      ca-certificates \
-      curl \
-      e2fsprogs \
-      ffmpeg \
-      procps \
-      ripgrep \
+    packages="ca-certificates curl e2fsprogs ffmpeg procps ripgrep \
       libxcb-shm0 libx11-xcb1 libx11-6 libxcb1 libxext6 libxrandr2 libxcomposite1 \
       libxcursor1 libxdamage1 libxfixes3 libxi6 libgtk-3-0t64 libpangocairo-1.0-0 \
       libpango-1.0-0 libatk1.0-0t64 libcairo-gobject2 libcairo2 libgdk-pixbuf-2.0-0 \
       libxrender1 libasound2t64 libfreetype6 libfontconfig1 libdbus-1-3 libnss3 \
       libnss3-tools libnspr4 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 \
       libatspi2.0-0t64 libcups2t64 libxshmfence1 libgbm1 \
-      fonts-noto-cjk fonts-noto-color-emoji fonts-freefont-ttf fonts-liberation \
+      fonts-noto-cjk fonts-noto-color-emoji fonts-freefont-ttf fonts-liberation" \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends --download-only $packages \
+ && for deb in /var/cache/apt/archives/*.deb; do \
+      dpkg-deb --fsys-tarfile "$deb" | tar -t | while read -r path; do \
+        case "$path" in */) mkdir -p "/$path";; esac; \
+      done; \
+    done \
+ && apt-get install -y --no-install-recommends $packages \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g --no-audit --no-fund \
