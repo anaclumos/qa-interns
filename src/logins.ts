@@ -353,7 +353,7 @@ export function admit(environmentMemory: number, pressureLimit = cpuPressureLimi
   const dir = locksDir();
   return exclusive(dir, () => {
     const { total, reserve } = hostMemory();
-    const memory = Math.min(environmentMemory, Math.floor(total / 2));
+    const memory = environmentMemory + reserve > total ? Math.floor(total / 2) : environmentMemory;
     if (cpuPressure() > pressureLimit) return null;
     let starting = 0;
     for (const name of readdirSync(dir).filter((entry) => entry.startsWith(startingPrefix))) {

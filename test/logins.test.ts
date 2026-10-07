@@ -940,7 +940,7 @@ describe("admit", () => {
     started?.();
   });
 
-  test("counts an environment that can use more than the host's memory as half of it, so two never start together and none throws", () => {
+  test("counts an environment that cannot fit the host's memory as half of it, so two never start together and none throws", () => {
     const size = hostMemory().total * 2;
     const first = admit(size, 100);
     const second = admit(size, 100);
