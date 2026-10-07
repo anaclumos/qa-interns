@@ -832,7 +832,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let browser: string | null = null;
   let releaseImages = async () => {};
 
+  let recorded: { error: string | null; teardowns: string[]; stopping: boolean } | undefined;
+
   const record = (error: string | null, teardowns: string[]) => {
+    recorded = { error, teardowns, stopping: ctx.stopping };
     const problems = [ctx.stopping ? "interrupted" : null, error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
@@ -1035,6 +1038,14 @@ export async function runQa(opts: RunOptions): Promise<string> {
     async () => {
       try {
         await finish(null);
+        if (recorded !== undefined && !recorded.stopping) {
+          record(recorded.error, recorded.teardowns);
+          try {
+            await write();
+          } finally {
+            await save();
+          }
+        }
       } finally {
         const hook = await ended("failed");
         if (hook !== null) process.stderr.write(`${hook}\n`);
