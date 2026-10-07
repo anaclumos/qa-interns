@@ -78,6 +78,9 @@ type Limit = <T>(task: (free: () => void) => Promise<T>) => Promise<T>;
 type Note = (text: string) => Promise<void>;
 type Work<T> = (session: Session, env: Environment, note: Note) => Promise<T>;
 type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "failed"; error: unknown };
+type Explored = { intern: InternState; environment: FindingEnvironment | null };
+type Collected = { findings: Finding[]; rejected: Rejected[]; failures: unknown[] };
+type Reproduced = { intern: InternState; group: Group; ran: boolean };
 
 class Unanswered extends Error {}
 
@@ -431,11 +434,26 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
   return outcome.value;
 }
 
-async function explore(ctx: Context, intern: InternState, target: Target, minutes: number, free: () => void): Promise<{ outcome: Outcome<void>; findings: Finding[]; rejected: Rejected[] }> {
-  let environment: FindingEnvironment | null = null;
+async function collect(ctx: Context, { intern, environment }: Explored): Promise<Collected> {
+  if (environment === null) return { findings: [], rejected: [], failures: [] };
+  try {
+    const { findings, rejected } = await readFindings(ctx.runDir, intern.id, environment);
+    return { findings, rejected, failures: [] };
+  } catch (reason) {
+    return { findings: [], rejected: [], failures: [reason] };
+  }
+}
+
+async function count(ctx: Context, { intern }: Explored, collected: Collected): Promise<Collected> {
+  await ctx.update(intern.id, { findings: collected.findings.length, rejected: collected.rejected.length });
+  return collected;
+}
+
+async function explore(ctx: Context, explored: Explored, target: Target, minutes: number, free: () => void): Promise<{ outcome: Outcome<void> } & Collected> {
+  const { intern } = explored;
   const outcome = await agentTask(ctx, intern.id, target, free, async (session, env, note) => {
     const found = { commit: target.commit, dirty: target.dirty, environment: env.project, model: session.model };
-    environment = found;
+    explored.environment = found;
     const start = Date.now();
     const deadline = start + minutes * minute;
     await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
@@ -450,23 +468,30 @@ async function explore(ctx: Context, intern: InternState, target: Target, minute
     });
     if (session.toolCalls() === 0) throw new Error(`made no tool call in its ${minutes} minutes`);
   });
-  const { findings, rejected } = environment === null ? { findings: [], rejected: [] } : await readFindings(ctx.runDir, intern.id, environment);
-  await ctx.update(intern.id, { findings: findings.length, rejected: rejected.length });
-  return { outcome, findings, rejected };
+  const collected = await collect(ctx, explored);
+  if (collected.failures.length > 0) throw collected.failures[0];
+  if (!ctx.stopping) await count(ctx, explored, collected);
+  return { outcome, ...collected };
 }
 
-async function reproduce(ctx: Context, intern: InternState, group: Group, target: Target, minutes: number, free: () => void): Promise<void> {
+async function check(ctx: Context, id: string): Promise<Answer> {
+  try {
+    return { result: await readConfirmation(ctx.runDir, id), error: null };
+  } catch (error) {
+    return { result: null, error: message(error) };
+  }
+}
+
+async function recover(ctx: Context, { intern, ran }: Reproduced, answer: Answer): Promise<NonNullable<Group["confirmation"]>> {
+  const saved = ran ? await check(ctx, intern.id) : null;
+  return { intern: intern.id, ...(saved !== null && (saved.result !== null || answer.error === null) ? saved : answer) };
+}
+
+async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, minutes: number, free: () => void): Promise<void> {
+  const { intern, group } = reproduced;
   const finding = lead(group);
-  const check = async (): Promise<Answer> => {
-    try {
-      return { result: await readConfirmation(ctx.runDir, intern.id), error: null };
-    } catch (error) {
-      return { result: null, error: message(error) };
-    }
-  };
-  let ran = false;
   const outcome = await agentTask(ctx, intern.id, target, free, async (session, env, note) => {
-    ran = true;
+    reproduced.ran = true;
     const out = outDir(intern.id);
     const file = join(ctx.runDir, out, "confirmation.json");
     const deadline = Date.now() + minutes * minute;
@@ -474,21 +499,20 @@ async function reproduce(ctx: Context, intern: InternState, group: Group, target
     let corrected = false;
     const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
-      answer = await check();
+      answer = await check(ctx, intern.id);
       if (answer.error === null || corrected) return null;
       corrected = true;
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
     if (end === "ended" && !(await Bun.file(file).exists())) await turnUntil(session, timeUpPrompt(), Date.now() + writeUpMs);
-    if (answer.result === null && (await Bun.file(file).exists())) answer = await check();
+    if (answer.result === null && (await Bun.file(file).exists())) answer = await check(ctx, intern.id);
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
   });
   const answer: Answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };
-  const saved = ran ? await check() : null;
-  const confirmation: NonNullable<Group["confirmation"]> = { intern: intern.id, ...(saved !== null && (saved.result !== null || answer.error === null) ? saved : answer) };
+  const confirmation = await recover(ctx, reproduced, answer);
   if (answer.error === null && confirmation.result === null) await ctx.update(intern.id, { detail: stripControl(`${intern.detail}; confirmation failed after teardown: ${confirmation.error}`) });
-  group.confirmation = confirmation;
+  if (!ctx.stopping) group.confirmation = confirmation;
 }
 
 function internState(id: string, role: InternState["role"], charter: string, group: string | null): InternState {
@@ -686,7 +710,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
         await phase("building");
-        const { images } = await buildImages(runId, target, source);
+        const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
         await phase("starting");
         slot = await freeSlot();
         const env = await startEnvironment({
@@ -741,6 +765,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await save();
   };
 
+  let explored: Explored[] = [];
+  let reproduced: Reproduced[] = [];
   let findings: Finding[] = [];
   let rejected: Rejected[] = [];
   let groups: Group[] | null = opts.replay?.groups ?? null;
@@ -757,16 +783,32 @@ export async function runQa(opts: RunOptions): Promise<string> {
         teardowns.push(message(reason));
       }
     }
-    const dirs = [join(runDir, "envs"), join(runDir, "interns")];
-    if (teardowns.length > 0) {
-      teardowns.unshift(...ctx.teardowns);
-      if (hasSecrets()) teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}`);
-    } else {
-      held.end();
-      try {
-        await redactFiles(dirs);
-      } catch (reason) {
-        teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}: ${message(reason)}`);
+    let failures: unknown[] = [];
+    try {
+      if (ctx.stopping) {
+        for (const intern of state.interns) {
+          if (intern.startedAt !== null && intern.endedAt === null) await ctx.update(intern.id, { status: "failed", detail: intern.detail === null ? "interrupted" : `${intern.detail}; interrupted`, endedAt: now() });
+        }
+        for (const entry of reproduced) entry.group.confirmation ??= await recover(ctx, entry, { result: null, error: "interrupted" });
+      }
+      if (groups === null) {
+        const results = await Promise.all(explored.map(async (entry) => count(ctx, entry, await collect(ctx, entry))));
+        findings = results.flatMap((result) => result.findings);
+        rejected = results.flatMap((result) => result.rejected);
+        failures = results.flatMap((result) => result.failures);
+      }
+    } finally {
+      const dirs = [join(runDir, "envs"), join(runDir, "interns")];
+      if (teardowns.length > 0) {
+        teardowns.unshift(...ctx.teardowns);
+        if (hasSecrets()) teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}`);
+      } else {
+        held.end();
+        try {
+          await redactFiles(dirs);
+        } catch (reason) {
+          teardowns.push(`secret values stay in the files under ${dirs.join(" and ")}: ${message(reason)}`);
+        }
       }
     }
     try {
@@ -775,7 +817,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
-    const problems = [error, ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+    const problems = [error, ...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`), ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
@@ -816,14 +858,16 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await save();
 
     await phase("building");
-    const built = await buildImages(runId, target, source);
+    const built = await buildImages(runId, target, source, join(runDir, "build.log"));
     releaseImages = built.release;
     ctx.images = built.images;
 
     if (groups === null) {
       await phase("testing");
       const testing = limit(state.options.concurrency);
-      const results = await settle(state.interns.map((intern) => testing((free) => explore(ctx, intern, target, opts.minutes, free))));
+      explored = state.interns.map((intern) => ({ intern, environment: null }));
+      const results = await settle(explored.map((entry) => testing((free) => explore(ctx, entry, target, opts.minutes, free))));
+      checkStopping(ctx);
       findings = results.flatMap((result) => result.findings);
       rejected = results.flatMap((result) => result.rejected);
       if (results.every((result) => result.outcome.status !== "done")) {
@@ -852,13 +896,13 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     state.options.confirmConcurrency = Math.min(groups.length, width);
     await phase("confirming");
-    const confirmations = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id) }));
-    state.interns.push(...confirmations.map((entry) => entry.intern));
+    reproduced = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id), ran: false }));
+    state.interns.push(...reproduced.map((entry) => entry.intern));
     await save();
     const confirming = limit(state.options.confirmConcurrency);
-    await settle(confirmations.map(({ group, intern }) => confirming((free) => reproduce(ctx, intern, group, target, opts.confirmMinutes, free))));
+    await settle(reproduced.map((entry) => confirming((free) => reproduce(ctx, entry, target, opts.confirmMinutes, free))));
     if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null)) {
-      throw new Error(`No confirming intern recorded a result: ${confirmations.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
+      throw new Error(`No confirming intern recorded a result: ${reproduced.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
     }
 
     await phase("reporting");
