@@ -800,6 +800,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let releaseImages = async () => {};
   let outcome: { error: string | null; failures: unknown[]; teardowns: string[] } | undefined;
 
+  let ticketsWritten = false;
   const publish = async () => {
     if (outcome === undefined) throw new Error("A run publishes its output after its teardown");
     const error = outcome.error ?? (ctx.stopping ? "interrupted" : null);
@@ -817,7 +818,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
         : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
     await Bun.write(join(runDir, "report.md"), report.markdown);
     await Bun.write(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
-    await writeTickets(runDir, report.tickets);
+    if (!ticketsWritten) await writeTickets(runDir, report.tickets);
+    ticketsWritten = true;
     await save();
   };
 
