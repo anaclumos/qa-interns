@@ -432,13 +432,16 @@ async function projectEnvViolations(root: string, files: string[]): Promise<stri
   return escapes(root, "Compose reads the project .env file", join(dirname(first), ".env"));
 }
 
-async function resourceViolations(project: ComposeProject, projectName: string, root: string): Promise<string[]> {
+export const outVolumeKey = "qa_out";
+
+async function resourceViolations(project: ComposeProject, projectName: string, root: string, outVolume: string | null): Promise<string[]> {
   const violations: string[] = [];
   for (const [kind, entries] of [
     ["volume", project.volumes ?? {}],
     ["network", project.networks ?? {}],
   ] as const) {
     for (const [key, entry] of Object.entries(entries)) {
+      if (kind === "volume" && key === outVolumeKey && entry.external === true && entry.name === outVolume) continue;
       if (entry.external === true) violations.push(`${kind} ${key} is external (${entry.name})`);
       else if (entry.name !== `${projectName}_${key}`) violations.push(`${kind} ${key} sets name ${entry.name}`);
     }
@@ -465,6 +468,7 @@ export async function devContainerViolations(
   service: string,
   workspace: string,
   env: Record<string, string | undefined>,
+  outVolume: string,
 ): Promise<string[]> {
   const before = renderSchema.parse(await render(projectName, baseFiles, env));
   const rendered = await render(projectName, files, env);
@@ -493,7 +497,7 @@ export async function devContainerViolations(
   for (const [name, entry] of Object.entries(project.services)) {
     if (!reservedServices.includes(name)) violations.push(...(await serviceViolations(name, entry, root)));
   }
-  return [...violations, ...(await resourceViolations(project, projectName, root))];
+  return [...violations, ...(await resourceViolations(project, projectName, root, outVolume))];
 }
 
 async function checkComposeReferences(root: string, composePaths: string[]): Promise<void> {
@@ -659,7 +663,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string, placeholders
   for (const host of parsed.data.customizations["qa-interns"].egress) {
     if (tags.has(host) || aliasOwners.has(host)) violations.push(`egress host ${host} is the name or a network alias of a service`);
   }
-  violations.push(...(await resourceViolations(project, checkProject, root)));
+  violations.push(...(await resourceViolations(project, checkProject, root, null)));
   if (violations.length > 0) {
     throw new Error(`The Compose files of ${file} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
   }

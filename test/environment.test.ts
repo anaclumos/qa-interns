@@ -1,6 +1,6 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { closeSync, existsSync, readFileSync, rmSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readdir, rm, symlink, utimes } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { z } from "zod";
@@ -1008,6 +1008,30 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
   );
 
   test(
+    "copy sparse files of the output disk with their holes, so the folder uses no more space than the disk",
+    async () => {
+      const root = await scratch();
+      const image = await ensureRunnerImage();
+      const out = join(root, "interns", "i1", "out");
+      await mkdir(out, { recursive: true });
+      try {
+        await createDisk(out, image, "qair-t-sparse");
+        await execOut(out, ["sh", "-c", "for n in 1 2 3 4 5 6 7 8; do truncate -s 1G /out/sparse$n; done; echo data > /out/data.txt"]);
+        await saveDisk(out);
+        for (const n of [1, 8]) {
+          const file = await stat(join(out, `sparse${n}`));
+          expect(file.size).toBe(1024 ** 3);
+          expect(file.blocks).toBeLessThan(1024);
+        }
+        expect(await Bun.file(join(out, "data.txt")).text()).toBe("data\n");
+      } finally {
+        await saveDisk(out);
+      }
+    },
+    20 * 60_000,
+  );
+
+  test(
     "give the output disk 1 GiB and 65536 inodes, and fail a write past either",
     async () => {
       const root = await scratch();
@@ -1019,7 +1043,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
         expect((await execOut(out, ["stat", "-f", "-c", "%b %S %c", "/out"])).trim()).toBe(`${1024 ** 3 / 4096} 4096 65536`);
         const full = await execOut(out, ["sh", "-c", "dd if=/dev/zero of=/out/big bs=1M count=1100 2>/dev/null; echo $?; rm /out/big"]);
         expect(Number(full.trim())).toBeGreaterThan(0);
-        const files = await execOut(out, ["sh", "-c", 'n=0; while : > "/out/f$n" 2>/dev/null; do n=$((n + 1)); done; echo $n']);
+        const files = await execOut(out, ["sh", "-c", 'n=0; while ( : > "/out/f$n" ) 2>/dev/null; do n=$((n + 1)); done; echo $n']);
         expect(Number(files.trim())).toBeGreaterThan(60000);
         expect(Number(files.trim())).toBeLessThan(65536);
       } finally {

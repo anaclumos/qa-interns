@@ -1,5 +1,5 @@
 import { closeSync, existsSync, fstatSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,7 @@ import { errorCode, message } from "./findings.ts";
 import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { writeAtomic } from "./state.ts";
-import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, runLocks, targetEnv, type Target } from "./target.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, runLocks, targetEnv, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type GeneratedFile, type Mount, type RelayRecord } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
@@ -226,7 +226,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     logging,
   ];
   const volumes = [
-    { type: "volume", source: "qa_out", target: "/qa/out" },
+    { type: "volume", source: outVolumeKey, target: "/qa/out" },
     bind(join(spec.runDir, "chrome-policy.json"), "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json", true),
     ...spec.runner.mounts.map((mount) => bind(mount.source, mount.target, mount.readOnly)),
     ...spec.runner.files.map((file) => bind(generatedPath(spec, file), file.target, false)),
@@ -285,7 +285,7 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
     ...(proxied ? [`  qa_agent: !override ${y(isolated(agent))}`] : []),
     ...(proxied || relayHosts.length > 0 ? [`  qa_egress: !override ${y({ ipam: { config: [{ subnet: egress }] } })}`] : []),
     "volumes:",
-    `  qa_out: !override ${y({ external: true, name: outVolume(projectName(spec.runId, spec.name), spec.runner.out) })}`,
+    `  ${outVolumeKey}: !override ${y({ external: true, name: outVolume(projectName(spec.runId, spec.name), spec.runner.out) })}`,
   );
   return `${lines.join("\n")}\n`;
 }
@@ -554,7 +554,7 @@ export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void
   }
   const devContainer = result.data.containerId;
   const configFiles = await execute(["docker", "inspect", "--format", '{{index .Config.Labels "com.docker.compose.project.config_files"}}', devContainer]);
-  const violations = await devContainerViolations(project, composeFiles(spec), configFiles.trim().split(","), target.service, workspace, upEnv);
+  const violations = await devContainerViolations(project, composeFiles(spec), configFiles.trim().split(","), target.service, workspace, upEnv, outVolume(project, spec.runner.out));
   if (violations.length > 0) {
     throw new Error(`The dev container that devcontainer up created for ${project} cannot run as isolated copies:\n${violations.map((line) => `- ${line}`).join("\n")}`);
   }
@@ -626,9 +626,16 @@ async function holders(dir: string): Promise<Holder[]> {
     .filter((holder) => holder.out === real || holder.out.startsWith(`${real}/`));
 }
 
+const archiveOut = '{ docker exec "$1" tar --sparse --ignore-failed-read --warning=no-file-changed -C /out -cf - . || [ $? -eq 1 ]; } | tar -xf - -C "$2"';
+
 async function copyOut({ name, out }: Holder): Promise<void> {
+  const next = `${out}.next`;
+  await rm(next, { recursive: true, force: true });
+  await mkdir(next);
+  await execute(["bash", "-o", "pipefail", "-c", archiveOut, "bash", name, next]);
   for (const entry of await readdir(out)) await rm(join(out, entry), { recursive: true, force: true });
-  await execute(["bash", "-o", "pipefail", "-c", 'docker cp "$1:/out/." - | tar -xf - -C "$2"', "bash", name, out]);
+  for (const entry of await readdir(next)) await rename(join(next, entry), join(out, entry));
+  await rm(next, { recursive: true, force: true });
 }
 
 async function saveHolder(holder: Holder): Promise<void> {
