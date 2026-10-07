@@ -10,6 +10,7 @@ import {
   freeSlots,
   holdRun,
   networkRange,
+  pullDisk,
   readRelayLogs,
   removeCopies,
   removeCopy,
@@ -317,7 +318,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     try {
       if (environment !== null) environment.containers = await containerStats(project);
     } finally {
-      await stopEnvironment(ctx.runDir, id, project, ctx.runnerImage, () => {
+      await stopEnvironment(ctx.runDir, id, project, () => {
         removed = true;
         handOff();
       });
@@ -431,12 +432,13 @@ function promptEnvironment(target: Target, env: Environment, minutes: number): P
 
 async function askWith<T>(ctx: Context, id: string, prompt: string, file: string, parse: (raw: string) => T): Promise<T> {
   let unanswered = false;
-  const outcome = await agentTask(ctx, id, null, () => {}, async (session, attempt) => {
+  const outcome = await agentTask(ctx, id, null, () => {}, async (session, attempt, env) => {
     const path = join(ctx.runDir, outDir(id, attempt), file);
     await rm(path, { force: true });
     let parsed = null as { value: T } | null;
     let corrected = false;
     await converse(session, prompt, Date.now() + askMinutes * minute, async () => {
+      await pullDisk(env.out);
       try {
         parsed = { value: parse(await readAgentFile(path)) };
         return null;
@@ -446,6 +448,7 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
         return correctionPrompt(`/qa/out/${file}`, message(error));
       }
     });
+    await pullDisk(env.out);
     if (parsed === null && (await Bun.file(path).exists())) {
       try {
         parsed = { value: parse(await readAgentFile(path)) };
@@ -497,6 +500,7 @@ async function explore(ctx: Context, explored: Explored, target: Target, minutes
         if (!quota) throw new NoQuota(`the quota command of login ${login.id} reported no quota`);
         return null;
       }
+      await pullDisk(env.out);
       const { rejected } = await readFindings(ctx.runDir, intern.id, attempt, environment);
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id, attempt));
     });
@@ -537,13 +541,18 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
     let answer: Answer = { result: null, error: "no confirmation.json written" };
     let corrected = false;
     const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutes), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
+      await pullDisk(env.out);
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
       answer = await check(ctx, intern.id, attempt);
       if (answer.error === null || corrected) return null;
       corrected = true;
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
-    if (end === "ended" && !(await Bun.file(file).exists())) await turnUntil(session, timeUpPrompt(), Date.now() + writeUpMs);
+    await pullDisk(env.out);
+    if (end === "ended" && !(await Bun.file(file).exists())) {
+      await turnUntil(session, timeUpPrompt(), Date.now() + writeUpMs);
+      await pullDisk(env.out);
+    }
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check(ctx, intern.id, attempt);
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
@@ -659,7 +668,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
     try {
       await stopProject(project, join(opts.runDir, "interns", opts.name));
       await removeCopy(opts.runDir, opts.runId, opts.name, opts.runnerImage);
-      await saveDisks(opts.runDir, opts.name, project, opts.runnerImage);
+      await saveDisks(opts.runDir, opts.name);
       held.end();
     } catch (reason) {
       teardowns.push(message(reason));

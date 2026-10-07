@@ -1,6 +1,6 @@
 import { afterAll, beforeAll } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, mkdir, readdir } from "node:fs/promises";
+import { cp, mkdir, readdir, realpath } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { basename, join } from "node:path";
 import { removeDir, writeChromePolicy } from "../src/environment.ts";
@@ -73,7 +73,7 @@ USER qa
     if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
     else process.env.XDG_STATE_HOME = previousStateHome;
     try {
-      await removeDir(root, fakeImage, `qair-f-e2e-${id}`);
+      await removeDir(root);
     } finally {
       if (built) await execute(["docker", "image", "rm", "-f", fakeImage]);
     }
@@ -150,9 +150,10 @@ export async function workspaces(runDir: string, state: RunState): Promise<strin
 }
 
 export async function disks(runDir: string, state: RunState): Promise<string[]> {
-  const images = await Promise.all(state.interns.map(async (intern) => (await readdir(join(runDir, "interns", intern.id))).filter((entry) => entry.endsWith(".img") || entry.endsWith(".img.new"))));
-  const mounts = readFileSync("/proc/self/mountinfo", "utf8").split("\n").filter((line) => line.includes(runDir));
-  return [...images.flat(), ...mounts];
+  const real = await realpath(runDir);
+  const holders = await execute(["docker", "ps", "-a", "--filter", "label=qa-interns.out", "--format", '{{.Label "qa-interns.out"}}']);
+  const volumes = await execute(["docker", "volume", "ls", "-q", "--filter", `name=qa-${state.runId}-`]);
+  return [...holders.split("\n").filter((out) => out.startsWith(`${real}/`)), ...volumes.split("\n").filter((name) => name !== "")];
 }
 
 export function intern(state: RunState, internId: string) {
