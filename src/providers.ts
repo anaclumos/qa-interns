@@ -47,6 +47,7 @@ enabled = false
 `;
 
 const opencodeHosts = { "opencode-go": ["opencode.ai"], openrouter: ["openrouter.ai"] };
+const opencodeProviders = { "opencode-go": {}, openrouter: { openrouter: { options: { extraBody: { provider: { zdr: true } } } } } };
 const apiKey = z.strictObject({ type: z.literal("api"), key: z.string().min(minLength) });
 const opencodeAuth = z.union([
   z.strictObject({ "opencode-go": apiKey }).transform((auth) => ({ provider: "opencode-go" as const, key: auth["opencode-go"].key })),
@@ -91,7 +92,7 @@ function opencodeAccess(store: string): Access {
   const file = path.join(storePath(store), "auth.json");
   const login = opencodeLogin(file);
   if (login === null) throw new Error(`${file} ${opencodeAuthRule}`);
-  const config = { enabled_providers: [login.provider], agent: { title: { disable: true } } };
+  const config = { enabled_providers: [login.provider], agent: { title: { disable: true } }, provider: opencodeProviders[login.provider] };
   return { env: { ...opencodeEnv, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) }, egress: opencodeHosts[login.provider], key: login.key };
 }
 
