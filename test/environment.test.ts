@@ -1,5 +1,5 @@
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readdir, stat, symlink, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -28,6 +28,7 @@ import {
   type EnvironmentSpec,
   type HeldSlot,
 } from "../src/environment.ts";
+import { flock } from "../src/logins.ts";
 import { ensureRunnerImage, runnerImage } from "../src/runner.ts";
 import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
@@ -147,6 +148,42 @@ describe("run locks", () => {
       holder.kill("SIGKILL");
       await holder.exited;
       rmSync(join(locks, runId), { force: true });
+    }
+  });
+
+  test("keep the lock of a killed run held until the commands that it started end", async () => {
+    const runId = `qair-t-cmd-${crypto.randomUUID().slice(0, 8)}`;
+    const entry = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs", runId);
+    const duration = `30.${crypto.getRandomValues(new Uint32Array(1))[0]}`;
+    const target = join(import.meta.dir, "..", "src", "target.ts");
+    const environment = join(import.meta.dir, "..", "src", "environment.ts");
+    const holder = Bun.spawn(
+      [
+        process.execPath,
+        "-e",
+        `const { holdRun } = await import(${JSON.stringify(environment)}); const { capture } = await import(${JSON.stringify(target)}); holdRun(${JSON.stringify(runId)}, "/runs/cmd"); capture(["sleep", ${JSON.stringify(duration)}]); console.log("held"); await Bun.sleep(600000);`,
+      ],
+      { env: { ...process.env }, stdout: "pipe" },
+    );
+    try {
+      await holder.stdout.getReader().read();
+      holder.kill("SIGKILL");
+      await holder.exited;
+      const free = flock(entry, "exclusive", "nonblock");
+      expect(free).toBeNull();
+      expect(Bun.spawnSync(["pkill", "-f", `sleep ${duration}`]).exitCode).toBe(0);
+      let released: number | null = null;
+      for (let attempt = 0; attempt < 50 && released === null; attempt++) {
+        released = flock(entry, "exclusive", "nonblock");
+        if (released === null) await Bun.sleep(100);
+      }
+      expect(released).not.toBeNull();
+      if (released !== null) closeSync(released);
+    } finally {
+      holder.kill("SIGKILL");
+      await holder.exited;
+      Bun.spawnSync(["pkill", "-f", `sleep ${duration}`]);
+      rmSync(entry, { force: true });
     }
   });
 });
@@ -886,7 +923,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     });
   });
 
-  test("bypass HSTS only for single-label hosts and treat every http origin as secure", async () => {
+  test("bypass HSTS only for single-label hosts, treat every http origin as secure, and start Chrome on about:blank", async () => {
     const runDir = await scratch();
     await writeChromePolicy(runDir, {
       app: "http://app:3000",
@@ -898,6 +935,8 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     expect(await Bun.file(join(runDir, "chrome-policy.json")).json()).toEqual({
       HSTSPolicyBypassList: ["app", "dev"],
       OverrideSecurityRestrictionsOnInsecureOrigin: ["http://app:3000", "http://dev:5173", "http://docs.shop.test"],
+      RestoreOnStartup: 4,
+      RestoreOnStartupURLs: ["about:blank"],
     });
   });
 
@@ -1527,6 +1566,57 @@ const close = (socket) => { socket.destroy(); return new Promise((resolve) => se
         [7, "rate.example.test", "connected", null],
         [8, "rate.example.test", "refused", "perMinute"],
       ]);
+    },
+    20 * 60_000,
+  );
+});
+
+describe.skipIf(!dockerAvailable)("agent-browser in the runner", () => {
+  test(
+    "start at most four sessions, however a command names its session and whatever option values precede its command, and pass commands on open sessions, session lists, versions, and closes at the limit",
+    async () => {
+      const image = await ensureRunnerImage();
+      const script = [
+        'step() { label=$1; shift; "$@" > /dev/null 2> /tmp/err; echo "$label $?"; }',
+        "step flag agent-browser --session s1 open about:blank",
+        "step env env AGENT_BROWSER_SESSION=s2 agent-browser open about:blank",
+        "step after agent-browser open about:blank --session s3",
+        "step default agent-browser open about:blank",
+        "step fifth agent-browser --session s5 open about:blank",
+        "cat /tmp/err",
+        "step value agent-browser --user-agent close --session s6 open about:blank",
+        "step open agent-browser --session s1 get url",
+        "step list env AGENT_BROWSER_SESSION=s5 agent-browser session list",
+        "step version agent-browser --session s5 --version",
+        "step close agent-browser --session s2 close",
+        "step reopen agent-browser --session s5 open about:blank",
+        "step close agent-browser --session s3 close",
+        'for name in p1 p2 p3; do (agent-browser --session "$name" open about:blank > /dev/null 2>&1; echo "parallel $?") & done',
+        "wait",
+        "agent-browser session list --json",
+      ].join("\n");
+      const { code, stdout } = await capture(["docker", "run", "--rm", "--init", "--network", "none", image, "sh", "-c", script], { timeout: 5 * 60_000 });
+      expect(code).toBe(0);
+      const lines = stdout.trim().split("\n");
+      expect(lines.slice(0, 13)).toEqual([
+        "flag 0",
+        "env 0",
+        "after 0",
+        "default 0",
+        "fifth 1",
+        "agent-browser runs at most 4 sessions at once in this environment, and 4 are open: default s1 s2 s3. Close a session you no longer need with `agent-browser --session <name> close`, then run this command again.",
+        "value 1",
+        "open 0",
+        "list 0",
+        "version 0",
+        "close 0",
+        "reopen 0",
+        "close 0",
+      ]);
+      expect(lines.slice(13, 16).sort()).toEqual(["parallel 0", "parallel 1", "parallel 1"]);
+      const { sessions } = z.object({ data: z.object({ sessions: z.array(z.string()) }) }).parse(JSON.parse(lines[16] ?? "")).data;
+      expect(sessions).toHaveLength(4);
+      expect(sessions.filter((name) => !name.startsWith("p")).sort()).toEqual(["default", "s1", "s5"]);
     },
     20 * 60_000,
   );

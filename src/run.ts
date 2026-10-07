@@ -45,6 +45,7 @@ export type RunOptions = {
   interns: number;
   minutes: number;
   confirmMinutes: number;
+  focus?: number[];
   loginsFile: string;
   replay: Replay | null;
   onEnd?: string;
@@ -99,10 +100,12 @@ type Context = {
   environments: EnvironmentStats[];
   waiting: Set<() => void>;
   stopping: boolean;
+  tearingDown: boolean;
   update(id: string, patch: Partial<InternState>): Promise<void>;
 };
 
 const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+let guarded = 0;
 const minute = 60_000;
 const askMinutes = 10;
 const settleMs = 60_000;
@@ -177,6 +180,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     environments: [],
     waiting: new Set(),
     stopping: false,
+    tearingDown: false,
     update,
   };
 }
@@ -580,10 +584,21 @@ function once<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args:
   return (...args) => (result ??= fn(...args));
 }
 
+function finisher<A extends unknown[], R>(ctx: Context, fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return once(async (...args) => {
+    ctx.tearingDown = true;
+    try {
+      return await fn(...args);
+    } finally {
+      ctx.tearingDown = false;
+    }
+  });
+}
+
 async function stop(ctx: Context, running: Promise<unknown> | undefined): Promise<void> {
   ctx.stopping = true;
   for (const wake of ctx.waiting) wake();
-  killCommands();
+  if (!ctx.tearingDown) killCommands();
   const closed = await Promise.allSettled(
     [...ctx.sessions].map(async (session) => {
       try {
@@ -615,6 +630,7 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
       );
   };
   for (const signal of signals) process.on(signal, handler);
+  guarded += 1;
   try {
     running = body();
     const [result] = await Promise.allSettled([running]);
@@ -623,7 +639,8 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
     return result.value;
   } finally {
     for (const signal of signals) process.off(signal, handler);
-    forgetSecrets();
+    guarded -= 1;
+    if (guarded === 0) forgetSecrets();
   }
 }
 
@@ -632,7 +649,7 @@ export async function ask(opts: AskOptions): Promise<unknown> {
   const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, opts.admit, async () => {});
   const project = `qa-${opts.runId}-${opts.name}`;
   const held = holdRun(opts.runId, opts.runDir);
-  const finish = once(async (): Promise<string | null> => {
+  const finish = finisher(ctx, async (): Promise<string | null> => {
     const teardowns = [...ctx.teardowns];
     try {
       await stopProject(project, join(opts.runDir, "interns", opts.name));
@@ -710,8 +727,8 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
     opts.print(`phase ${next}`);
     await save();
   };
-  const finish = once(async (error: string): Promise<void> => {
-    const problems = [error];
+  const finish = finisher(ctx, async (error: string | null): Promise<void> => {
+    const problems: string[] = [];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
         await step();
@@ -719,7 +736,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         problems.push(`teardown failed: ${message(reason)}`);
       }
     }
-    if (problems.length > 1) {
+    if (problems.length > 0) {
       if (hasSecrets()) problems.push(`secret values stay in the files under ${dirs.join(" and ")}`);
     } else {
       held.end();
@@ -730,7 +747,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
       }
     }
     state.phase = "failed";
-    state.error = stripControl(problems.join("; "));
+    state.error = stripControl([ctx.stopping ? "interrupted" : null, error, ...problems].filter((entry) => entry !== null).join("; "));
     state.endedAt = now();
     await save();
   });
@@ -776,7 +793,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
       }
       return runDir;
     },
-    () => finish("interrupted"),
+    () => finish(null),
   );
 }
 
@@ -810,7 +827,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let browser: string | null = null;
   let releaseImages = async () => {};
 
-  const finish = once(async (error: string | null): Promise<string | null> => {
+  const finish = finisher(ctx, async (error: string | null): Promise<string | null> => {
     const teardowns: string[] = [];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
@@ -847,13 +864,14 @@ export async function runQa(opts: RunOptions): Promise<string> {
         }
       }
     }
+    ctx.tearingDown = false;
     try {
       await releaseImages();
-      await sweepImages();
+      if (!ctx.stopping) await sweepImages();
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
-    const problems = [error, ...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`), ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
+    const problems = [ctx.stopping ? "interrupted" : null, error, ...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`), ...teardowns.map((teardown) => `teardown failed: ${teardown}`)].filter((entry) => entry !== null);
     state.phase = problems.length === 0 ? "done" : "failed";
     state.error = problems.length === 0 ? null : stripControl(problems.join("; "));
     state.endedAt = now();
@@ -875,16 +893,16 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const phases = async () => {
     const source = join(runDir, "source");
     await exportTree(ref, source);
+    const target = await loadTarget(ref, source);
+    egress = target.settings.egress;
+    const cards = deck(target.settings.focus, opts.focus);
     ctx.runnerImage = await opts.runnerImage();
     for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
     browser = await browserVersion(ctx.runnerImage);
-    const target = await loadTarget(ref, source);
-    egress = target.settings.egress;
     const slots = await freeSlots();
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
     const width = Math.min(scheduler.capacity(), slots);
     state.options.concurrency = Math.min(opts.interns, width);
-    const cards = deck(target.settings.focus);
     state.interns = Array.from({ length: opts.interns }, (_, index) => {
       const charter = cards[index % cards.length];
       if (charter === undefined) throw new Error("The charter deck is empty");
@@ -975,7 +993,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     },
     async () => {
       try {
-        await finish("interrupted");
+        await finish(null);
       } finally {
         const hook = await ended("failed");
         if (hook !== null) process.stderr.write(`${hook}\n`);

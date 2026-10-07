@@ -47,10 +47,10 @@ function held(): boolean {
 }
 
 async function take(): Promise<number> {
-  let fd = flock(file, "--exclusive", "--nonblock");
+  let fd = flock(file, "exclusive", "nonblock");
   if (fd === null) {
     console.error(`Waiting for the test suite that holds ${file} to end`);
-    fd = flock(file, "--exclusive");
+    fd = flock(file, "exclusive", "block");
     if (fd === null) throw new Error(`flock on ${file} reported the lock as held after it waited for it`);
   }
   if (Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0) {

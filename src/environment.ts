@@ -7,7 +7,7 @@ import { z } from "zod";
 import { errorCode, message } from "./findings.ts";
 import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
-import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, runLocks, targetEnv, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type GeneratedFile, type Mount, type RelayRecord } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
@@ -151,7 +151,7 @@ export type HeldSlot = { slot: number; release: () => void };
 export async function freeSlot(): Promise<HeldSlot> {
   const dir = runtimeDir("slots", "the locks of its network slots");
   for (const slot of openSlots(await usedBlocks())) {
-    const fd = flock(join(dir, `${slotAddress(slot, 0)}.lock`), "--exclusive", "--nonblock");
+    const fd = flock(join(dir, `${slotAddress(slot, 0)}.lock`), "exclusive", "nonblock");
     if (fd === null) continue;
     let free = false;
     try {
@@ -299,7 +299,12 @@ export async function writeChromePolicy(runDir: string, urls: Record<string, str
   const hosts = urlHosts(urls).filter((host) => !host.includes("."));
   const parsed = Object.values(urls).map((url) => new URL(url));
   const insecure = [...new Set(parsed.filter((url) => url.protocol === "http:").map((url) => url.origin))];
-  const policy = { HSTSPolicyBypassList: hosts, OverrideSecurityRestrictionsOnInsecureOrigin: insecure };
+  const policy = {
+    HSTSPolicyBypassList: hosts,
+    OverrideSecurityRestrictionsOnInsecureOrigin: insecure,
+    RestoreOnStartup: 4,
+    RestoreOnStartupURLs: ["about:blank"],
+  };
   await Bun.write(join(runDir, "chrome-policy.json"), `${JSON.stringify(policy, null, 2)}\n`);
 }
 
@@ -824,7 +829,7 @@ export function holdRun(runId: string, runDir: string): HeldRun {
   const dir = runtimeDir("runs", "the locks of its runs");
   const entry = join(dir, runId);
   const pending = join(dir, `.${runId}.${process.pid}`);
-  const fresh = flock(pending, "--exclusive", "--nonblock");
+  const fresh = flock(pending, "exclusive", "nonblock");
   if (fresh === null) throw new Error(`Another process holds ${pending}`);
   let fd = fresh;
   let created = true;
@@ -834,7 +839,7 @@ export function holdRun(runId: string, runDir: string): HeldRun {
   } catch (error) {
     closeSync(fresh);
     if (errorCode(error) !== "EEXIST") throw error;
-    const existing = flock(entry, "--exclusive", "--nonblock");
+    const existing = flock(entry, "exclusive", "nonblock");
     if (existing === null) throw new Error(`Another process holds run ${runId}`);
     if (!locksEntry(existing, entry)) {
       closeSync(existing);
@@ -847,10 +852,12 @@ export function holdRun(runId: string, runDir: string): HeldRun {
     rmSync(pending, { force: true });
   }
   let held = true;
+  runLocks.add(fd);
   return {
     end: () => {
       if (!held) return;
       held = false;
+      runLocks.delete(fd);
       if (created) rmSync(entry, { force: true });
       closeSync(fd);
     },
@@ -863,7 +870,7 @@ export async function sweepRuns(image: string): Promise<string[]> {
   const errors = await Promise.all(
     runIds.map(async (runId) => {
       const entry = join(dir, runId);
-      const fd = flock(entry, "--exclusive", "--nonblock");
+      const fd = flock(entry, "exclusive", "nonblock");
       if (fd === null) return [];
       try {
         if (!locksEntry(fd, entry)) return [];
