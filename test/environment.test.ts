@@ -995,6 +995,9 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
         await pullDisk(out);
         expect(existsSync(join(out, "old.txt"))).toBe(false);
         expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
+        await execOut(out, ["sh", "-c", "chmod 000 /out/findings && chmod 000 /out"]);
+        await pullDisk(out);
+        expect(await Bun.file(join(out, "findings", "a.json")).text()).toBe("{}\n");
       } finally {
         await saveDisk(out);
       }
@@ -1013,7 +1016,8 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
         await createDisk(out, image, "qair-t-sparse");
         await execOut(out, ["sh", "-c", "for n in 1 2 3 4 5 6 7 8; do truncate -s 1G /out/sparse$n; done; echo data > /out/data.txt; echo secret > /out/locked.txt; chmod 000 /out/locked.txt"]);
         await saveDisk(out);
-        expect((await stat(join(out, "locked.txt"))).mode & 0o777).toBe(0);
+        expect((await stat(join(out, "locked.txt"))).mode & 0o700).toBe(0o600);
+        expect(await Bun.file(join(out, "locked.txt")).text()).toBe("secret\n");
         for (const n of [1, 8]) {
           const file = await stat(join(out, `sparse${n}`));
           expect(file.size).toBe(1024 ** 3);

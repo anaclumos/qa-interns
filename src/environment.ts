@@ -622,7 +622,7 @@ async function holders(dir: string): Promise<Holder[]> {
     .filter((holder) => holder.out === real || holder.out.startsWith(`${real}/`));
 }
 
-const archiveOut = '{ docker exec "$1" tar --sparse --warning=no-file-changed -C /out -cf - . || [ $? -eq 1 ]; } | tar -xf - -C "$2"';
+const archiveOut = '{ docker exec "$1" tar --sparse --warning=no-file-changed -C /out -cf - . || [ $? -eq 1 ]; } | tar -xf - -C "$2"; code=$?; chmod -R u+rwX "$2"; exit $code';
 
 async function copyOut({ name, out }: Holder): Promise<void> {
   const next = `${out}.next`;
