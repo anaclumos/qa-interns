@@ -145,6 +145,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           runnerImage = true;
           return fakeImage;
         },
+        admit: () => () => {},
         print: (line) => lines.push(line),
       });
 
