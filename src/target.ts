@@ -37,6 +37,7 @@ type CommandOptions = { env?: Record<string, string | undefined>; log?: string; 
 
 const running = new Set<Subprocess>();
 const groups = new Set<Subprocess>();
+export const runLocks = new Set<number>();
 
 export function killCommands(): void {
   for (const proc of running) proc.kill();
@@ -58,7 +59,7 @@ export function trackGroup<T extends Subprocess>(proc: T): T {
 export async function capture(cmd: string[], options: CommandOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   const argv = options.timeout === undefined ? cmd : ["timeout", "--kill-after=10s", `${options.timeout / 1000}s`, ...cmd];
   const started = performance.now();
-  const proc = track(Bun.spawn(argv, { env: options.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" }));
+  const proc = track(Bun.spawn(argv, { env: options.env, stdio: ["ignore", "pipe", "pipe", ...runLocks] }));
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (options.log !== undefined) await appendFile(options.log, stderr);
   if (options.timeout !== undefined && (code === 124 || code === 137) && performance.now() - started >= options.timeout) {

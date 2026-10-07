@@ -7,7 +7,7 @@ import { z } from "zod";
 import { errorCode, message } from "./findings.ts";
 import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
-import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, targetEnv, type Target } from "./target.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, runLocks, targetEnv, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type GeneratedFile, type Mount, type RelayRecord } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; files: GeneratedFile[]; tmpfs: string[] };
@@ -847,10 +847,12 @@ export function holdRun(runId: string, runDir: string): HeldRun {
     rmSync(pending, { force: true });
   }
   let held = true;
+  runLocks.add(fd);
   return {
     end: () => {
       if (!held) return;
       held = false;
+      runLocks.delete(fd);
       if (created) rmSync(entry, { force: true });
       closeSync(fd);
     },
