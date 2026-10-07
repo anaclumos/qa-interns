@@ -56,9 +56,11 @@ RUN userdel node \
  && mkdir -p /qa/out \
  && chown qa:qa /qa/out
 
-COPY proxy.mjs relay.mjs /opt/qa-interns/
+COPY proxy.mjs relay.mjs agent-browser /opt/qa-interns/
+RUN ln -sf /opt/qa-interns/agent-browser /usr/local/bin/agent-browser
 
-ENV AGENT_BROWSER_DOWNLOAD_PATH=/qa/out/downloads \
+ENV AGENT_BROWSER_ARGS=--disable-component-extensions-with-background-pages \
+    AGENT_BROWSER_DOWNLOAD_PATH=/qa/out/downloads \
     AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/chrome \
     AGENT_BROWSER_NO_AUTO_DIALOG=1 \
     AGENT_BROWSER_PROXY=direct:// \

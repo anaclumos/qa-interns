@@ -5,9 +5,10 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 ## Layout
 
 - `src/`: the orchestrator CLI (`src/cli.ts`), Bun and TypeScript.
-- `runner/`: the runner image, the runner's egress proxy, and the target's relay. The image tag is derived from these files and the host uid and gid, so any edit rebuilds it on the next run.
+- `runner/`: the runner image, the runner's egress proxy, the target's relay, and the `agent-browser` wrapper that limits the runner to four browser sessions. The image tag is derived from these files and the host uid and gid, so any edit rebuilds it on the next run.
 - `skills/qa-interns/` and `.claude-plugin/`: the Claude Code plugin. It has one skill and no hooks.
 - `eval/ledger/`: the evaluation target. `eval/defects.json` is the only place its planted defects are described; the application code carries no hint of them.
+- A Ledger defect that `eval/defects.json` does not list is fixed in `eval/ledger/src` and never added to `eval/defects.json`. A Ledger change keeps every planted defect reproducible through its `trigger`, and updates the trigger text in the same change when it changes what the trigger shows.
 - `test/`: `bun run test`. Tests that need Docker skip when `docker info` fails. The end-to-end tests are split across `test/e2e-*.test.ts` files that share the fixture in `test/e2e.ts`, so `bun test --parallel` runs them in separate worker processes; a file holds no state that another file reads. `test/subnet.ts` locks each `/22` block it hands out for the life of the process, so files that run at once never share a block.
 
 ## Gates
@@ -15,6 +16,12 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 - The `ci.yml` `test` job passes on a change's head commit before the change merges. It runs `docker info`, `bun run typecheck`, `claude plugin validate .` and `claude plugin validate skills`, and `bun run test`. A session pushes the branch and reads that job's result instead of running these commands on the development host.
 - One exclusive `flock` on `$XDG_RUNTIME_DIR/qa-interns/suite.lock` covers each suite, so the suites of one user on one host run one at a time. `bun run test` runs `test/suite-lock.ts` as a script, which takes the lock and then starts `bun test --parallel=2`. `bunfig.toml` preloads the same file into every `bun test` process: a serial `bun test` takes the lock itself, and a `--parallel` worker fails unless it or a process above it holds the lock, because the workers of one suite are separate processes and a lock that one worker takes blocks the others. A process under a lock holder takes no second lock.
 - Each network that a test creates itself, and each container that a test starts on one, carries the `suiteLabel` that `test/suite-lock.ts` exports. The process that takes the suite lock removes every container and network with that label, which earlier suites left, before it runs a test.
+
+## Host
+
+- `~/Developer/qa-interns` is the host's machine checkout of this repository. Every `qa-interns` command on the host runs its working tree, and `qa-interns` on `PATH` is a link to its `src/cli.ts`.
+- No session edits a tracked file in `~/Developer/qa-interns`.
+- After a merge, the shipping session runs `git -C ~/Developer/qa-interns pull --ff-only` and `bun install --frozen-lockfile` in that checkout, and confirms with `git merge-base --is-ancestor <merge commit> HEAD` there that the merge reached it.
 
 ## Invariants
 
@@ -27,5 +34,5 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 - Usage-limit detection is structural: JSON-RPC `code` and `data` fields, or the exit code of a login's `quota` command, never message text.
 - Several interns can share one Codex `auth.json`, and README Known limits records the refresh-token race that this sharing accepts.
 - Docker objects of a run are named `qa-<runId>-*` and prebuilt images `qa-<runId>-<service in lowercase>:latest`. A prebuilt image also carries the shared name `qa-build-<key>-<service in lowercase>:latest`, where the key hashes the build code in `src/environment.ts` and `src/target.ts`, the rendered build settings, the values of the `hostEnv` variables that `secrets.hostEnv` does not name, and the exported tree. A run whose shared names all exist tags them with its own names instead of building. The end of a run and `down` remove a shared name when no `qa-` name of a run points to its image and the last use recorded in `$XDG_RUNTIME_DIR/qa-interns/images/<key>` is 30 minutes old. Manual and test work uses other prefixes and removes what it creates, except a shared name that another test process can build from the same files, which it leaves to that removal.
-- Adapter and browser versions are pinned in `runner/Dockerfile`. A version bump re-verifies the adapter's usage-limit error shape and MCP sources from its source before it lands. An agent-browser bump re-measures the browser's default viewport, which `src/prompt.ts` states, inside the runner.
+- Adapter and browser versions are pinned in `runner/Dockerfile`. A version bump re-verifies the adapter's usage-limit error shape and MCP sources from its source before it lands. An agent-browser bump re-measures the browser's default viewport, which `src/prompt.ts` states, inside the runner, and re-verifies that the flags `runner/agent-browser` skips the value of match `GLOBAL_FLAGS_WITH_VALUE` in the CLI's `clean_args`.
 - `runner/Dockerfile` builds on a rootless Docker daemon, whose overlay mounts use `userxattr`: the kernel answers a rename of a directory that `dpkg` creates under a base-layer directory with `EXDEV` (`Invalid cross-device link`), and answers the delete of a base-layer entry with `EIO` (`Input/output error`). So the package `RUN` downloads the packages, creates every directory their archives list with `mkdir -p`, and then installs them, so `dpkg` renames no directory; it mounts a tmpfs over `/usr/share/doc`, so the image keeps no installed package's documentation; and the image deletes the `node` user with `userdel` without `--remove`, which leaves its base-layer home. A `dpkg` `path-exclude` for `/usr/share/doc/*` and a copy of `/usr/share/doc` that deletes the original do not avoid the `EXDEV`.
