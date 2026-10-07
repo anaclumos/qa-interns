@@ -181,3 +181,32 @@ describe.skipIf(!dockerAvailable)("prune", () => {
     );
   });
 });
+
+describe("prune without Docker", () => {
+  test("--no-docker deletes a shipped run on a host whose docker command fails, and a plain prune fails there", async () => {
+    const stateHome = await mkdtemp(join(tmpdir(), "qa-interns-prune-nodocker-"));
+    const bin = join(home, "bin-without-docker");
+    await mkdir(bin);
+    await Bun.write(join(bin, "docker"), "#!/bin/sh\necho docker is not installed >&2\nexit 1\n");
+    await chmod(join(bin, "docker"), 0o755);
+    const merged = sha();
+    await Bun.write(join(home, "pulls.json"), JSON.stringify({ [merged]: pulls("MERGED") }));
+    process.env.XDG_STATE_HOME = stateHome;
+    try {
+      const dir = await saveRun("b0000001", { repo: join(home, "removed-worktree"), commit: merged });
+      const env = { ...process.env, PATH: `${bin}:${join(home, "bin")}:${process.env.PATH}`, FAKE_GH_PULLS: join(home, "pulls.json") };
+      const plain = await capture(["bun", cliScript, "prune"], { env });
+      expect(plain.code).not.toBe(0);
+      expect(plain.stderr).toContain("docker is not installed");
+      expect(await readdir(join(stateHome, "qa-interns", "runs"))).toEqual(["b0000001"]);
+      const pruned = await capture(["bun", cliScript, "prune", "--no-docker"], { env });
+      expect(pruned.stderr).toBe("");
+      expect(pruned.code).toBe(0);
+      expect(pruned.stdout.trimEnd().split("\n")[0]).toBe(`Removed run ${dir.slice(-8)}.`);
+      expect(await readdir(join(stateHome, "qa-interns", "runs"))).toEqual([]);
+    } finally {
+      process.env.XDG_STATE_HOME = join(home, "state");
+      await rm(stateHome, { recursive: true });
+    }
+  });
+});
