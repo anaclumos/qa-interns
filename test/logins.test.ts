@@ -940,7 +940,12 @@ describe("admit", () => {
     started?.();
   });
 
-  test("throws when one environment and the reserve need more than the host's memory", () => {
-    expect(() => admit(hostMemory().total, 100)).toThrow("more than the");
+  test("counts an environment that cannot fit the host's memory as half of it, so two never start together and none throws", () => {
+    const size = hostMemory().total * 2;
+    const first = admit(size, 100);
+    const second = admit(size, 100);
+    second?.();
+    first?.();
+    expect(first !== null && second !== null).toBe(false);
   });
 });
