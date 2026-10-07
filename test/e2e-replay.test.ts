@@ -1,15 +1,17 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { join } from "node:path";
+import { existsSync, rmSync } from "node:fs";
+import { basename, join } from "node:path";
+import { stopRun } from "../src/environment.ts";
 import { timeUpPrompt } from "../src/prompt.ts";
 import { readReplay } from "../src/report.ts";
 import { runQa } from "../src/run.ts";
 import { readState } from "../src/state.ts";
 import { execute } from "../src/target.ts";
 import type { EnvironmentStats, RunState } from "../src/types.ts";
-import { disks, dockerAvailable, endToEnd, intern, leftovers, timeout, title, workspaces } from "./e2e.ts";
+import { disks, dockerAvailable, endToEnd, intern, leftovers, runLocks, timeout, title, workspaces } from "./e2e.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
-  const { root, target, fakeImage, logins } = endToEnd();
+  const { root, target, fakeImage, logins, blockTeardown } = endToEnd();
   let loginsFile = "";
   let sourceDir = "";
   let source: RunState;
@@ -217,6 +219,50 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(await Bun.file(join(swappedDir, "report.md")).text()).not.toContain("interns/c1/out/evidence/reproduction.txt");
 
       await clean(swappedDir, swapped);
+    },
+    timeout,
+  );
+
+  test(
+    "a replay does not read a confirmation from an environment that its teardown did not remove",
+    async () => {
+      const replay = await readReplay(sourceDir, []);
+      const lines: string[] = [];
+      let release = async () => {};
+      const unremoved = "its environment was not removed, so its runner may still write to /qa/out and its output was not read";
+      const run = runQa({
+        dir: join(replay.target.repo, replay.target.path),
+        rev: next,
+        dirty: false,
+        interns: 0,
+        minutes: 0,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("replay-unremoved", [{ id: "claude-unremoved", provider: "claude" }]),
+        replay,
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
+        print: (line) => {
+          lines.push(line);
+          const [dir] = lines;
+          if (dir !== undefined && line === "c1 starting on claude-unremoved (claude)") release = blockTeardown(dir, "c1");
+        },
+      });
+
+      try {
+        await expect(run).rejects.toThrow("No confirming intern recorded a result: c1 failed: reproduced; teardown failed: docker compose down left objects of");
+      } finally {
+        await release();
+        const [dir] = lines;
+        if (dir !== undefined) await stopRun(dir, basename(dir));
+      }
+      const runDir = lines[0] ?? "";
+      const state = await readState(runDir);
+      expect(intern(state, "c1").detail).toEndWith(`; ${unremoved}`);
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.groups[0]).toMatchObject({ id: "g1", reproduced: null, confirmation: { intern: "c1", result: null, error: unremoved } });
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(existsSync(join(runLocks, state.runId))).toBe(true);
+      rmSync(join(runLocks, state.runId));
     },
     timeout,
   );

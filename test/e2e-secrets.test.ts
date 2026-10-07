@@ -4,12 +4,12 @@ import { cp, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { ask, runQa } from "../src/run.ts";
 import { redact } from "../src/secrets.ts";
-import { readState } from "../src/state.ts";
+import { newRunId, readState } from "../src/state.ts";
 import { capture, execute } from "../src/target.ts";
 import { disks, dockerAvailable, endToEnd, leftovers, timeout, workspaces } from "./e2e.ts";
 
 describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
-  const { root, target, fakeImage, logins } = endToEnd();
+  const { root, target, fakeImage, logins, askOptions } = endToEnd();
 
   test(
     "a run replaces every value that secrets names with [redacted] in the files it leaves and the lines it prints",
@@ -111,6 +111,47 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
       expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an ask that ends while another ask runs leaves the login key of the other ask in the secret set until that ask ends",
+    async () => {
+      const fake = { printKey: true as const, nonce: crypto.randomUUID() };
+      const key = `fake-agent:${JSON.stringify(fake)}`;
+      const loginsFile = await logins("overlap-key", fake);
+      const keyed = {
+        ...(await askOptions(newRunId(), "keyed")),
+        loginsFile,
+        prompt: "Write /qa/out/evidence/auth.json.",
+        file: "evidence/auth.json",
+        parse: (raw: string): unknown => {
+          throw new Error(`unreadable ${raw}`);
+        },
+      };
+      const refused = {
+        ...(await askOptions(newRunId(), "refused")),
+        admit: (): never => {
+          throw new Error("refused before the environment starts");
+        },
+      };
+      const running = ask(keyed);
+      let ended = false;
+      const outcome = Promise.allSettled([running]).finally(() => {
+        ended = true;
+      });
+      while (redact(key) === key && !ended) await Bun.sleep(20);
+      expect(ended).toBe(false);
+      await expect(ask(refused)).rejects.toThrow("refused before the environment starts");
+      expect(redact(key)).toBe("[redacted]");
+      const [result] = await outcome;
+      expect(result.status).toBe("rejected");
+      expect(String((result as PromiseRejectedResult).reason)).toContain('"key":"[redacted]"');
+      expect(readFileSync(join(keyed.runDir, "interns", "keyed", "transcript.jsonl"), "utf8")).not.toContain(key);
+      expect(redact(key)).toBe(key);
+      expect(await leftovers(keyed.runId)).toEqual([]);
+      expect(await leftovers(refused.runId)).toEqual([]);
     },
     timeout,
   );

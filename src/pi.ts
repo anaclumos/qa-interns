@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { minLength } from "./secrets.ts";
 import type { Mount } from "./types.ts";
@@ -6,6 +7,8 @@ import type { Mount } from "./types.ts";
 const agentDir = "/home/qa/.pi";
 
 export const credentialName = "auth.json";
+
+const models = join(import.meta.dir, "..", "runner", "pi-models.json");
 
 export const credentialRule = `must hold one OpenRouter API key of at least ${minLength} characters and nothing else`;
 
@@ -35,5 +38,8 @@ export const pi = {
   env: { PI_CODING_AGENT_DIR: agentDir },
   egress: ["openrouter.ai"],
   tmpfs: [agentDir],
-  mounts: (credential: string): Mount[] => [{ source: credential, target: `${agentDir}/${credentialName}`, readOnly: true }],
+  mounts: (credential: string): Mount[] => [
+    { source: credential, target: `${agentDir}/${credentialName}`, readOnly: true },
+    { source: models, target: `${agentDir}/models.json`, readOnly: true },
+  ],
 };

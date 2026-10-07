@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { closeSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,11 +8,12 @@ import { z } from "zod";
 import { doctor } from "./doctor.ts";
 import { imageBuilders, removeCopies, stopRun, sweepImages } from "./environment.ts";
 import { errorCode, message, stripControl } from "./findings.ts";
-import { admit, defaultLoginsPath } from "./logins.ts";
-import { readReplay } from "./report.ts";
+import { admit, defaultLoginsPath, flock } from "./logins.ts";
+import { prune } from "./prune.ts";
+import { readReplay, replayLock } from "./report.ts";
 import { runQa, startCopy } from "./run.ts";
 import { ensureRunnerImage, runnerImage } from "./runner.ts";
-import { formatStatus, processStart, readState, resolveRunDir, writeState } from "./state.ts";
+import { formatStatus, readState, resolveRunDir, running, writeState } from "./state.ts";
 import { exportTree, loadTarget, resolveTarget } from "./target.ts";
 
 const usage = `Usage: qa-interns <command> [options]
@@ -26,7 +28,7 @@ Commands:
       HEAD), or with --dirty in a copy of its working tree, as run does before it
       builds images, with no logins and no values for hostEnv variables that no
       checked setting depends on.
-  run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--logins <file>] [--on-end <command>]
+  run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--focus <n>]... [--logins <file>] [--on-end <command>]
       Run interns against the target at the commit, or with --dirty against a
       copy of its working tree: the tracked files as they are and the untracked
       files that Git does not ignore. Defaults: HEAD, 4 interns, 30 minutes
@@ -34,6 +36,8 @@ Commands:
       one confirming intern per group of findings, all at once, as far as login
       capacity, free network slots, free memory, and CPU pressure allow. Prints
       the run directory first.
+      With --focus, deal only the entries of the target's focus list at the
+      given 1-based positions, in the order given, then the built-in charters.
       With --on-end, run the shell command when the run ends, done, failed, or
       interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
   replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--logins <file>]
@@ -51,7 +55,19 @@ Commands:
   down [<run>]
       Stop the run's orchestrator with SIGTERM when it is still running, then
       tear down every environment the run still has and delete its leftover
-      workspace copies.
+      workspace copies. When the orchestrator ended before it recorded the end
+      of the run or of an intern, set that phase or status to failed.
+  prune [--no-docker]
+      Delete the directory of each run whose job has shipped: its orchestrator
+      ended, its state.json has not changed for 24 hours, it ran without
+      --dirty, its teardown left nothing, no run that prune keeps and no
+      running replay replays its findings, and a merged or closed pull
+      request and no open one hold its commit, or each parent of a merge
+      commit that no pull request holds. A directory without state.json goes
+      once it has not changed for 24 hours and its teardown left nothing.
+      Files and symbolic links in the runs directory stay. Needs the GitHub
+      CLI, signed in, and Docker, unless --no-docker says Docker is not
+      installed on the host, so no run has Docker objects to keep.
   help
       Print this help.
 
@@ -70,15 +86,6 @@ function numberOption(schema: z.ZodType<number>, value: string, option: string):
   const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error(`--${option} ${parsed.error.issues[0]?.message}, got ${value}`);
   return parsed.data;
-}
-
-function running(pid: number, start: number): boolean {
-  try {
-    return processStart(pid) === start;
-  } catch (error) {
-    if (errorCode(error) === "ENOENT" || errorCode(error) === "ESRCH") return false;
-    throw error;
-  }
 }
 
 function runArg(command: string, args: string[]): string | undefined {
@@ -123,6 +130,7 @@ async function main(args: string[]): Promise<number> {
           interns: { type: "string", default: "4" },
           minutes: { type: "string", default: "30" },
           "confirm-minutes": { type: "string", default: "10" },
+          focus: { type: "string", multiple: true, default: [] },
           logins: { type: "string", default: defaultLoginsPath },
           "on-end": { type: "string" },
         },
@@ -137,6 +145,7 @@ async function main(args: string[]): Promise<number> {
         interns: numberOption(countSchema, values.interns, "interns"),
         minutes: numberOption(minutesSchema, values.minutes, "minutes"),
         confirmMinutes: numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes"),
+        focus: values.focus.map((value) => numberOption(countSchema, value, "focus")),
         loginsFile: values.logins,
         onEnd: values["on-end"],
       };
@@ -157,20 +166,27 @@ async function main(args: string[]): Promise<number> {
       const [run, ...extra] = positionals;
       if (run === undefined || extra.length > 0) throw new Error("replay takes exactly one run id or run directory. Run qa-interns help for usage.");
       const confirmMinutes = numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes");
-      const replay = await readReplay(await resolveRunDir(run), values.group);
-      await runQa({
-        dir: join(replay.target.repo, replay.target.path),
-        rev: values.commit,
-        dirty: false,
-        interns: 0,
-        minutes: 0,
-        confirmMinutes,
-        loginsFile: values.logins,
-        replay,
-        runnerImage: ensureRunnerImage,
-        admit,
-        print,
-      });
+      const runDir = await resolveRunDir(run);
+      const lock = flock(replayLock(runDir), "shared", "block");
+      if (lock === null) throw new Error(`flock on ${replayLock(runDir)} returned no lock`);
+      try {
+        const replay = await readReplay(runDir, values.group);
+        await runQa({
+          dir: join(replay.target.repo, replay.target.path),
+          rev: values.commit,
+          dirty: false,
+          interns: 0,
+          minutes: 0,
+          confirmMinutes,
+          loginsFile: values.logins,
+          replay,
+          runnerImage: ensureRunnerImage,
+          admit,
+          print,
+        });
+      } finally {
+        closeSync(lock);
+      }
       return 0;
     }
     case "up": {
@@ -221,11 +237,25 @@ async function main(args: string[]): Promise<number> {
         print(message(error));
       }
       const after = await readState(dir);
-      if (after.phase === "up") {
+      const live = after.interns.filter((intern) => intern.status === "queued" || intern.status === "starting" || intern.status === "testing");
+      if ((after.phase !== "done" && after.phase !== "failed") || live.length > 0) {
         const ended = new Date().toISOString();
-        await writeState(dir, { ...after, phase: "done", updatedAt: ended, endedAt: ended });
+        const done = after.phase === "up" || after.phase === "done";
+        await writeState(dir, {
+          ...after,
+          phase: done ? "done" : "failed",
+          error: after.error ?? (done ? null : `The orchestrator process ended in phase ${after.phase}`),
+          updatedAt: ended,
+          endedAt: after.endedAt ?? ended,
+          interns: after.interns.map((intern) => (live.includes(intern) ? { ...intern, status: "failed", endedAt: ended } : intern)),
+        });
       }
       print(`Run ${state.runId} has no environments left.`);
+      return 0;
+    }
+    case "prune": {
+      const { values } = parseArgs({ args: rest, options: { "no-docker": { type: "boolean", default: false } } });
+      await prune(print, !values["no-docker"]);
       return 0;
     }
     case "help":

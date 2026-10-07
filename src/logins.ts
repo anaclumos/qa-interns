@@ -1,6 +1,7 @@
+import { dlopen, read } from "bun:ffi";
 import { createHash } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, watch, writeFileSync, type Stats } from "node:fs";
-import { homedir } from "node:os";
+import { constants, homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { credentialName, credentialRule, readKey } from "./pi.ts";
@@ -19,7 +20,11 @@ const loginSchema = z.strictObject({
     .refine(isAbsolute, { error: (issue) => `${JSON.stringify(issue.input)} is not an absolute path`, abort: true })
     .refine(isDirectory, { error: (issue) => `${JSON.stringify(issue.input)} is not an existing directory` }),
   concurrency: z.int().positive().default(1),
-  model: z.string().min(1).optional(),
+  model: z
+    .string()
+    .min(1)
+    .refine((model) => !model.startsWith("openrouter/anthropic/"), { error: (issue) => `${JSON.stringify(issue.input)} runs on Pi's Anthropic Messages API, which sends no zero data retention preference` })
+    .optional(),
 });
 
 const unreachable = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG", "ELOOP", "EACCES"]);
@@ -59,21 +64,24 @@ export async function loadLogin(file: string): Promise<Login> {
 
 export type Lease = { login: Login; credential: string; release(): void };
 
-const lockHeld = 75;
+const libc = dlopen("libc.so.6", {
+  flock: { args: ["i32", "i32"], returns: "i32" },
+  __errno_location: { args: [], returns: "ptr" },
+});
+const lockModes = { shared: 1, exclusive: 2 };
+const lockNonblock = 4;
 
-export function flock(file: string, ...options: string[]): number | null {
+export function flock(file: string, mode: "shared" | "exclusive", wait: "block" | "nonblock"): number | null {
   const fd = openSync(file, "a", 0o600);
-  let code: number;
-  try {
-    code = Bun.spawnSync(["flock", ...options, "--conflict-exit-code", String(lockHeld), "3"], { stdio: ["ignore", "ignore", "inherit", fd] }).exitCode;
-  } catch (error) {
+  const operation = lockModes[mode] | (wait === "nonblock" ? lockNonblock : 0);
+  for (;;) {
+    if (libc.symbols.flock(fd, operation) === 0) return fd;
+    const errno = read.i32(libc.symbols.__errno_location()!);
+    if (errno === constants.errno.EINTR) continue;
     closeSync(fd);
-    throw error;
+    if (errno === constants.errno.EWOULDBLOCK) return null;
+    throw new Error(`flock on ${file} failed with errno ${errno}`);
   }
-  if (code === 0) return fd;
-  closeSync(fd);
-  if (code !== lockHeld) throw new Error(`flock on ${file} exited with ${code}`);
-  return null;
 }
 
 function locksDir(): string {
@@ -95,14 +103,14 @@ function lockFile(dir: string, path: string, kind: string): string {
   return join(dir, `${createHash("sha256").update(path).digest("hex")}-${kind}.lock`);
 }
 
-function take(dir: string, file: string, ...options: string[]): number {
-  const fd = flock(file, ...options);
+function take(dir: string, file: string, mode: "shared" | "exclusive", wait: "block" | "nonblock"): number {
+  const fd = flock(file, mode, wait);
   if (fd === null) throw new Error(`${file} is locked by a process that does not hold ${join(dir, "acquire.lock")}`);
   return fd;
 }
 
 function exclusive<T>(dir: string, body: () => T): T {
-  const mutex = take(dir, join(dir, "acquire.lock"), "--exclusive");
+  const mutex = take(dir, join(dir, "acquire.lock"), "exclusive", "block");
   try {
     return body();
   } finally {
@@ -112,7 +120,7 @@ function exclusive<T>(dir: string, body: () => T): T {
 
 function slotLock(dir: string, mounted: string, slots: number): number | null {
   for (let slot = 0; slot < slots; slot++) {
-    const fd = flock(lockFile(dir, mounted, String(slot)), "--exclusive", "--nonblock");
+    const fd = flock(lockFile(dir, mounted, String(slot)), "exclusive", "nonblock");
     if (fd !== null) return fd;
   }
   return null;
@@ -178,7 +186,7 @@ export function admit(memory: number, pressureLimit = cpuPressureLimit): (() => 
     let starting = 0;
     for (const name of readdirSync(dir).filter((entry) => entry.startsWith(startingPrefix))) {
       const file = join(dir, name);
-      const fd = flock(file, "--exclusive", "--nonblock");
+      const fd = flock(file, "exclusive", "nonblock");
       if (fd === null) {
         const bytes = Number(name.slice(startingPrefix.length).split("-")[0]);
         if (!Number.isSafeInteger(bytes)) throw new Error(`${file} does not name the memory of a starting environment`);
@@ -190,7 +198,7 @@ export function admit(memory: number, pressureLimit = cpuPressureLimit): (() => 
     }
     if (hostMemory().available - reserve - starting < memory) return null;
     const file = join(dir, `${startingPrefix}${memory}-${crypto.randomUUID()}`);
-    const fd = take(dir, file, "--exclusive", "--nonblock");
+    const fd = take(dir, file, "exclusive", "nonblock");
     let started = false;
     return () => {
       if (started) return;

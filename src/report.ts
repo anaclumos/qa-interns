@@ -423,7 +423,7 @@ export function renderReplay(runDir: string, state: RunState, browser: string | 
   };
 }
 
-const storedRunSchema = z.object({ run: z.object({ replay: z.object({ runId: z.string() }).optional() }) });
+export const storedRunSchema = z.object({ run: z.object({ replay: z.object({ runId: z.string() }).optional() }) });
 
 export const storedFindingSchema = z.object({
   id: z.string(),
@@ -446,6 +446,10 @@ export const storedFindingSchema = z.object({
 const storedGroupsSchema = z.object({
   groups: z.array(z.object({ id: z.string().min(1), confirmed: z.boolean(), findings: z.array(storedFindingSchema).min(1) })),
 });
+
+export function replayLock(runDir: string): string {
+  return join(runDir, "replay.lock");
+}
 
 export async function readReplay(runDir: string, only: string[]): Promise<Replay> {
   const state = await readState(runDir);
