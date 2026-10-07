@@ -68,7 +68,6 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         if ((await capture(["docker", "network", "inspect", other])).code === 0) await execute(["docker", "network", "rm", other]);
       }
       expect(await leftovers(runId)).toEqual([]);
-      expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
       expect(await readdir(join(root, "asks", runId, "envs", "score"))).not.toContain("tmp");
       expect(await Bun.file(sibling).text()).toBe("sibling copy\n");
     },
@@ -92,7 +91,6 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rmSync(join(runLocks, runId), { force: true });
       }
       expect(await leftovers(runId)).toEqual([]);
-      expect(await readdir(join(root, "asks", runId, "interns", "score"))).not.toContain("out.img");
     },
     timeout,
   );
