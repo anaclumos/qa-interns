@@ -15,7 +15,7 @@ export async function freeBlock(second: number): Promise<number> {
     for (let step = 0; step < 64; step++) {
       const third = 4 * ((start + step) % 64);
       process.env.QA_INTERNS_SUBNET = `10.${second}.${third}.0/22`;
-      if ((await freeSlots()) === 2 && flock(join(locks, `10.${second}.${third}.0.lock`), "--exclusive", "--nonblock") !== null) return third;
+      if ((await freeSlots()) === 2 && flock(join(locks, `10.${second}.${third}.0.lock`), "exclusive", "nonblock") !== null) return third;
     }
   } finally {
     if (previous === undefined) delete process.env.QA_INTERNS_SUBNET;
