@@ -13,8 +13,16 @@ export const charters: readonly string[] = [
   "HTTP surface: the endpoints the pages call, sent directly with malformed, missing, and wrongly typed fields and wrong methods.",
 ];
 
-export function deck(focus: string[]): string[] {
-  return [...focus.map((entry) => `Project focus: ${entry}`), ...charters];
+export function deck(focus: string[], picks: number[] = []): string[] {
+  const entries =
+    picks.length === 0
+      ? focus
+      : picks.map((pick) => {
+          const entry = focus[pick - 1];
+          if (entry === undefined) throw new Error(`--focus ${pick} names no entry of the target's focus list, which has ${focus.length} ${focus.length === 1 ? "entry" : "entries"}`);
+          return entry;
+        });
+  return [...entries.map((entry) => `Project focus: ${entry}`), ...charters];
 }
 
 export type PromptEnvironment = { urls: Record<string, string>; seed: unknown; minutes: number; offLimits: string[] };
@@ -60,7 +68,7 @@ const howToWork = `How to work:
 - A JavaScript dialog, such as an alert, a confirmation, a text prompt, or a warning before you leave a page, pauses the page until you close it. Here agent-browser leaves every dialog open, including the alerts and leave-page warnings that its core reference says it accepts on its own. While a dialog is open, most commands on the page fail at once and print its text. Some commands, such as \`open\`, \`back\`, \`reload\`, and \`screenshot\`, can instead wait until they time out, and \`back\` can print nothing and succeed. After a command fails, times out, or prints nothing, run \`agent-browser dialog status\`, which prints the open dialog's type, its text, and the default text of a text prompt. Save that text as evidence with \`agent-browser dialog status > /qa/out/evidence/<name>-dialog.txt\`. \`agent-browser dialog accept\` presses OK, \`agent-browser dialog accept "text"\` answers a text prompt with the text, and \`agent-browser dialog dismiss\` presses Cancel. On a text prompt, \`agent-browser dialog accept\` without text answers with empty text, not the default text, so pass the default text to keep it.
 - \`agent-browser console\` prints console messages, and \`agent-browser errors\` prints page errors.
 - The browser opens at a ${defaultViewport} viewport. \`agent-browser set viewport 390 844\`, \`agent-browser set device "iPhone 15"\`, \`agent-browser set media dark\`, and \`agent-browser set offline on\` (then \`off\`) change the viewport, the device, the color scheme, and the network state.
-- \`agent-browser tab new <url>\` opens a second tab in the same session. \`agent-browser --session <name> open <url>\` starts a separate browser session with its own cookies, for example for a second account; pass \`--session <name>\` to every later command for that session. Each session is a browser of its own that keeps its memory until it closes, and your environment has memory for about four at once. Close a session you no longer need with \`agent-browser --session <name> close\`.
+- \`agent-browser tab new <url>\` opens a second tab in the same session. \`agent-browser --session <name> open <url>\` starts a separate browser session with its own cookies, for example for a second account; pass \`--session <name>\` to every later command for that session. Each session is a browser of its own that keeps its memory until it closes, and your environment runs at most four at once: a command that would start a fifth fails and lists the open sessions. Close a session you no longer need with \`agent-browser --session <name> close\`.
 - The browser time zone follows the \`TZ\` environment variable of the command that starts a session, for example \`TZ=America/Los_Angeles agent-browser --session west open <url>\`.
 - Send HTTP requests directly with \`curl\`, for example \`curl -i -c /tmp/cookies.txt -b /tmp/cookies.txt <url>\`.
 - You can write only to \`/qa/out\` and \`/tmp\`.

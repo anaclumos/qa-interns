@@ -1,0 +1,5 @@
+# Ledger evaluation target
+
+- Planted triggers in `eval/defects.json` depend on seeded rows and on the order of checks: `wrong-type-500` needs `PUT /api/invoices/1`, which is seeded as Paid, to answer 400 for a bad body, and `viewer-can-delete` needs the viewer's 403 on the same PUT, so a new guard in `eval/ledger/src/server.ts` runs after body validation, as the 409 `Paid invoices cannot be edited` does, and each trigger is probed on a scratch Ledger before the change ships. [source: https://github.com/anaclumos/qa-interns/pull/200]
+- The page scripts in `eval/ledger/src/html.ts` sit inside the server's template literal, so `${...}` or a backtick in browser code runs on the server; write browser code there with string concatenation, and keep the due-date script reading `new Date(due.dateTime)` through local-time getters, because `toJSON()` or any UTC formatting removes the planted `due-date-timezone` defect. [source: https://github.com/anaclumos/qa-interns/issues/226]
+- A hand-run Ledger database container (`postgres:17.11-alpine`) removed with `docker rm -f` leaves its anonymous data volume dangling; remove it with `docker rm -fv <name>`.
