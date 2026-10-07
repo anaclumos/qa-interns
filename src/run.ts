@@ -854,8 +854,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
       opts.replay === null
         ? renderReport(runDir, redactJson(state), browser, redactJson(groups ?? singles), redactJson(rejected), traffic, environments)
         : { ...renderReplay(runDir, redactJson(state), browser, redactJson(opts.replay), traffic, environments), tickets: [] };
-    await Bun.write(join(runDir, "report.md"), report.markdown);
     writeAtomic(join(runDir, "findings.json"), `${JSON.stringify(report.json, null, 2)}\n`);
+    await Bun.write(join(runDir, "report.md"), report.markdown);
     await writeTickets(runDir, report.tickets);
     await save();
     return teardowns.length === 0 ? null : teardowns.join("; ");
