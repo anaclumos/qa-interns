@@ -58,10 +58,10 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         dir: target,
         rev: "HEAD",
         dirty: false,
-        interns: 1,
+        interns: 2,
         minutes: 0.5,
         confirmMinutes: 0.5,
-        loginsFile: await logins("rate-limit", { rateLimit: 2 }),
+        loginsFile: await logins("rate-limit", { rateLimit: 2 }, 2),
         replay: null,
         runnerImage: async () => fakeImage,
         admit: () => () => {},
@@ -72,6 +72,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(state).toMatchObject({ phase: "done", error: null });
       expect(state.interns.map((entry) => [entry.id, entry.status, entry.findings])).toEqual([
         ["i1", "done", 1],
+        ["i2", "done", 1],
         ["judge", "done", 0],
         ["c1", "done", 0],
       ]);

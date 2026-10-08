@@ -408,6 +408,7 @@ async function pause(ctx: Context, ms: number): Promise<void> {
 
 async function promptBackingOff(ctx: Context, note: Note, session: Session, text: string, deadline: number): Promise<Turn | "ended"> {
   for (let retries = 0; ; retries += 1) {
+    if (Date.now() >= deadline) return "ended";
     try {
       return await session.prompt(text);
     } catch (error) {
