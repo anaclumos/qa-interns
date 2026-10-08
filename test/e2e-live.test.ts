@@ -50,12 +50,12 @@ describe.skipIf(!dockerAvailable)("a live intern on the Vercel AI Gateway", () =
         expect(answer).toEqual({ number });
         const transcript = await readFile(join(runDir, "interns", "live", "transcript.jsonl"), "utf8");
         expect(transcript).not.toContain(key);
-        const updates = transcript
+        const toolCall = z.object({ from: z.literal("agent"), message: z.object({ params: z.object({ update: z.object({ sessionUpdate: z.literal("tool_call") }) }) }) });
+        const toolCalls = transcript
           .split("\n")
           .filter((line) => line !== "")
-          .map((line) => z.object({ from: z.string(), message: z.object({ params: z.object({ update: z.object({ sessionUpdate: z.string() }) }).optional() }) }).parse(JSON.parse(line)))
-          .filter((line) => line.from === "agent" && line.message.params?.update.sessionUpdate === "tool_call");
-        expect(updates.length).toBeGreaterThanOrEqual(3);
+          .filter((line) => toolCall.safeParse(JSON.parse(line)).success);
+        expect(toolCalls.length).toBeGreaterThanOrEqual(3);
         expect(await leftovers(runId)).toEqual([]);
       } finally {
         if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;

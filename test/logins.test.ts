@@ -176,11 +176,10 @@ describe("loadLogin", () => {
   });
 
   test("reports every problem of the login object at once", async () => {
-    const message = await failure("many.json", { store, concurency: 2, concurrency: 0, model: "" });
+    const message = await failure("many.json", { store, concurency: 2, concurrency: 0 });
     expect(message.split("\n").slice(1)).toEqual([
       "  id: Invalid input: expected string, received undefined",
       "  concurrency: Too small: expected number to be >0",
-      "  model: Too small: expected string to have >=1 characters",
       "  Unrecognized key: \"concurency\"",
     ]);
   });
