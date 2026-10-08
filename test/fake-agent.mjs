@@ -215,12 +215,19 @@ const slowTurn = async () => {
 
 const limited = { error: { code: -32603, message: "Internal error", data: { errorKind: "billing_error", message: "provider billing or quota wall" } } };
 
+const rateLimited = { error: { code: -32603, message: "Internal error", data: { errorKind: "rate_limit", message: "provider rate limit" } } };
+let rateLimits = 0;
+
 const prompt = async (params) => {
   const text = params.prompt
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit, idle, hang, late, printKey } = login();
+  const { limit, idle, hang, late, printKey, rateLimit } = login();
+  if (rateLimit !== undefined && rateLimits < rateLimit) {
+    rateLimits += 1;
+    return rateLimited;
+  }
   if (printKey === true) {
     say(`The login key is ${loginKey()}.`);
     mkdirSync("/qa/out/evidence", { recursive: true });

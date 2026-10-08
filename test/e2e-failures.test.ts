@@ -51,6 +51,80 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   );
 
   test(
+    "a provider rate limit makes every session wait and send its prompt again, and the waits are in the intern's detail",
+    async () => {
+      const lines: string[] = [];
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 2,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("rate-limit", { rateLimit: 2 }, 2),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
+        print: (line) => lines.push(line),
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null });
+      expect(state.interns.map((entry) => [entry.id, entry.status, entry.findings])).toEqual([
+        ["i1", "done", 1],
+        ["i2", "done", 1],
+        ["judge", "done", 0],
+        ["c1", "done", 0],
+      ]);
+      const waits = (detail: string | null) => (detail ?? "").split("; ").filter((note) => note.startsWith("provider rate limit: waited "));
+      for (const entry of state.interns) expect(waits(entry.detail)).toHaveLength(2);
+      expect(intern(state, "i1").detail).toContain("provider rate limit: waited");
+      expect(await Bun.file(join(runDir, "report.md")).text()).toContain("provider rate limit: waited");
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "a provider rate limit that lasts past the time box ends the intern without a tool call as failed, with its waits in the detail",
+    async () => {
+      const lines: string[] = [];
+      const run = runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 0.5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("rate-limit-forever", { rateLimit: 1000 }),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
+        print: (line) => lines.push(line),
+      });
+
+      await expect(run).rejects.toThrow("No testing intern completed: i1 failed: provider rate limit: waited");
+      const runDir = lines[0];
+      if (runDir === undefined) throw new Error("runQa printed no run directory");
+      const state = await readState(runDir);
+      expect(state.phase).toBe("failed");
+      const detail = intern(state, "i1").detail ?? "";
+      expect(intern(state, "i1").status).toBe("failed");
+      expect(detail).toContain("provider rate limit still in effect when the time ended");
+      expect(detail).toEndWith("made no tool call in its 0.5 minutes");
+      expect(detail).not.toContain("-32603");
+
+      expect(await leftovers(state.runId)).toEqual([]);
+      expect(await workspaces(runDir, state)).toEqual([]);
+      expect(await disks(runDir, state)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "an intern whose agent stops before its first tool call fails, and so does a run with no other intern",
     async () => {
       const lines: string[] = [];

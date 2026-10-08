@@ -1,6 +1,6 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { openSession, type Session } from "./acp.ts";
+import { isRateLimit, openSession, type Session } from "./acp.ts";
 import {
   buildImages,
   containerStats,
@@ -113,6 +113,8 @@ const settleMs = 60_000;
 const writeUpMs = 4 * minute;
 const stopWaitMs = 30_000;
 const waitMs = 30_000;
+const rateLimitBaseMs = 5_000;
+const rateLimitCapMs = 60_000;
 const noLogin = "no login has spare capacity";
 const budgetSpent = "the confirmation budget ended before its confirmation began";
 const copyName = "up";
@@ -391,9 +393,43 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, fre
   return outcome;
 }
 
-async function turnUntil(session: Session, text: string, deadline: number): Promise<Turn | "ended" | "running"> {
+async function pause(ctx: Context, ms: number): Promise<void> {
+  const woken = Promise.withResolvers<void>();
+  const wake = () => woken.resolve();
+  ctx.waiting.add(wake);
+  const timer = setTimeout(wake, ms);
+  try {
+    await woken.promise;
+  } finally {
+    clearTimeout(timer);
+    ctx.waiting.delete(wake);
+  }
+}
+
+async function promptBackingOff(ctx: Context, note: Note, session: Session, text: string, deadline: number): Promise<Turn | "ended"> {
+  for (let retries = 0; ; retries += 1) {
+    if (Date.now() >= deadline) return "ended";
+    try {
+      return await session.prompt(text);
+    } catch (error) {
+      if (!isRateLimit(error)) throw error;
+      checkStopping(ctx);
+      const ceiling = Math.min(rateLimitCapMs, rateLimitBaseMs * 2 ** retries);
+      const wait = ceiling / 2 + (Math.random() * ceiling) / 2;
+      if (Date.now() + wait >= deadline) {
+        await note(`provider rate limit still in effect when the time ended, after ${retries} ${retries === 1 ? "wait" : "waits"}`);
+        return "ended";
+      }
+      await note(`provider rate limit: waited ${(wait / 1000).toFixed(1)} s before retry ${retries + 1}`);
+      await pause(ctx, wait);
+      checkStopping(ctx);
+    }
+  }
+}
+
+async function turnUntil(ctx: Context, note: Note, session: Session, text: string, deadline: number): Promise<Turn | "ended" | "running"> {
   if (Date.now() >= deadline) return "ended";
-  const turn = session.prompt(text);
+  const turn = promptBackingOff(ctx, note, session, text, deadline);
   const result = await within(turn, deadline - Date.now());
   if (result !== null) return result;
   const settled = turn.then(
@@ -404,11 +440,11 @@ async function turnUntil(session: Session, text: string, deadline: number): Prom
   return (await within(settled, settleMs)) ?? "running";
 }
 
-async function converse(session: Session, first: string, deadline: number, next: (turn: Turn, idle: boolean) => Promise<string | null>): Promise<"done" | "ended" | "running"> {
+async function converse(ctx: Context, note: Note, session: Session, first: string, deadline: number, next: (turn: Turn, idle: boolean) => Promise<string | null>): Promise<"done" | "ended" | "running"> {
   let text: string | null = first;
   let quiet = false;
   while (text !== null) {
-    const turn = await turnUntil(session, text, deadline);
+    const turn = await turnUntil(ctx, note, session, text, deadline);
     if (typeof turn === "string") return turn;
     const idle = quiet && turn.toolCalls === 0;
     quiet = turn.toolCalls === 0;
@@ -427,12 +463,12 @@ function promptEnvironment(target: Target, env: Environment, minutes: number): P
 
 async function askWith<T>(ctx: Context, id: string, prompt: string, file: string, parse: (raw: string) => T): Promise<T> {
   let unanswered = false;
-  const outcome = await agentTask(ctx, id, null, () => {}, async (session, env) => {
+  const outcome = await agentTask(ctx, id, null, () => {}, async (session, env, note) => {
     const path = join(ctx.runDir, outDir(id), file);
     await rm(path, { force: true });
     let parsed = null as { value: T } | null;
     let corrected = false;
-    await converse(session, prompt, Date.now() + askMinutes * minute, async () => {
+    await converse(ctx, note, session, prompt, Date.now() + askMinutes * minute, async () => {
       await pullDisk(env.out);
       try {
         parsed = { value: parse(await readAgentFile(path)) };
@@ -486,7 +522,7 @@ async function explore(ctx: Context, explored: Explored, target: Target, minutes
     explored.environment = found;
     const start = Date.now();
     const deadline = start + minutes * minute;
-    await converse(session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
+    await converse(ctx, note, session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
       if (idle) {
         const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
         if (session.toolCalls() === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
@@ -529,7 +565,7 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
     const deadline = Math.min(Date.now() + minutes * minute, ctx.until);
     let answer: Answer = { result: null, error: "no confirmation.json written" };
     let corrected = false;
-    const end = await converse(session, confirmPrompt(finding, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
+    const end = await converse(ctx, note, session, confirmPrompt(finding, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
       await pullDisk(env.out);
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
       answer = await check(ctx, intern.id);
@@ -539,7 +575,7 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
     });
     await pullDisk(env.out);
     if (end === "ended" && !(await Bun.file(file).exists())) {
-      await turnUntil(session, timeUpPrompt(), Date.now() + writeUpMs);
+      await turnUntil(ctx, note, session, timeUpPrompt(), Date.now() + writeUpMs);
       await pullDisk(env.out);
     }
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check(ctx, intern.id);

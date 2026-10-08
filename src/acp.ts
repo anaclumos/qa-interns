@@ -37,6 +37,12 @@ export type Session = {
   close(): Promise<void>;
 };
 
+const rateLimitSchema = z.looseObject({ errorKind: z.literal("rate_limit") });
+
+export function isRateLimit(error: unknown): boolean {
+  return error instanceof RequestError && rateLimitSchema.safeParse(error.data).success;
+}
+
 function modelOf(response: NewSessionResponse | SetSessionConfigOptionResponse): string | null {
   const option = response.configOptions?.find((entry) => entry.id === "model");
   if (option && typeof option.currentValue === "string") return option.currentValue;
