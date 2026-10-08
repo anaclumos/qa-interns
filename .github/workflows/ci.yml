@@ -31,4 +31,6 @@ jobs:
       - run: |
           bunx @anthropic-ai/claude-code@2.1.283 plugin validate .
           bunx @anthropic-ai/claude-code@2.1.283 plugin validate skills
-      - run: bun run test --timeout 1200000
+      - run: bunx @dotenvx/dotenvx@2.33.0 run -f .env.actions.enc --strict --no-native --no-armor -- bun run test --timeout 1200000
+        env:
+          DOTENV_PRIVATE_KEY_ACTIONS: ${{ secrets.DOTENV_PRIVATE_KEY_ACTIONS }}

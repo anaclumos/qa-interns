@@ -269,7 +269,7 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     session = await openSession({
       container: env.runner,
       adapter: pi.adapter,
-      model: lease.login.model,
+      model: pi.model,
       transcript: join(ctx.runDir, "interns", id, "transcript.jsonl"),
       adapterLog: join(ctx.runDir, "interns", id, "adapter.log"),
     });

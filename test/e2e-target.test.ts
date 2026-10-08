@@ -225,7 +225,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(await Bun.file(join(runDir, "source", "node_modules", "ignored.txt")).exists()).toBe(false);
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.run.target).toEqual(state.target);
-      expect(report.groups[0].findings[0].environment).toEqual({ commit: head, dirty: true, environment: `qa-${state.runId}-i1`, model: "fake-model-1" });
+      expect(report.groups[0].findings[0].environment).toEqual({ commit: head, dirty: true, environment: `qa-${state.runId}-i1`, model: "vercel-ai-gateway/anthropic/claude-haiku-5.5" });
       expect((await Bun.file(join(runDir, "report.md")).text()).split("\n")).toContain(`- Commit: \`${head}\`, with the uncommitted changes and untracked files of the working tree`);
 
       expect(await leftovers(state.runId)).toEqual([]);

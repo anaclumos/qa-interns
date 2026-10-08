@@ -244,7 +244,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     "down ends a run whose orchestrator ended before it recorded the end of the run or of an intern",
     async () => {
       const started = new Date().toISOString();
-      const member = { role: "confirm" as const, charter: title, login: "openrouter-1", model: null, findings: 0, rejected: 0, startedAt: started };
+      const member = { role: "confirm" as const, charter: title, login: "gateway-1", model: null, findings: 0, rejected: 0, startedAt: started };
       for (const [phase, error, expected] of [
         ["confirming", null, "The orchestrator process ended in phase confirming"],
         ["failed", "interrupted", "interrupted"],

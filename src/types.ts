@@ -4,7 +4,7 @@ import type { confirmationSchema } from "./findings.ts";
 import type { storedFindingSchema } from "./report.ts";
 import type { stateSchema } from "./state.ts";
 
-export type Login = { id: string; store: string; concurrency: number; model: string | null };
+export type Login = { id: string; store: string; concurrency: number };
 
 export type Mount = { source: string; target: string; readOnly: boolean };
 

@@ -21,7 +21,7 @@ const credentials = path.join(login, "auth.json");
 const adapter = ["node", "/opt/qa/fake-agent.mjs"];
 
 function auth(options: object): string {
-  return JSON.stringify({ openrouter: { type: "api_key", key: `fake-agent:${JSON.stringify(options)}` } });
+  return JSON.stringify({ "vercel-ai-gateway": { type: "api_key", key: `fake-agent:${JSON.stringify(options)}` } });
 }
 const internDir = path.join(root, "intern");
 const transcript = path.join(internDir, "transcript.jsonl");
@@ -74,7 +74,7 @@ async function until(check: () => boolean | Promise<boolean>, what: string) {
   throw new Error(`timed out waiting for ${what}`);
 }
 
-function fakeSession(label: string, model: string | null = null): Promise<Session> {
+function fakeSession(label: string, model = "fake-model-1"): Promise<Session> {
   return openSession({
     container: agent,
     adapter,
@@ -154,7 +154,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
   }, 30_000);
 
   test("opens a session with no MCP servers and reports the agent's model", async () => {
-    session = await openSession({ container: agent, adapter, model: null, transcript, adapterLog });
+    session = await openSession({ container: agent, adapter, model: "fake-model-1", transcript, adapterLog });
     expect(session.model).toBe("fake-model-1");
     expect(JSON.parse(readFileSync(path.join(out, "fake-agent-session.json"), "utf8"))).toEqual({ mcpServers: [] });
   });
@@ -261,7 +261,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     }
   });
 
-  test("a login model is set with session/set_config_option and reported from the agent's answer", async () => {
+  test("the model is set with session/set_config_option and reported from the agent's answer", async () => {
     const chosen = await fakeSession("model", "fake-model-2");
     try {
       expect(chosen.model).toBe("fake-model-2");
@@ -276,7 +276,7 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     }
   });
 
-  test("a login model the agent does not offer fails the session with the agent's error", async () => {
+  test("a model the agent does not offer fails the session with the agent's error", async () => {
     let error: unknown;
     try {
       await fakeSession("unknown-model", "no-such-model");

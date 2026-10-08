@@ -10,10 +10,10 @@ export const credentialName = "auth.json";
 
 const models = join(import.meta.dir, "..", "runner", "pi-models.json");
 
-export const credentialRule = `must hold one OpenRouter API key of at least ${minLength} characters and nothing else`;
+export const credentialRule = `must hold one Vercel AI Gateway API key of at least ${minLength} characters and nothing else`;
 
 const authSchema = z.strictObject({
-  openrouter: z.strictObject({
+  "vercel-ai-gateway": z.strictObject({
     type: z.literal("api_key"),
     key: z
       .string()
@@ -30,13 +30,14 @@ export function readKey(file: string): string | null {
     if (error instanceof SyntaxError) return null;
     throw error;
   }
-  return authSchema.safeParse(value).data?.openrouter.key ?? null;
+  return authSchema.safeParse(value).data?.["vercel-ai-gateway"].key ?? null;
 }
 
 export const pi = {
   adapter: ["pi-acp"],
+  model: "vercel-ai-gateway/anthropic/claude-haiku-5.5",
   env: { PI_CODING_AGENT_DIR: agentDir },
-  egress: ["openrouter.ai"],
+  egress: ["ai-gateway.vercel.sh"],
   tmpfs: [agentDir],
   mounts: (credential: string): Mount[] => [
     { source: credential, target: `${agentDir}/${credentialName}`, readOnly: true },

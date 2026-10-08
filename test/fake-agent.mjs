@@ -84,7 +84,7 @@ const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, 
 
 const fakePrefix = "fake-agent:";
 
-const loginKey = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8")).openrouter.key;
+const loginKey = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8"))["vercel-ai-gateway"].key;
 
 const login = () => {
   const key = loginKey();
@@ -247,7 +247,7 @@ const prompt = async (params) => {
 };
 
 const modelOption = (current) => {
-  const offered = [...new Set([login().model ?? "fake-model-1", "fake-model-2"])];
+  const offered = ["fake-model-1", "fake-model-2", "vercel-ai-gateway/anthropic/claude-haiku-5.5"];
   return { id: "model", name: "Model", category: "model", type: "select", currentValue: current, options: offered.map((value) => ({ value, name: value })) };
 };
 
@@ -257,7 +257,7 @@ const handlers = {
   }),
   "session/new": (params) => {
     writeJson("/qa/out/fake-agent-session.json", { mcpServers: params.mcpServers });
-    return { result: { sessionId, configOptions: [modelOption(login().model ?? "fake-model-1")] } };
+    return { result: { sessionId, configOptions: [modelOption("fake-model-1")] } };
   },
   "session/set_config_option": (params) => {
     const option = modelOption(params.value);

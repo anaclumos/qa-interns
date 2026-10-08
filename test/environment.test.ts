@@ -91,7 +91,7 @@ function spec(runDir: string, target: Target | null, overrides: Partial<Environm
       image: "qa-interns-runner:0.1.0",
       out: join(runDir, "interns", "i1", "out"),
       env: { ...runnerEnv(urls), ...pi.env },
-      mounts: pi.mounts("/home/dev/.qa-interns/openrouter-1/auth.json"),
+      mounts: pi.mounts("/home/dev/.qa-interns/gateway-1/auth.json"),
       tmpfs: pi.tmpfs,
     },
     egress: pi.egress,
@@ -308,7 +308,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
     expect(config.services["qa-proxy"]).toMatchObject({
       image: "qa-interns-runner:0.1.0",
       command: ["node", "/opt/qa-interns/proxy.mjs"],
-      environment: { QA_PROXY_ALLOW: "openrouter.ai" },
+      environment: { QA_PROXY_ALLOW: "ai-gateway.vercel.sh" },
       init: true,
       read_only: true,
       cap_drop: ["ALL"],
@@ -347,7 +347,7 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
         target: "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json",
         read_only: true,
       },
-      { type: "bind", source: "/home/dev/.qa-interns/openrouter-1/auth.json", target: "/home/qa/.pi/auth.json", read_only: true },
+      { type: "bind", source: "/home/dev/.qa-interns/gateway-1/auth.json", target: "/home/qa/.pi/auth.json", read_only: true },
       { type: "bind", source: join(import.meta.dir, "..", "runner", "pi-models.json"), target: "/home/qa/.pi/models.json", read_only: true },
     ]);
 
