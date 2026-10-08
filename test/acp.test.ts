@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { openSession, type Session } from "../src/acp.ts";
+import { isRateLimit, openSession, type Session } from "../src/acp.ts";
 import { forgetSecrets, keepSeedSecrets } from "../src/secrets.ts";
 import { suiteLabel } from "./suite-lock.ts";
 
@@ -391,4 +391,14 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
     }
     expect(execProcesses(agent)).toHaveLength(0);
   }, 60_000);
+});
+
+describe("isRateLimit", () => {
+  test("classifies from data.errorKind, never from the message", () => {
+    expect(isRateLimit(new RequestError(-32603, "Internal error", { errorKind: "rate_limit", message: "provider rate limit" }))).toBe(true);
+    expect(isRateLimit(new RequestError(-32603, "Internal error", { errorKind: "billing_error", message: "provider rate limit" }))).toBe(false);
+    expect(isRateLimit(new RequestError(-32603, "provider rate limit", { message: "rate_limit" }))).toBe(false);
+    expect(isRateLimit(new RequestError(-32603, "Internal error"))).toBe(false);
+    expect(isRateLimit(new Error('{"errorKind":"rate_limit"}'))).toBe(false);
+  });
 });
