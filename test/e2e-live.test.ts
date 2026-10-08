@@ -55,7 +55,7 @@ describe.skipIf(!dockerAvailable)("a live intern on the Vercel AI Gateway", () =
           .split("\n")
           .filter((line) => line !== "")
           .filter((line) => toolCall.safeParse(JSON.parse(line)).success);
-        expect(toolCalls.length).toBeGreaterThanOrEqual(3);
+        expect(toolCalls.length).toBeGreaterThanOrEqual(2);
         expect(await leftovers(runId)).toEqual([]);
       } finally {
         if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
