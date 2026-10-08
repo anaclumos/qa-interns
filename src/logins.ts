@@ -11,7 +11,7 @@ import type { Login } from "./types.ts";
 
 export const defaultLoginsPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "qa-interns", "logins.json");
 
-const example = `{"id": "openrouter-1", "store": "/absolute/path/to/login-store", "concurrency": 4, "model": "openrouter/xiaomi/mimo-v2.6-pro"}`;
+const example = `{"id": "gateway-1", "store": "/absolute/path/to/login-store", "concurrency": 4}`;
 
 const loginSchema = z.strictObject({
   id: z.string().min(1),
@@ -20,11 +20,6 @@ const loginSchema = z.strictObject({
     .refine(isAbsolute, { error: (issue) => `${JSON.stringify(issue.input)} is not an absolute path`, abort: true })
     .refine(isDirectory, { error: (issue) => `${JSON.stringify(issue.input)} is not an existing directory` }),
   concurrency: z.int().positive().default(1),
-  model: z
-    .string()
-    .min(1)
-    .refine((model) => !model.startsWith("openrouter/anthropic/"), { error: (issue) => `${JSON.stringify(issue.input)} runs on Pi's Anthropic Messages API, which sends no zero data retention preference` })
-    .optional(),
 });
 
 const unreachable = new Set(["ENOENT", "ENOTDIR", "ENAMETOOLONG", "ELOOP", "EACCES"]);
@@ -59,7 +54,7 @@ export async function loadLogin(file: string): Promise<Login> {
   if (!parsed.success) throw invalid(file, parsed.error.issues.map((issue) => (issue.path.length === 0 ? issue.message : `${z.core.toDotPath(issue.path)}: ${issue.message}`)));
   const problem = credentialProblem(parsed.data.store);
   if (problem !== null) throw invalid(file, [problem]);
-  return { id: parsed.data.id, store: parsed.data.store, concurrency: parsed.data.concurrency, model: parsed.data.model ?? null };
+  return { id: parsed.data.id, store: parsed.data.store, concurrency: parsed.data.concurrency };
 }
 
 export type Lease = { login: Login; credential: string; release(): void };

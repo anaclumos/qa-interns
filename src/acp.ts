@@ -57,7 +57,7 @@ function appender(path: string): (data: string | Uint8Array) => void {
   };
 }
 
-export async function openSession(opts: { container: string; adapter: string[]; model: string | null; transcript: string; adapterLog: string }): Promise<Session> {
+export async function openSession(opts: { container: string; adapter: string[]; model: string; transcript: string; adapterLog: string }): Promise<Session> {
   const argv = ["docker", "exec", "-i", "-w", "/qa/out", opts.container, ...opts.adapter];
   const log = appender(opts.adapterLog);
   const transcript = appender(opts.transcript);
@@ -199,10 +199,7 @@ export async function openSession(opts: { container: string; adapter: string[]; 
       clientInfo: { name: "qa-interns", version },
     });
     const started = await connection.agent.buildSession({ cwd: "/qa/out", mcpServers: [] }).start();
-    const chosen =
-      opts.model === null
-        ? started.newSessionResponse
-        : await connection.agent.request(methods.agent.session.setConfigOption, { sessionId: started.sessionId, configId: "model", value: opts.model });
+    const chosen = await connection.agent.request(methods.agent.session.setConfigOption, { sessionId: started.sessionId, configId: "model", value: opts.model });
     return { started, model: modelOf(chosen) };
   };
 

@@ -244,7 +244,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
-          if (dir !== undefined && line === "c1 starting on openrouter-1") release = blockTeardown(dir, "c1");
+          if (dir !== undefined && line === "c1 starting on gateway-1") release = blockTeardown(dir, "c1");
         },
       });
 

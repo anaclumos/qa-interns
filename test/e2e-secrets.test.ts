@@ -97,7 +97,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
           throw new Error(`unreadable ${raw}`);
         },
       });
-      await expect(failed).rejects.toThrow('/qa/out/evidence/auth.json is still invalid after one correction: unreadable {"openrouter":{"type":"api_key","key":"[redacted]"}}');
+      await expect(failed).rejects.toThrow('/qa/out/evidence/auth.json is still invalid after one correction: unreadable {"vercel-ai-gateway":{"type":"api_key","key":"[redacted]"}}');
       expect(redact(key)).toBe(key);
       const entries = await readdir(runDir, { recursive: true, withFileTypes: true });
       const files = entries.filter((entry) => entry.isFile()).map((entry) => join(entry.parentPath, entry.name));
@@ -105,7 +105,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(lines.join("\n")).not.toContain(key);
       for (const name of ["i1", "score", "score-fail"]) {
         expect(readFileSync(join(runDir, "interns", name, "transcript.jsonl"), "utf8")).toContain('"text":"The login key is [redacted]."');
-        expect(JSON.parse(readFileSync(join(runDir, "interns", name, "out", "evidence", "auth.json"), "utf8"))).toEqual({ openrouter: { type: "api_key", key: "[redacted]" } });
+        expect(JSON.parse(readFileSync(join(runDir, "interns", name, "out", "evidence", "auth.json"), "utf8"))).toEqual({ "vercel-ai-gateway": { type: "api_key", key: "[redacted]" } });
       }
 
       expect(await leftovers(state.runId)).toEqual([]);

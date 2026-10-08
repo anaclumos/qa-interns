@@ -7,20 +7,20 @@ import { admit, hostMemory, loadLogin, Scheduler, watchReleases, type Lease } fr
 import type { Login } from "../src/types.ts";
 
 const holders = new Set<Subprocess>();
-const key = "sk-or-v1-test-key";
+const key = "gateway-test-key";
 let dir: string;
 let store: string;
 let emptyStore: string;
 const previousStateHome = process.env.XDG_STATE_HOME;
 
 function auth(value: string): string {
-  return JSON.stringify({ openrouter: { type: "api_key", key: value } });
+  return JSON.stringify({ "vercel-ai-gateway": { type: "api_key", key: value } });
 }
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "qa-interns-logins-"));
   process.env.XDG_STATE_HOME = join(dir, "state");
-  store = join(dir, "stores", "openrouter-1");
+  store = join(dir, "stores", "gateway-1");
   emptyStore = join(dir, "stores", "empty");
   for (const each of [store, emptyStore]) await mkdir(each, { recursive: true });
   await Bun.write(join(store, "auth.json"), auth(key));
@@ -63,7 +63,7 @@ async function failure(name: string, content: unknown): Promise<string> {
 }
 
 function login(concurrency: number, path = store): Login {
-  return { id: "openrouter-1", store: path, concurrency, model: null };
+  return { id: "gateway-1", store: path, concurrency };
 }
 
 function held(lease: Lease | null): Lease {
@@ -92,21 +92,22 @@ afterEach(async () => {
 });
 
 describe("loadLogin", () => {
-  test("loads the login with its store, concurrency, and model, and defaults to one lease and the agent's model", async () => {
-    const file = await writeLogin("login.json", { id: "openrouter-1", store, concurrency: 3, model: "openrouter/xiaomi/mimo-v2.6-pro" });
-    expect(await loadLogin(file)).toEqual({ id: "openrouter-1", store, concurrency: 3, model: "openrouter/xiaomi/mimo-v2.6-pro" });
-    const plain = await writeLogin("plain.json", { id: "openrouter-1", store });
-    expect(await loadLogin(plain)).toEqual({ id: "openrouter-1", store, concurrency: 1, model: null });
+  test("loads the login with its store and concurrency, defaults to one lease, and rejects a model", async () => {
+    const file = await writeLogin("login.json", { id: "gateway-1", store, concurrency: 3 });
+    expect(await loadLogin(file)).toEqual({ id: "gateway-1", store, concurrency: 3 });
+    const plain = await writeLogin("plain.json", { id: "gateway-1", store });
+    expect(await loadLogin(plain)).toEqual({ id: "gateway-1", store, concurrency: 1 });
+    expect(await failure("model.json", { id: "gateway-1", store, model: "openrouter/xiaomi/mimo-v2.6-pro" })).toContain("Unrecognized key: \"model\"");
   });
 
   test("a missing file names the path and the expected shape", async () => {
     const file = join(dir, "absent", "logins.json");
-    await expect(loadLogin(file)).rejects.toThrow(`No logins file at ${file}. Create it with this shape: {"id": "openrouter-1", "store": `);
+    await expect(loadLogin(file)).rejects.toThrow(`No logins file at ${file}. Create it with this shape: {"id": "gateway-1", "store": `);
   });
 
   test("rejects malformed JSON and a list of logins", async () => {
     expect(await failure("broken.json", "{\"id\": ")).toContain("is not valid JSON");
-    const list = await failure("list.json", { logins: [{ id: "openrouter-1", store }] });
+    const list = await failure("list.json", { logins: [{ id: "gateway-1", store }] });
     expect(list.split("\n").slice(1)).toEqual([
       "  id: Invalid input: expected string, received undefined",
       "  store: Invalid input: expected string, received undefined",
@@ -122,9 +123,9 @@ describe("loadLogin", () => {
     await chmod(locked, 0o000);
     const unreachable = [join(store, "auth.json", "store"), join(dir, "a".repeat(256)), loop, join(locked, "store"), join(dir, "stores", "missing"), join(store, "auth.json")];
     try {
-      expect(await failure("relative.json", { id: "openrouter-1", store: "stores/openrouter-1" })).toContain("store: \"stores/openrouter-1\" is not an absolute path");
+      expect(await failure("relative.json", { id: "gateway-1", store: "stores/gateway-1" })).toContain("store: \"stores/gateway-1\" is not an absolute path");
       for (const [index, path] of unreachable.entries()) {
-        expect(await failure(`unreachable-${index}.json`, { id: "openrouter-1", store: path })).toContain(`store: "${path}" is not an existing directory`);
+        expect(await failure(`unreachable-${index}.json`, { id: "gateway-1", store: path })).toContain(`store: "${path}" is not an existing directory`);
       }
     } finally {
       await chmod(locked, 0o700);
@@ -141,45 +142,44 @@ describe("loadLogin", () => {
     await chmod(closed, 0o600);
     try {
       for (const path of [emptyStore, looped, closed]) {
-        expect(await failure("no-credential.json", { id: "openrouter-1", store: path })).toContain(`store ${path} has no auth.json`);
+        expect(await failure("no-credential.json", { id: "gateway-1", store: path })).toContain(`store ${path} has no auth.json`);
       }
     } finally {
       await chmod(closed, 0o700);
     }
   });
 
-  test("accepts an auth.json that holds one OpenRouter API key of at least 8 characters, also through a symbolic link, and rejects any other content without quoting it", async () => {
+  test("accepts an auth.json that holds one Vercel AI Gateway API key of at least 8 characters, also through a symbolic link, and rejects any other content without quoting it", async () => {
     const linked = join(dir, "stores", "linked");
     await mkdir(linked, { recursive: true });
     await symlink(join(store, "auth.json"), join(linked, "auth.json"));
-    expect((await loadLogin(await writeLogin("linked.json", { id: "openrouter-1", store: linked }))).store).toBe(linked);
+    expect((await loadLogin(await writeLogin("linked.json", { id: "gateway-1", store: linked }))).store).toBe(linked);
 
     const contents: Record<string, string> = {
       empty: "{}",
       blank: auth(""),
-      short: auth("sk-or-7"),
-      extra: JSON.stringify({ openrouter: { type: "api_key", key: "router-key" }, anthropic: { type: "api_key", key: "other-key" } }),
-      other: JSON.stringify({ anthropic: { type: "api_key", key: "other-key" } }),
-      oauth: JSON.stringify({ openrouter: { type: "oauth", refresh: "refresh-token", access: "access-token", expires: 0 } }),
-      field: JSON.stringify({ openrouter: { type: "api_key", key: "router-key", metadata: { label: "metadata-value" } } }),
+      short: auth("gw-1234"),
+      extra: JSON.stringify({ "vercel-ai-gateway": { type: "api_key", key: "gateway-key" }, anthropic: { type: "api_key", key: "other-key" } }),
+      other: JSON.stringify({ openrouter: { type: "api_key", key: "other-key" } }),
+      oauth: JSON.stringify({ "vercel-ai-gateway": { type: "oauth", refresh: "refresh-token", access: "access-token", expires: 0 } }),
+      field: JSON.stringify({ "vercel-ai-gateway": { type: "api_key", key: "gateway-key", metadata: { label: "metadata-value" } } }),
       broken: "{",
     };
     for (const [name, content] of Object.entries(contents)) {
       const path = join(dir, "stores", `bad-${name}`);
       await mkdir(path, { recursive: true });
       await Bun.write(join(path, "auth.json"), content);
-      const message = await failure(`bad-${name}.json`, { id: "openrouter-1", store: path });
-      expect(message).toContain(`${join(path, "auth.json")} must hold one OpenRouter API key of at least 8 characters and nothing else`);
-      for (const value of ["sk-or-7", "router-key", "other-key", "refresh-token", "access-token", "metadata-value"]) expect(message).not.toContain(value);
+      const message = await failure(`bad-${name}.json`, { id: "gateway-1", store: path });
+      expect(message).toContain(`${join(path, "auth.json")} must hold one Vercel AI Gateway API key of at least 8 characters and nothing else`);
+      for (const value of ["gw-1234", "gateway-key", "other-key", "refresh-token", "access-token", "metadata-value"]) expect(message).not.toContain(value);
     }
   });
 
   test("reports every problem of the login object at once", async () => {
-    const message = await failure("many.json", { store, concurency: 2, concurrency: 0, model: "" });
+    const message = await failure("many.json", { store, concurency: 2, concurrency: 0 });
     expect(message.split("\n").slice(1)).toEqual([
       "  id: Invalid input: expected string, received undefined",
       "  concurrency: Too small: expected number to be >0",
-      "  model: Too small: expected string to have >=1 characters",
       "  Unrecognized key: \"concurency\"",
     ]);
   });
@@ -286,7 +286,7 @@ describe("Scheduler", () => {
   });
 
   test("a store whose auth.json breaks the store rule stops the scheduler", async () => {
-    expect(() => new Scheduler(login(1, emptyStore))).toThrow(`login openrouter-1: store ${emptyStore} has no auth.json`);
+    expect(() => new Scheduler(login(1, emptyStore))).toThrow(`login gateway-1: store ${emptyStore} has no auth.json`);
   });
 });
 
