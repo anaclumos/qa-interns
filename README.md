@@ -6,7 +6,7 @@ The design and its scope are in [issue #1](https://github.com/anaclumos/qa-inter
 
 ## Requirements
 
-- Linux 5.19 or later on x86-64, with cgroup v2. Chrome for Testing has no Linux ARM64 build. QA Interns reads the peak memory of each container from the `memory.peak` file of its cgroup, which older kernels and cgroup v1 do not have. `qa-interns doctor` checks that it can read that file.
+- Linux 5.19 or later on x86-64, with cgroup v2. `agent-browser install` refuses to install Chrome on Linux ARM64. QA Interns reads the peak memory of each container from the `memory.peak` file of its cgroup, which older kernels and cgroup v1 do not have. `qa-interns doctor` checks that it can read that file.
 - Docker Engine with Compose 5.0 or later, the `isolated` bridge gateway mode, and Docker volumes of the `tmpfs` type. QA Interns keeps each intern's output disk in such a volume, so a rootless Docker daemon works. `qa-interns doctor` checks all of these. Compose 2 drops `env_file` paths from `docker compose config --no-env-resolution`, which the target checks read.
 - Bun 1.4 or later, glibc, Git, and GNU `tar`. QA Interns takes its file locks with `flock(2)` from glibc's `libc.so.6`.
 - For `prune` only, the GitHub CLI `gh`, signed in to an account that can read the target repositories, or with `GH_TOKEN` set.
