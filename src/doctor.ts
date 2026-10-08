@@ -150,9 +150,9 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
     return `${loginsFile}: login ${login.id}, capacity ${scheduler.capacity()}`;
   });
   await check("memory", async () => {
-    const { total, available, reserve } = hostMemory();
+    const { total, available, reserve, limit } = hostMemory();
     const gib = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
-    return `${gib(available)} GiB of ${gib(total)} GiB available, reserve ${gib(reserve)} GiB`;
+    return `${gib(available)} GiB of ${gib(total)} GiB available, reserve ${gib(reserve)} GiB, limit ${limit}`;
   });
   await check("cpu pressure", async () => `some avg60 ${cpuPressure().toFixed(2)}, limit ${cpuPressureLimit}`);
   return passed;
