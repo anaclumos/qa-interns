@@ -337,19 +337,22 @@ describe("admit", () => {
     const gib = 1024 ** 3;
     const files: Record<string, string> = {
       "memory.current": "1",
+      "memory.stat": "anon 4096\nactive_file 8192\ninactive_file 0\n",
       "a/memory.max": "max\n",
       "a/memory.current": "1",
       "a/b/memory.max": `${2 * gib}\n`,
       "a/b/memory.current": `${gib / 2}\n`,
+      "a/b/memory.stat": `anon ${gib / 2}\ninactive_file 0\n`,
       "a/b/c/d/memory.max": `${3 * gib}\n`,
       "a/b/c/d/memory.current": `${2.5 * gib}\n`,
+      "a/b/c/d/memory.stat": `anon ${2 * gib}\nactive_file ${gib / 4}\ninactive_file ${gib / 4}\n`,
     };
     for (const [file, value] of Object.entries(files)) await Bun.write(join(root, file), value);
     const self = join(dir, "self-cgroup");
     const use = async (line: string) => Bun.write(self, `${line}\n`);
 
     await use("0::/a/b/c/d");
-    expect(hostMemory(self, root)).toEqual({ total: 2 * gib, available: gib / 2, reserve: gib / 4, limit: join(root, "a", "b") });
+    expect(hostMemory(self, root)).toEqual({ total: 2 * gib, available: 0.75 * gib, reserve: gib / 4, limit: join(root, "a", "b") });
 
     await use("0::/");
     const host = hostMemory(self, root);
@@ -360,6 +363,9 @@ describe("admit", () => {
     await Bun.write(join(root, "memory.max"), `${gib}\n`);
     await use("0::/a");
     expect(hostMemory(self, root)).toEqual({ total: gib, available: gib - 1, reserve: gib / 8, limit: root });
+
+    await Bun.write(join(root, "memory.stat"), "anon 4096\n");
+    expect(() => hostMemory(self, root)).toThrow(`${join(root, "memory.stat")} has no inactive_file line`);
 
     await Bun.write(join(root, "a", "memory.max"), "2G\n");
     expect(() => hostMemory(self, root)).toThrow(`${join(root, "a", "memory.max")} holds "2G", not a byte count`);

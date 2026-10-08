@@ -186,11 +186,16 @@ export function hostMemory(cgroupFile = "/proc/self/cgroup", cgroupRoot = "/sys/
     if (max === "max") continue;
     const cap = cgroupBytes(maxFile, max);
     const currentFile = join(dir, "memory.current");
+    const statFile = join(dir, "memory.stat");
+    const inactive = readFileSync(statFile, "utf8")
+      .split("\n")
+      .find((entry) => entry.startsWith("inactive_file "));
+    if (inactive === undefined) throw new Error(`${statFile} has no inactive_file line, and QA Interns counts the memory of its cgroup without the reclaimable file cache`);
     if (cap < total) {
       total = cap;
       limit = dir;
     }
-    available = Math.min(available, cap - cgroupBytes(currentFile, readFileSync(currentFile, "utf8").trim()));
+    available = Math.min(available, cap - cgroupBytes(currentFile, readFileSync(currentFile, "utf8").trim()) + cgroupBytes(statFile, inactive.slice("inactive_file ".length).trim()));
   }
   return { total, available, reserve: Math.floor(total * reserveFraction), limit };
 }
