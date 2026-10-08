@@ -157,9 +157,47 @@ function meminfo(field: string): number {
   return kib * 1024;
 }
 
-export function hostMemory(): { total: number; available: number; reserve: number } {
-  const total = meminfo("MemTotal");
-  return { total, available: meminfo("MemAvailable"), reserve: Math.floor(total * reserveFraction) };
+function cgroupBytes(file: string, value: string): number {
+  const bytes = Number(value);
+  if (value === "" || !Number.isSafeInteger(bytes) || bytes < 0) throw new Error(`${file} holds ${JSON.stringify(value)}, not a byte count, and QA Interns starts an environment only when its cgroup has room for it`);
+  return bytes;
+}
+
+export function hostMemory(cgroupFile = "/proc/self/cgroup", cgroupRoot = "/sys/fs/cgroup"): { total: number; available: number; reserve: number; limit: string } {
+  let total = meminfo("MemTotal");
+  let available = meminfo("MemAvailable");
+  let limit = "host";
+  const line = readFileSync(cgroupFile, "utf8")
+    .split("\n")
+    .find((entry) => entry.startsWith("0::/"));
+  if (line === undefined) throw new Error(`${cgroupFile} has no cgroup v2 line, and QA Interns reads the memory limit of its cgroup v2 hierarchy`);
+  const parts = line.slice("0::/".length).split("/").filter((part) => part !== "");
+  if (parts.some((part) => part === "." || part === "..")) throw new Error(`${cgroupFile} names the cgroup ${line.slice("0::".length)}, which is outside ${cgroupRoot}`);
+  for (let depth = parts.length; depth >= 0; depth--) {
+    const dir = join(cgroupRoot, ...parts.slice(0, depth));
+    const maxFile = join(dir, "memory.max");
+    let max: string;
+    try {
+      max = readFileSync(maxFile, "utf8").trim();
+    } catch (error) {
+      if (errorCode(error) === "ENOENT") continue;
+      throw error;
+    }
+    if (max === "max") continue;
+    const cap = cgroupBytes(maxFile, max);
+    const currentFile = join(dir, "memory.current");
+    const statFile = join(dir, "memory.stat");
+    const inactive = readFileSync(statFile, "utf8")
+      .split("\n")
+      .find((entry) => entry.startsWith("inactive_file "));
+    if (inactive === undefined) throw new Error(`${statFile} has no inactive_file line, and QA Interns counts the memory of its cgroup without the reclaimable file cache`);
+    if (cap < total) {
+      total = cap;
+      limit = dir;
+    }
+    available = Math.min(available, cap - cgroupBytes(currentFile, readFileSync(currentFile, "utf8").trim()) + cgroupBytes(statFile, inactive.slice("inactive_file ".length).trim()));
+  }
+  return { total, available, reserve: Math.floor(total * reserveFraction), limit };
 }
 
 export const cpuPressureLimit = 40;
