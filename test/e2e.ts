@@ -87,9 +87,9 @@ USER qa
   async function logins(name: string, fake: FakeAgent = {}, concurrency = 1): Promise<string> {
     const store = join(root, "stores", name);
     await mkdir(store, { recursive: true });
-    await Bun.write(join(store, "auth.json"), JSON.stringify({ "vercel-ai-gateway": { type: "api_key", key: `fake-agent:${JSON.stringify(fake)}` } }));
+    await Bun.write(join(store, "auth.json"), JSON.stringify({ openrouter: { type: "api_key", key: `fake-agent:${JSON.stringify(fake)}` } }));
     const file = join(root, `${name}-logins.json`);
-    await Bun.write(file, JSON.stringify({ id: "gateway-1", store, concurrency }));
+    await Bun.write(file, JSON.stringify({ id: "openrouter-1", store, concurrency }));
     return file;
   }
 

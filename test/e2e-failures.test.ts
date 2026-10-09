@@ -35,10 +35,10 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       await expect(run).rejects.toThrow(`No testing intern completed: i1 failed: ${failure}`);
       const runDir = lines[0];
       if (runDir === undefined) throw new Error("runQa printed no run directory");
-      expect(lines.filter((line) => line === "i1 starting on gateway-1")).toHaveLength(1);
+      expect(lines.filter((line) => line === "i1 starting on openrouter-1")).toHaveLength(1);
       const state = await readState(runDir);
       expect(state.phase).toBe("failed");
-      expect(intern(state, "i1")).toMatchObject({ login: "gateway-1", status: "failed", findings: 1, detail: failure });
+      expect(intern(state, "i1")).toMatchObject({ login: "openrouter-1", status: "failed", findings: 1, detail: failure });
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups.map((group: { findings: { id: string }[] }) => group.findings.map((finding) => finding.id))).toEqual([["i1/fake-home"]]);
       expect(report.environments.map((entry: EnvironmentStats) => entry.intern)).toEqual(["i1"]);
@@ -148,7 +148,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       if (runDir === undefined) throw new Error("runQa printed no run directory");
       const state = await readState(runDir);
       expect(state.phase).toBe("failed");
-      expect(intern(state, "i1")).toMatchObject({ login: "gateway-1", status: "failed", findings: 0, detail });
+      expect(intern(state, "i1")).toMatchObject({ login: "openrouter-1", status: "failed", findings: 0, detail });
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
@@ -181,7 +181,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       if (runDir === undefined) throw new Error("runQa printed no run directory");
       const state = await readState(runDir);
       expect(state.phase).toBe("failed");
-      expect(intern(state, "i1")).toMatchObject({ login: "gateway-1", status: "failed", findings: 0, detail });
+      expect(intern(state, "i1")).toMatchObject({ login: "openrouter-1", status: "failed", findings: 0, detail });
 
       expect(await leftovers(state.runId)).toEqual([]);
       expect(await workspaces(runDir, state)).toEqual([]);
@@ -210,7 +210,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
-          if (dir === undefined || line !== "i1 starting on gateway-1") return;
+          if (dir === undefined || line !== "i1 starting on openrouter-1") return;
           held = `qair-f-e2e-held-${basename(dir)}`;
           Bun.spawnSync(["docker", "network", "create", "--internal", "--label", `com.docker.compose.project=qa-${basename(dir)}-i1`, "--label", suiteLabel, held], { stdout: "ignore" });
           Bun.spawnSync(["docker", "run", "-d", "--rm", "--label", suiteLabel, "--name", held, "--network", held, fakeImage], { stdout: "ignore" });
@@ -230,7 +230,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const runDir = lines[0];
       if (runDir === undefined) throw new Error("runQa printed no run directory");
       const state = await readState(runDir);
-      expect(intern(state, "i1")).toMatchObject({ login: "gateway-1", status: "failed" });
+      expect(intern(state, "i1")).toMatchObject({ login: "openrouter-1", status: "failed" });
       expect(intern(state, "i1").detail).toStartWith(`${failure}; teardown failed: docker compose down left objects of qa-${state.runId}-i1 behind`);
       expect(await leftovers(state.runId)).toEqual([]);
       expect(existsSync(join(runLocks, state.runId))).toBe(true);
@@ -309,7 +309,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         print: (line) => {
           lines.push(line);
           const [dir] = lines;
-          if (dir !== undefined && line === "i1 starting on gateway-1") release = blockTeardown(dir, "i1");
+          if (dir !== undefined && line === "i1 starting on openrouter-1") release = blockTeardown(dir, "i1");
         },
       });
 
@@ -323,7 +323,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const runDir = lines[0];
       if (runDir === undefined) throw new Error("runQa printed no run directory");
       const state = await readState(runDir);
-      expect(intern(state, "i1")).toMatchObject({ login: "gateway-1", status: "failed", findings: 0 });
+      expect(intern(state, "i1")).toMatchObject({ login: "openrouter-1", status: "failed", findings: 0 });
       expect(intern(state, "i1").detail).toEndWith("; its environment was not removed, so its runner may still write to /qa/out and its output was not read");
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups).toEqual([]);

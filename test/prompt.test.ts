@@ -34,7 +34,7 @@ function finding(id: string, title: string, evidence: string[]): Finding {
     observed: "The first row of page 2 reads \"INV-0014 Stark Industries\", the same as the last row of page 1.",
     contradicts: null,
     evidence,
-    environment: { commit: "3f9c2e1d8a7b", dirty: false, environment: `qa-1a2b3c4d-${intern}`, model: "vercel-ai-gateway/anthropic/claude-haiku-5.5" },
+    environment: { commit: "3f9c2e1d8a7b", dirty: false, environment: `qa-1a2b3c4d-${intern}`, model: "openrouter/anthropic/claude-haiku-5.5" },
   };
 }
 

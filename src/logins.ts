@@ -11,7 +11,7 @@ import type { Login } from "./types.ts";
 
 export const defaultLoginsPath = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "qa-interns", "logins.json");
 
-const example = `{"id": "gateway-1", "store": "/absolute/path/to/login-store", "concurrency": 4}`;
+const example = `{"id": "openrouter-1", "store": "/absolute/path/to/login-store", "concurrency": 4}`;
 
 const loginSchema = z.strictObject({
   id: z.string().min(1),
