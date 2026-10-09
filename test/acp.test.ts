@@ -21,7 +21,7 @@ const credentials = path.join(login, "auth.json");
 const adapter = ["node", "/opt/qa/fake-agent.mjs"];
 
 function auth(options: object): string {
-  return JSON.stringify({ "vercel-ai-gateway": { type: "api_key", key: `fake-agent:${JSON.stringify(options)}` } });
+  return JSON.stringify({ openrouter: { type: "api_key", key: `fake-agent:${JSON.stringify(options)}` } });
 }
 const internDir = path.join(root, "intern");
 const transcript = path.join(internDir, "transcript.jsonl");

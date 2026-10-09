@@ -1,0 +1,11 @@
+{
+  "name": "qa-interns-runner",
+  "private": true,
+  "dependencies": {
+    "@automatalabs/pi-acp": "0.9.4"
+  },
+  "overrides": {
+    "@earendil-works/pi-ai": "1.1.0",
+    "@earendil-works/pi-coding-agent": "1.1.0"
+  }
+}

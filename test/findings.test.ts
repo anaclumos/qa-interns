@@ -7,7 +7,7 @@ import type { FindingEnvironment } from "../src/types.ts";
 
 const asRoot = process.getuid?.() === 0;
 
-const environment: FindingEnvironment = { commit: "3f9c2e1d8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d", dirty: false, environment: "qa-1a2b3c4d-i1", model: "vercel-ai-gateway/anthropic/claude-haiku-5.5" };
+const environment: FindingEnvironment = { commit: "3f9c2e1d8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d", dirty: false, environment: "qa-1a2b3c4d-i1", model: "openrouter/anthropic/claude-haiku-5.5" };
 
 const pagination = {
   title: "Invoice INV-0014 appears on both page 1 and page 2 of the invoices list",

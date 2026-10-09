@@ -84,7 +84,7 @@ const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, 
 
 const fakePrefix = "fake-agent:";
 
-const loginKey = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8"))["vercel-ai-gateway"].key;
+const loginKey = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf8")).openrouter.key;
 
 const login = () => {
   const key = loginKey();
@@ -254,7 +254,7 @@ const prompt = async (params) => {
 };
 
 const modelOption = (current) => {
-  const offered = ["fake-model-1", "fake-model-2", "vercel-ai-gateway/anthropic/claude-haiku-5.5"];
+  const offered = ["fake-model-1", "fake-model-2", "openrouter/anthropic/claude-haiku-5.5"];
   return { id: "model", name: "Model", category: "model", type: "select", currentValue: current, options: offered.map((value) => ({ value, name: value })) };
 };
 

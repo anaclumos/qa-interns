@@ -6,7 +6,7 @@ const runnerDir = join(import.meta.dir, "..", "runner");
 
 export async function runnerImage(): Promise<string> {
   const { uid, gid } = userInfo();
-  const files = await Promise.all(["Dockerfile", "proxy.mjs", "relay.mjs", "agent-browser"].map((name) => Bun.file(join(runnerDir, name)).text()));
+  const files = await Promise.all(["Dockerfile", "package.json", "package-lock.json", "proxy.mjs", "relay.mjs", "agent-browser"].map((name) => Bun.file(join(runnerDir, name)).text()));
   const hash = new Bun.CryptoHasher("sha256").update(JSON.stringify([...files, uid, gid])).digest("hex");
   return `qa-interns-runner:${hash.slice(0, 12)}`;
 }

@@ -43,18 +43,18 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(state.options.concurrency).toBeGreaterThanOrEqual(1);
       expect(state.options.confirmConcurrency).toBe(1);
       expect(state.interns.map((entry) => [entry.id, entry.role, entry.status, entry.findings, entry.model])).toEqual([
-        ["i1", "intern", "done", 1, "vercel-ai-gateway/anthropic/claude-haiku-5.5"],
-        ["i2", "intern", "done", 1, "vercel-ai-gateway/anthropic/claude-haiku-5.5"],
-        ["judge", "judge", "done", 0, "vercel-ai-gateway/anthropic/claude-haiku-5.5"],
-        ["c1", "confirm", "done", 0, "vercel-ai-gateway/anthropic/claude-haiku-5.5"],
+        ["i1", "intern", "done", 1, "openrouter/anthropic/claude-haiku-5.5"],
+        ["i2", "intern", "done", 1, "openrouter/anthropic/claude-haiku-5.5"],
+        ["judge", "judge", "done", 0, "openrouter/anthropic/claude-haiku-5.5"],
+        ["c1", "confirm", "done", 0, "openrouter/anthropic/claude-haiku-5.5"],
       ]);
       expect(intern(state, "i1").detail).toBe('stopped at minute 0: "Nothing more to test."');
       expect([intern(state, "i1").charter, intern(state, "i2").charter]).toEqual([
         "Project focus: How invoices calculate, store, and show money across currencies, lists, and exports.",
         "Project focus: What owners, editors, and viewers can see and change, in the pages and in the API.",
       ]);
-      expect(state.interns.map((entry) => entry.login)).toEqual(["gateway-1", "gateway-1", "gateway-1", "gateway-1"]);
-      expect(lines).toContain("i1 starting on gateway-1");
+      expect(state.interns.map((entry) => entry.login)).toEqual(["openrouter-1", "openrouter-1", "openrouter-1", "openrouter-1"]);
+      expect(lines).toContain("i1 starting on openrouter-1");
       const [charterPrompt, confirmationPrompt] = await Promise.all(["i1", "c1"].map((internId) => firstPrompt(runDir, internId)));
       expect(charterPrompt).toContain(`  - ${knownGap}`);
       expect(confirmationPrompt).toContain("/qa/out/confirmation.json");
@@ -79,7 +79,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(report.groups[0].findings[0]).toMatchObject({
         title,
         evidence: ["interns/i1/out/evidence/page.html"],
-        environment: { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, model: "vercel-ai-gateway/anthropic/claude-haiku-5.5" },
+        environment: { commit: state.target.commit, dirty: false, environment: `qa-${state.runId}-i1`, model: "openrouter/anthropic/claude-haiku-5.5" },
       });
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "page.html")).text()).toContain("<form");
       expect(await Bun.file(join(runDir, "interns", "i1", "out", "evidence", "browser.json")).json()).toEqual({

@@ -19,14 +19,17 @@ RUN --mount=type=tmpfs,target=/usr/share/doc \
  && apt-get install -y --no-install-recommends $packages \
  && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g --no-audit --no-fund \
-      agent-browser@0.38.1 \
-      @automatalabs/pi-acp@0.9.4 \
+RUN npm install -g --no-audit --no-fund agent-browser@0.38.1 \
  && npm cache clean --force
 
 RUN HOME=/opt/agent-browser agent-browser install \
  && ln -s /opt/agent-browser/.agent-browser/browsers/chrome-*/chrome /usr/local/bin/chrome \
  && chrome --version
+
+COPY package.json package-lock.json /opt/pi-acp/
+RUN npm ci --prefix /opt/pi-acp --omit=dev --ignore-scripts --no-audit --no-fund \
+ && ln -s /opt/pi-acp/node_modules/.bin/pi-acp /usr/local/bin/pi-acp \
+ && npm cache clean --force
 
 ARG QA_UID
 ARG QA_GID
