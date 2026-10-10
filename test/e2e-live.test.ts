@@ -107,7 +107,7 @@ describe.skipIf(!dockerAvailable)("a live intern on OpenRouter", () => {
         await writeChromePolicy(runDir, {});
         const store = await liveStore(root, key);
         const settings = join(root, "settings.json");
-        await Bun.write(settings, JSON.stringify({ compaction: { reserveTokens: 995_000, keepRecentTokens: 3_000 } }));
+        await Bun.write(settings, JSON.stringify({ compaction: { reserveTokens: 1_000_000, keepRecentTokens: 1 } }));
         image = await ensureRunnerImage();
         const env = await startEnvironment({
           runId,
