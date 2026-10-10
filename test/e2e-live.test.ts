@@ -152,10 +152,6 @@ describe.skipIf(!dockerAvailable)("a live intern on OpenRouter", () => {
           expect(session.toolCalls()).toBeGreaterThan(before);
           await session.cancel();
           cancelled = (await sleeping).stopReason;
-        } catch (error) {
-          console.log("DIAG transcript", (await readFile(transcript, "utf8")).split("\n").slice(-60).map((line) => line.slice(0, 600)).join("\n"));
-          console.log("DIAG adapter", (await readFile(join(runDir, "interns", name, "adapter.log"), "utf8")).slice(-4000));
-          throw error;
         } finally {
           await session.close();
         }
