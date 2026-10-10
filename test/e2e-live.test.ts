@@ -107,7 +107,7 @@ describe.skipIf(!dockerAvailable)("a live intern on OpenRouter", () => {
         await writeChromePolicy(runDir, {});
         const store = await liveStore(root, key);
         const settings = join(root, "settings.json");
-        await Bun.write(settings, JSON.stringify({ compaction: { reserveTokens: 995_000, keepRecentTokens: 3_000 } }));
+        await Bun.write(settings, JSON.stringify({ compaction: { reserveTokens: 980_000, keepRecentTokens: 1 } }));
         image = await ensureRunnerImage();
         const env = await startEnvironment({
           runId,
@@ -143,7 +143,9 @@ describe.skipIf(!dockerAvailable)("a live intern on OpenRouter", () => {
           expect(read.stopReason).toBe("end_turn");
           expect(read.toolCalls).toBeGreaterThanOrEqual(2);
           expect(read.lastMessage).toContain(String(number));
-          const long = await session.prompt("Run `seq 100000 102999` with your bash tool, then reply with only the last line it printed.");
+          const numbers = Array.from({ length: 15_000 }, (_, index) => 100_000 + index);
+          const long = await session.prompt(`Here is a list of numbers: ${numbers.join(" ")}\nReply with only the last number in the list.`);
+          expect(long.lastMessage).toContain(String(numbers.at(-1)));
           expect(long.stopReason).toBe("end_turn");
           const before = session.toolCalls();
           const sleeping = session.prompt("Run `sleep 300` with your bash tool, then reply with the word done.");
