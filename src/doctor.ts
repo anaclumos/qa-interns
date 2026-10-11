@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, mkdtempDisposable } from "node:fs/promises";
 import { arch, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -40,19 +40,15 @@ function firstLine(text: string): string {
 }
 
 async function checkCompose(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "qa-interns-doctor-"));
-  try {
-    await Bun.write(join(dir, "base.yml"), baseCompose);
-    await Bun.write(join(dir, "override.yml"), overrideCompose);
-    const cmd = ["docker", "compose", "-p", `qa-interns-doctor-${process.pid}`, "-f", join(dir, "base.yml"), "-f", join(dir, "override.yml")];
-    const { app } = composeSchema.parse(JSON.parse(await execute([...cmd, "config", "--format", "json"]))).services;
-    if ((app.ports ?? []).length > 0) throw new Error(`!reset [] left ports ${JSON.stringify(app.ports)}`);
-    const networks = Object.keys(app.networks ?? {});
-    if (networks.join(",") !== "second") throw new Error(`!override [second] gave networks ${JSON.stringify(networks)}`);
-    return `Compose ${await composeVersion()} applies !reset and !override`;
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  await using dir = await mkdtempDisposable(join(tmpdir(), "qa-interns-doctor-"));
+  await Bun.write(join(dir.path, "base.yml"), baseCompose);
+  await Bun.write(join(dir.path, "override.yml"), overrideCompose);
+  const cmd = ["docker", "compose", "-p", `qa-interns-doctor-${process.pid}`, "-f", join(dir.path, "base.yml"), "-f", join(dir.path, "override.yml")];
+  const { app } = composeSchema.parse(JSON.parse(await execute([...cmd, "config", "--format", "json"]))).services;
+  if ((app.ports ?? []).length > 0) throw new Error(`!reset [] left ports ${JSON.stringify(app.ports)}`);
+  const networks = Object.keys(app.networks ?? {});
+  if (networks.join(",") !== "second") throw new Error(`!override [second] gave networks ${JSON.stringify(networks)}`);
+  return `Compose ${await composeVersion()} applies !reset and !override`;
 }
 
 async function checkDisk(image: string): Promise<string> {

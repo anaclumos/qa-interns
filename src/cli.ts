@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { closeSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtempDisposable } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -112,17 +112,13 @@ async function main(args: string[]): Promise<number> {
       if (dir === undefined || extra.length > 0) throw new Error("validate takes exactly one target directory. Run qa-interns help for usage.");
       if (values.dirty && values.commit !== undefined) throw new Error("--dirty checks the working tree, so it takes no --commit");
       const ref = await resolveTarget(dir, values.commit ?? "HEAD", values.dirty);
-      const source = await mkdtemp(join(tmpdir(), "qa-interns-validate-"));
-      try {
-        await exportTree(ref, source);
-        const target = await loadTarget(ref, source, true);
-        imageBuilders(target);
-        print(`${join(ref.repo, ref.path)} at ${ref.commit}${ref.dirty ? " with uncommitted changes" : ""} passes the checks that run makes before it builds images.`);
-        const unset = target.settings.hostEnv.filter((name) => process.env[name] === undefined);
-        if (unset.length > 0) print(`hostEnv names ${unset.join(", ")}, which the environment of qa-interns does not set. No checked setting depends on them.`);
-      } finally {
-        await rm(source, { recursive: true, force: true });
-      }
+      await using source = await mkdtempDisposable(join(tmpdir(), "qa-interns-validate-"));
+      await exportTree(ref, source.path);
+      const target = await loadTarget(ref, source.path, true);
+      imageBuilders(target);
+      print(`${join(ref.repo, ref.path)} at ${ref.commit}${ref.dirty ? " with uncommitted changes" : ""} passes the checks that run makes before it builds images.`);
+      const unset = target.settings.hostEnv.filter((name) => process.env[name] === undefined);
+      if (unset.length > 0) print(`hostEnv names ${unset.join(", ")}, which the environment of qa-interns does not set. No checked setting depends on them.`);
       return 0;
     }
     case "run": {
@@ -178,7 +174,6 @@ async function main(args: string[]): Promise<number> {
       const confirmMinutes = numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes");
       const runDir = await resolveRunDir(run);
       const lock = flock(replayLock(runDir), "shared", "block");
-      if (lock === null) throw new Error(`flock on ${replayLock(runDir)} returned no lock`);
       try {
         const replay = await readReplay(runDir, values.group);
         await runQa({

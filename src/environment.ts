@@ -1,5 +1,5 @@
 import { closeSync, existsSync, fstatSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
+import { lstat, mkdir, mkdtempDisposable, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
 import { tmpdir, userInfo } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -393,46 +393,42 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   const images = Object.fromEntries(Object.entries(imageBuilders(target)).map(([name, builder]) => [name, own(builder)]));
   const services = Object.entries(target.services).filter(([, service]) => service.build && service.active).map(([name]) => name);
   if (services.length === 0) return { images, release: async () => {} };
-  const dir = await mkdtemp(join(tmpdir(), "qa-interns-tags-"));
-  try {
-    const env = await targetEnv(target.settings.hostEnv, dir);
-    const compose = ["docker", "compose", "-p", buildProject, ...sourceComposeArgs(target, sourceDir)];
-    const config = buildConfigSchema.parse(JSON.parse(await execute([...compose, "config", "--format", "json", "--no-env-resolution", ...services], { env })));
-    const builds = services.map((name) => {
-      const service = config.services[name];
-      if (service?.build === undefined) throw new Error(`docker compose config renders no build for service ${name} from the Compose files of ${sourceDir}`);
-      return { name, build: service.build, platform: service.platform ?? null };
-    });
-    const hasher = new Bun.CryptoHasher("sha256");
-    for (const file of buildCode) hasher.update(await readFile(file));
-    const hostValues = target.settings.hostEnv.filter((name) => !target.settings.secrets.hostEnv.includes(name)).map((name) => [name, env[name] ?? null]);
-    hasher.update(JSON.stringify([builds, hostValues]).replaceAll(sourceDir, ""));
-    await hashTree(hasher, sourceDir);
-    const key = hasher.digest("hex").slice(0, keyLength);
-    const shared = (name: string) => `${imagePrefix}${key}-${name.toLowerCase()}:latest`;
-    const use = join(imageUses(), key);
-    const release = async () => {
-      await Bun.write(use, "");
-    };
-    await release();
-    const fresh = builds.some(({ build }) => build.pull === true || build.no_cache === true);
-    if (!fresh && (await tagShared(services.map((name) => [shared(name), own(name)])))) return { images, release };
-    const tags = join(dir, "tags.yml");
-    const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(own(name))}`, "    build:", `      tags: !override ${JSON.stringify([shared(name)])}`]);
-    await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
-    const cmd = [...compose, "-f", tags, "build", ...services];
-    const result = await capture(cmd, { env, timeout: 30 * minute }).catch(async (error: unknown) => {
-      if (!(error instanceof CommandTimeout)) throw error;
-      await Bun.write(log, redact(`${error.stdout}\n${error.stderr}`));
-      throw new Error(`${error.message} (log: ${log})`);
-    });
-    const output = `${result.stdout}\n${result.stderr}`;
-    await Bun.write(log, redact(output));
-    if (result.code !== 0) throw new Error(`${failure(cmd, result.code, output).message} (log: ${log})`);
-    return { images, release };
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  await using dir = await mkdtempDisposable(join(tmpdir(), "qa-interns-tags-"));
+  const env = await targetEnv(target.settings.hostEnv, dir.path);
+  const compose = ["docker", "compose", "-p", buildProject, ...sourceComposeArgs(target, sourceDir)];
+  const config = buildConfigSchema.parse(JSON.parse(await execute([...compose, "config", "--format", "json", "--no-env-resolution", ...services], { env })));
+  const builds = services.map((name) => {
+    const service = config.services[name];
+    if (service?.build === undefined) throw new Error(`docker compose config renders no build for service ${name} from the Compose files of ${sourceDir}`);
+    return { name, build: service.build, platform: service.platform ?? null };
+  });
+  const hasher = new Bun.CryptoHasher("sha256");
+  for (const file of buildCode) hasher.update(await readFile(file));
+  const hostValues = target.settings.hostEnv.filter((name) => !target.settings.secrets.hostEnv.includes(name)).map((name) => [name, env[name]]);
+  hasher.update(JSON.stringify([builds, hostValues]).replaceAll(sourceDir, ""));
+  await hashTree(hasher, sourceDir);
+  const key = hasher.digest("hex").slice(0, keyLength);
+  const shared = (name: string) => `${imagePrefix}${key}-${name.toLowerCase()}:latest`;
+  const use = join(imageUses(), key);
+  const release = async () => {
+    await Bun.write(use, "");
+  };
+  await release();
+  const fresh = builds.some(({ build }) => build.pull === true || build.no_cache === true);
+  if (!fresh && (await tagShared(services.map((name) => [shared(name), own(name)])))) return { images, release };
+  const tags = join(dir.path, "tags.yml");
+  const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(own(name))}`, "    build:", `      tags: !override ${JSON.stringify([shared(name)])}`]);
+  await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
+  const cmd = [...compose, "-f", tags, "build", ...services];
+  const result = await capture(cmd, { env, timeout: 30 * minute }).catch(async (error: unknown) => {
+    if (!(error instanceof CommandTimeout)) throw error;
+    await Bun.write(log, redact(`${error.stdout}\n${error.stderr}`));
+    throw new Error(`${error.message} (log: ${log})`);
+  });
+  const output = `${result.stdout}\n${result.stderr}`;
+  await Bun.write(log, redact(output));
+  if (result.code !== 0) throw new Error(`${failure(cmd, result.code, output).message} (log: ${log})`);
+  return { images, release };
 }
 
 export async function sweepImages(): Promise<void> {
@@ -443,13 +439,7 @@ export async function sweepImages(): Promise<void> {
   const errors: string[] = [];
   for (const [key, images] of keys) {
     const use = join(uses, key);
-    const used = await stat(use).then(
-      (info) => info.mtimeMs,
-      (error: unknown) => {
-        if (errorCode(error) === "ENOENT") return null;
-        throw error;
-      },
-    );
+    const used = (await stat(use, { throwIfNoEntry: false }))?.mtimeMs ?? null;
     if (used === null) await Bun.write(use, "");
     if (used === null || Date.now() - used < keepImages) continue;
     const names = images.filter(({ id }) => !held.has(id)).map(({ name }) => name);
@@ -618,7 +608,10 @@ async function holders(dir: string): Promise<Holder[]> {
   return listed
     .split("\n")
     .filter((line) => line !== "")
-    .map((line) => ({ name: line.split("\t")[0] ?? "", running: line.split("\t")[1] === "running", out: line.split("\t")[2] ?? "" }))
+    .map((line) => {
+      const [name, state, out] = z.tuple([z.string(), z.string(), z.string()]).parse(line.split("\t"));
+      return { name, running: state === "running", out };
+    })
     .filter((holder) => holder.out === real || holder.out.startsWith(`${real}/`));
 }
 
@@ -873,22 +866,20 @@ export async function stopRun(runDir: string, runId: string): Promise<void> {
   await removeImages([prefix, `vsc-${prefix}`]);
 }
 
-export type HostObjects = { docker: string[] };
-
-export async function hostObjects(docker: boolean): Promise<HostObjects> {
-  if (!docker) return { docker: [] };
+export async function hostObjects(docker: boolean): Promise<string[]> {
+  if (!docker) return [];
   const [projects, images, helpers, outs] = await Promise.all([
     composeProjects(),
     execute(["docker", "image", "ls", "--format", "{{.Repository}}"]),
     execute(["docker", "ps", "-a", "--filter", `label=${diskLabel}`, "--format", `{{.Label "${diskLabel}"}}`]),
     execute(["docker", "ps", "-a", "--filter", `label=${outLabel}`, "--format", "{{.Names}}"]),
   ]);
-  return { docker: [...projects, ...images.split("\n"), ...helpers.split("\n"), ...outs.split("\n")] };
+  return [...projects, ...images.split("\n"), ...helpers.split("\n"), ...outs.split("\n")];
 }
 
-export async function leftBehind(host: HostObjects, runDir: string, runId: string): Promise<boolean> {
+export async function leftBehind(names: string[], runDir: string, runId: string): Promise<boolean> {
   const prefix = `qa-${runId}-`;
-  if (host.docker.some((name) => name.startsWith(prefix) || name.startsWith(`vsc-${prefix}`))) return true;
+  if (names.some((name) => name.startsWith(prefix) || name.startsWith(`vsc-${prefix}`))) return true;
   return (await leftCopies(runDir, runId)).length > 0;
 }
 
