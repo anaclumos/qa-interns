@@ -2,13 +2,13 @@ import { createServer } from "node:http";
 import { connect } from "node:net";
 
 const allow = (process.env.QA_PROXY_ALLOW ?? "").split(",");
-if (allow.some((entry) => entry === "" || entry === "*.")) {
+if (allow.includes("")) {
   console.error(`QA_PROXY_ALLOW must be a comma list of hosts, got ${JSON.stringify(process.env.QA_PROXY_ALLOW ?? null)}`);
   process.exit(1);
 }
 
 function allowed(host) {
-  return allow.some((entry) => (entry.startsWith("*.") ? host === entry.slice(2) || host.endsWith(entry.slice(1)) : host === entry));
+  return allow.includes(host);
 }
 
 const server = createServer((req, res) => {
@@ -17,7 +17,7 @@ const server = createServer((req, res) => {
 });
 
 server.on("connect", (req, socket, head) => {
-  const [rawHost = "", port, rest] = req.url.split(":");
+  const [rawHost, port, rest] = req.url.split(":");
   const host = rawHost.toLowerCase();
   let upstream = null;
   socket.on("error", () => upstream?.destroy());
