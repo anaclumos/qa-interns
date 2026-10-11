@@ -1,10 +1,11 @@
 import type { z } from "zod";
 import type { relaySchema } from "./environment.ts";
 import type { confirmationSchema } from "./findings.ts";
+import type { loginSchema } from "./logins.ts";
 import type { storedFindingSchema } from "./report.ts";
 import type { stateSchema } from "./state.ts";
 
-export type Login = { id: string; store: string; concurrency: number };
+export type Login = z.infer<typeof loginSchema>;
 
 export type Mount = { source: string; target: string; readOnly: boolean };
 

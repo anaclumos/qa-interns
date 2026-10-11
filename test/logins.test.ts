@@ -109,9 +109,11 @@ describe("loadLogin", () => {
     expect(await failure("broken.json", "{\"id\": ")).toContain("is not valid JSON");
     const list = await failure("list.json", { logins: [{ id: "openrouter-1", store }] });
     expect(list.split("\n").slice(1)).toEqual([
-      "  id: Invalid input: expected string, received undefined",
-      "  store: Invalid input: expected string, received undefined",
-      "  Unrecognized key: \"logins\"",
+      "✖ Unrecognized key: \"logins\"",
+      "✖ Invalid input: expected string, received undefined",
+      "  → at id",
+      "✖ Invalid input: expected string, received undefined",
+      "  → at store",
     ]);
   });
 
@@ -123,9 +125,9 @@ describe("loadLogin", () => {
     await chmod(locked, 0o000);
     const unreachable = [join(store, "auth.json", "store"), join(dir, "a".repeat(256)), loop, join(locked, "store"), join(dir, "stores", "missing"), join(store, "auth.json")];
     try {
-      expect(await failure("relative.json", { id: "openrouter-1", store: "stores/openrouter-1" })).toContain("store: \"stores/openrouter-1\" is not an absolute path");
+      expect(await failure("relative.json", { id: "openrouter-1", store: "stores/openrouter-1" })).toContain("✖ \"stores/openrouter-1\" is not an absolute path\n  → at store");
       for (const [index, path] of unreachable.entries()) {
-        expect(await failure(`unreachable-${index}.json`, { id: "openrouter-1", store: path })).toContain(`store: "${path}" is not an existing directory`);
+        expect(await failure(`unreachable-${index}.json`, { id: "openrouter-1", store: path })).toContain(`✖ "${path}" is not an existing directory\n  → at store`);
       }
     } finally {
       await chmod(locked, 0o700);
@@ -178,9 +180,11 @@ describe("loadLogin", () => {
   test("reports every problem of the login object at once", async () => {
     const message = await failure("many.json", { store, concurency: 2, concurrency: 0 });
     expect(message.split("\n").slice(1)).toEqual([
-      "  id: Invalid input: expected string, received undefined",
-      "  concurrency: Too small: expected number to be >0",
-      "  Unrecognized key: \"concurency\"",
+      "✖ Unrecognized key: \"concurency\"",
+      "✖ Invalid input: expected string, received undefined",
+      "  → at id",
+      "✖ Too small: expected number to be >0",
+      "  → at concurrency",
     ]);
   });
 });

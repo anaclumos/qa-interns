@@ -140,20 +140,7 @@ export function isHttpUrl(value: string): boolean {
   return URL.canParse(value) && ["http:", "https:"].includes(new URL(value).protocol);
 }
 
-const hostCharacters = new Set("abcdefghijklmnopqrstuvwxyz0123456789-.");
-
-function isHostName(value: string): boolean {
-  const labels = value.split(".");
-  return (
-    value.length <= 253 &&
-    labels.length > 1 &&
-    labels.every((label) => label.length > 0 && label.length <= 63 && !label.startsWith("-") && !label.endsWith("-")) &&
-    [...value].every((character) => hostCharacters.has(character)) &&
-    isIP(value) === 0 &&
-    URL.canParse(`https://${value}`) &&
-    new URL(`https://${value}`).hostname === value
-  );
-}
+const hostMessage = "must be a lowercase host name with at least two labels, not an IP address or a wildcard";
 
 const connectionLimitsSchema = z
   .strictObject({ concurrent: z.int().positive().optional(), perMinute: z.int().positive().optional(), total: z.int().positive().optional() })
@@ -174,7 +161,13 @@ const settingsSchema = z
     secrets: z
       .strictObject({ hostEnv: z.array(z.string().min(1)).default([]), seed: z.array(z.string().min(1)).default([]) })
       .default({ hostEnv: [], seed: [] }),
-    egress: z.array(z.string().refine(isHostName, "must be a lowercase host name with at least two labels, not an IP address or a wildcard")).default([]),
+    egress: z
+      .array(
+        z
+          .hostname({ error: hostMessage, abort: true })
+          .refine((host) => host.includes(".") && !host.endsWith(".") && isIP(host) === 0 && URL.parse(`https://${host}`)?.hostname === host, hostMessage),
+      )
+      .default([]),
     connectionLimits: z.record(z.string(), connectionLimitsSchema).default({}),
   })
   .superRefine((settings, ctx) => {
@@ -193,7 +186,9 @@ const configSchema = z.object({
   customizations: z.object({ "qa-interns": settingsSchema }),
 });
 
-const limitsSchema = z.object({ memory: z.string().optional(), cpus: z.number().optional(), pids: z.number().optional() });
+const byteCount = z.string().transform(Number).pipe(z.int().positive());
+
+const limitsSchema = z.object({ memory: byteCount.optional(), cpus: z.number().optional(), pids: z.number().optional() });
 const hooksSchema = z.array(z.object({ privileged: z.boolean().optional() })).optional();
 const filesSchema = z.record(z.string(), z.object({ file: z.string().optional() })).optional();
 
@@ -219,7 +214,7 @@ const composeSchema = z.object({
       container_name: z.string().optional(),
       network_mode: z.string().optional(),
       networks: z.record(z.string(), z.object({ aliases: z.array(z.string()).optional() }).nullable()).optional(),
-      mem_limit: z.string().optional(),
+      mem_limit: byteCount.optional(),
       cpus: z.number().optional(),
       pids_limit: z.number().optional(),
       scale: z.number().optional(),
@@ -293,7 +288,7 @@ const devContainerKeys = ["image", "build", "entrypoint", "command", "init", "us
 
 export async function composeVersion(): Promise<string> {
   const version = (await execute(["docker", "compose", "version", "--short"])).trim();
-  if (Number(version.split(".")[0]) < 5) {
+  if (Bun.semver.order(version, "5.0.0-0") < 0) {
     throw new Error(`QA Interns needs Docker Compose 5.0 or later, which reports env_file paths in docker compose config --no-env-resolution; this host has Compose ${version}`);
   }
   return version;
@@ -345,12 +340,6 @@ export async function exportTree(ref: TargetRef, dest: string): Promise<void> {
   ]);
   if (archiveCode !== 0) throw failure(archiveCmd, archiveCode, archiveErr);
   if (extractCode !== 0) throw failure(extractCmd, extractCode, extractErr);
-}
-
-function bytes(value: string, where: string): number {
-  const size = Number(value);
-  if (!Number.isSafeInteger(size) || size <= 0) throw new Error(`${where} is ${value}, not a byte count`);
-  return size;
 }
 
 function within(dir: string, file: string): boolean {
@@ -654,7 +643,7 @@ export async function loadTarget(ref: TargetRef, sourceDir: string, placeholders
       build: entry.build !== undefined,
       image: entry.image ?? null,
       tags: entry.build?.tags ?? [],
-      memLimit: memory === undefined ? null : bytes(memory, `The memory limit of service ${name}`),
+      memLimit: memory ?? null,
       networkMode: entry.network_mode ?? null,
       aliases,
       hasCpus: (entry.cpus ?? 0) > 0 || (limits?.cpus ?? 0) > 0,

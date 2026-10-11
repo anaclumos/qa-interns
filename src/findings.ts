@@ -83,43 +83,35 @@ const text = z.preprocess(
 
 const paths = z.array(text, { error: required("must be an array of paths") });
 
-const conditionFields = ["account", "data", "viewport", "browser", "network"];
+const conditionShape = { account: text, data: text, viewport: text, browser: text, network: text };
 
-const findingFields = ["title", "kind", "conditions", "steps", "observed", "contradicts", "evidence"];
+const findingShape = {
+  title: text.refine((value) => !value.includes("\n"), { error: "must be one line" }),
+  kind: z.enum(kinds, { error: required(`must be one of ${kinds.join(", ")}`) }),
+  conditions: z.strictObject(conditionShape, {
+    error: fields(`must be an object with the fields ${Object.keys(conditionShape).join(", ")}`, Object.keys(conditionShape)),
+  }),
+  steps: z.array(text, { error: required("must be an array of strings") }).min(1, { error: "must have at least one entry" }),
+  observed: text,
+  contradicts: text.nullable().optional(),
+  evidence: paths,
+};
 
-const findingSchema = z.strictObject(
-  {
-    title: text.refine((value) => !value.includes("\n"), { error: "must be one line" }),
-    kind: z.enum(kinds, { error: required(`must be one of ${kinds.join(", ")}`) }),
-    conditions: z.strictObject(
-      { account: text, data: text, viewport: text, browser: text, network: text },
-      { error: fields(`must be an object with the fields ${conditionFields.join(", ")}`, conditionFields) },
-    ),
-    steps: z.array(text, { error: required("must be an array of strings") }).min(1, { error: "must have at least one entry" }),
-    observed: text,
-    contradicts: text.nullable().optional(),
-    evidence: paths,
-  },
-  { error: fields("must be one JSON object", findingFields) },
-);
-
-const confirmationFields = ["steps", "task", "observed", "evidence"];
+const findingSchema = z.strictObject(findingShape, { error: fields("must be one JSON object", Object.keys(findingShape)) });
 
 const verdict = z.boolean({ error: required("must be true or false") });
 
-export const confirmationSchema = z.strictObject(
-  { steps: verdict, task: verdict, observed: text, evidence: paths },
-  { error: fields("must be one JSON object", confirmationFields) },
-);
+const confirmationShape = { steps: verdict, task: verdict, observed: text, evidence: paths };
 
-const groupsSchema = z.strictObject(
-  {
-    groups: z.array(z.array(text, { error: required("must be an array of finding ids") }).min(1, { error: "must have at least one finding id" }), {
-      error: required("must be an array of groups, each an array of finding ids"),
-    }),
-  },
-  { error: fields("must be one JSON object with the field groups", ["groups"]) },
-);
+export const confirmationSchema = z.strictObject(confirmationShape, { error: fields("must be one JSON object", Object.keys(confirmationShape)) });
+
+const groupsShape = {
+  groups: z.array(z.array(text, { error: required("must be an array of finding ids") }).min(1, { error: "must have at least one finding id" }), {
+    error: required("must be an array of groups, each an array of finding ids"),
+  }),
+};
+
+const groupsSchema = z.strictObject(groupsShape, { error: fields("must be one JSON object with the field groups", Object.keys(groupsShape)) });
 
 function where(keys: PropertyKey[]) {
   return keys.length === 0 ? "the file" : z.core.toDotPath(keys);
