@@ -31,53 +31,14 @@ const firstUrl = (text) => {
   return url;
 };
 
-const closingBrace = (text, start) => {
-  let depth = 0;
-  let inString = false;
-  for (let index = start; index < text.length; index += 1) {
-    const char = text[index];
-    if (inString) {
-      if (char === "\\") index += 1;
-      else if (char === '"') inString = false;
-    } else if (char === '"') inString = true;
-    else if (char === "{") depth += 1;
-    else if (char === "}") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return -1;
-};
-
-const listedFindings = (text) => {
-  const findings = [];
-  let index = 0;
-  while (index < text.length) {
-    const end = text[index] === "{" ? closingBrace(text, index) : -1;
-    if (end !== -1) {
-      let value = null;
-      try {
-        value = JSON.parse(text.slice(index, end + 1));
-      } catch {
-        value = null;
-      }
-      if (value !== null && typeof value.id === "string" && typeof value.title === "string") {
-        findings.push(value);
-        index = end + 1;
-        continue;
-      }
-    }
-    index += 1;
-  }
-  return findings;
-};
+const listedFindings = (text) => text.split("\n").filter((line) => line.startsWith('{"id":')).map((line) => JSON.parse(line));
 
 const seededAccount = (text) => {
   const fence = "```json\n";
   const start = text.indexOf(fence);
   if (start === -1) return undefined;
   const block = text.slice(start + fence.length);
-  return JSON.parse(block.slice(0, block.indexOf("\n```"))).accounts?.[0];
+  return JSON.parse(block.slice(0, block.indexOf("\n```"))).accounts[0];
 };
 
 const writeJson = (file, value) => writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
@@ -88,7 +49,8 @@ const loginKey = () => JSON.parse(readFileSync(process.env.FAKE_CREDENTIAL, "utf
 
 const login = () => {
   const key = loginKey();
-  return key.startsWith(fakePrefix) ? JSON.parse(key.slice(fakePrefix.length)) : {};
+  if (!key.startsWith(fakePrefix)) throw new Error(`the login key does not start with ${fakePrefix}`);
+  return JSON.parse(key.slice(fakePrefix.length));
 };
 
 const chunk = randomBytes(1024 ** 2);
@@ -183,11 +145,8 @@ const charterTurn = async (text) => {
 };
 
 const groupsTurn = (text) => {
-  const byTitle = new Map();
-  for (const finding of listedFindings(text)) {
-    byTitle.set(finding.title, [...(byTitle.get(finding.title) ?? []), finding.id]);
-  }
-  writeJson("/qa/out/groups.json", { groups: [...byTitle.values()] });
+  const groups = [...Map.groupBy(listedFindings(text), (finding) => finding.title).values()].map((list) => list.map((finding) => finding.id));
+  writeJson("/qa/out/groups.json", { groups });
   say("Wrote the groups.");
   return endTurn;
 };
