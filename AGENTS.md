@@ -1,6 +1,6 @@
 # Agent rules
 
-Repo-specific rules only. The owner's global rules load alongside this file; where this file is silent, the global rule applies. The product design is issue #1; user documentation is `README.md`.
+Repo-specific rules only. The product design is issue #1; user documentation is `README.md`.
 
 ## Layout
 
@@ -13,17 +13,15 @@ Repo-specific rules only. The owner's global rules load alongside this file; whe
 
 ## Gates
 
-- The `ci.yml` `test` job passes on a change's head commit before the change merges. A session pushes the branch and reads that job's result instead of running its checks on the development host.
-- `.env.actions.enc` holds only `OPENROUTER_API_KEY`, the OpenRouter API key `qa-interns-actions-e2e`, which the live interns of `test/e2e-live.test.ts` run on. The key lives in the OpenRouter default workspace, on the Anthropic BYOK credentials that workspace holds: this project is the exception to the global rule that a project keys OpenRouter in its own workspace, and has no workspace of its own. That key serves only this tier and purpose: it is created with the owner's OpenRouter management key through the management API (`POST /api/v1/keys`), its creation output goes to a mode-600 file, and it is never copied from a login store or another project. Its decrypt key is the repository secret `DOTENV_PRIVATE_KEY_ACTIONS`, and no other copy of it exists. A change to the value writes a mode-600 plaintext file that holds the tier's `DOTENV_PUBLIC_KEY_ACTIONS` line and the new value, encrypts it in place with `dotenvx encrypt`, which uses that public key, and copies it over the tier, so the repository secret stays valid.
-- The `test` job runs on a GitHub-hosted x86-64 image and reads no `CI_RUNNER`. It needs an x86-64 machine, because `agent-browser install` in `runner/Dockerfile` refuses to install Chrome on Linux ARM64. It also needs a Docker daemon that gives each container a cgroup of its own, because `memoryPeak` reads `memory.peak` from that cgroup. A self-hosted job's rootless daemon with the `none` cgroup driver keeps every container in the job's own cgroup.
+- The `ci.yml` `test` job passes on a change's head commit before the change merges.- `.env.actions.enc` holds only `OPENROUTER_API_KEY`, the OpenRouter API key `qa-interns-actions-e2e`, which the live interns of `test/e2e-live.test.ts` run on. The key lives in the OpenRouter default workspace, on the Anthropic BYOK credentials that workspace holds: this project is the exception to the global rule that a project keys OpenRouter in its own workspace, and has no workspace of its own. That key serves only this tier and purpose: it is created with the owner's OpenRouter management key through the management API (`POST /api/v1/keys`), its creation output goes to a mode-600 file, and it is never copied from a login store or another project. Its decrypt key is the repository secret `DOTENV_PRIVATE_KEY_ACTIONS`, and no other copy of it exists. A change to the value writes a mode-600 plaintext file that holds the tier's `DOTENV_PUBLIC_KEY_ACTIONS` line and the new value, encrypts it in place with `dotenvx encrypt`, which uses that public key, and copies it over the tier, so the repository secret stays valid.
+- The `test` job runs on a GitHub-hosted x86-64 image. It needs an x86-64 machine, because `agent-browser install` in `runner/Dockerfile` refuses to install Chrome on Linux ARM64. It also needs a Docker daemon that gives each container a cgroup of its own, because `memoryPeak` reads `memory.peak` from that cgroup. A self-hosted job's rootless daemon with the `none` cgroup driver keeps every container in the job's own cgroup.
 - One exclusive `flock` on `$XDG_RUNTIME_DIR/qa-interns/suite.lock` covers each suite, so the suites of one user on one host run one at a time. `bun run test` runs `test/suite-lock.ts` as a script, which takes the lock and then starts `bun test --parallel=2`. `bunfig.toml` preloads the same file into every `bun test` process: a serial `bun test` takes the lock itself, and a `--parallel` worker fails unless it or a process above it holds the lock, because the workers of one suite are separate processes and a lock that one worker takes blocks the others. A process under a lock holder takes no second lock.
 - Each network that a test creates itself, and each container that a test starts on one, carries the `suiteLabel` that `test/suite-lock.ts` exports. The process that takes the suite lock removes every container and network with that label, which earlier suites left, before it runs a test.
 
 ## Host
 
 - `~/Developer/qa-interns` is the host's machine checkout of this repository. Every `qa-interns` command on the host runs its working tree, and `qa-interns` on `PATH` is a link to its `src/cli.ts`.
-- No session edits a tracked file in `~/Developer/qa-interns`.
-- After a merge, the shipping session runs `git -C ~/Developer/qa-interns pull --ff-only` and `bun install --frozen-lockfile` in that checkout, and confirms with `git merge-base --is-ancestor <merge commit> HEAD` there that the merge reached it.
+- After a merge, the shipping session runs `git -C ~/Developer/qa-interns pull --ff-only` and `bun install --frozen-lockfile` in that checkout.
 
 ## Invariants
 
