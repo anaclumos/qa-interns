@@ -36,10 +36,10 @@ export type Session = {
   close(): Promise<void>;
 };
 
-const rateLimitSchema = z.looseObject({ errorKind: z.literal("rate_limit") });
+const errorKindSchema = z.looseObject({ errorKind: z.string() });
 
-export function isRateLimit(error: unknown): boolean {
-  return error instanceof RequestError && rateLimitSchema.safeParse(error.data).success;
+export function errorKind(error: unknown): string | null {
+  return error instanceof RequestError ? (errorKindSchema.safeParse(error.data).data?.errorKind ?? null) : null;
 }
 
 function modelOf(response: SetSessionConfigOptionResponse): string {

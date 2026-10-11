@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { isRateLimit, openSession, type Session } from "../src/acp.ts";
+import { errorKind, openSession, type Session } from "../src/acp.ts";
 import { forgetSecrets, keepSeedSecrets } from "../src/secrets.ts";
 import { suiteLabel } from "./suite-lock.ts";
 
@@ -393,12 +393,13 @@ describe.skipIf(!dockerAvailable)("openSession against the fake agent", () => {
   }, 60_000);
 });
 
-describe("isRateLimit", () => {
+describe("errorKind", () => {
   test("classifies from data.errorKind, never from the message", () => {
-    expect(isRateLimit(new RequestError(-32603, "Internal error", { errorKind: "rate_limit", message: "provider rate limit" }))).toBe(true);
-    expect(isRateLimit(new RequestError(-32603, "Internal error", { errorKind: "billing_error", message: "provider rate limit" }))).toBe(false);
-    expect(isRateLimit(new RequestError(-32603, "provider rate limit", { message: "rate_limit" }))).toBe(false);
-    expect(isRateLimit(new RequestError(-32603, "Internal error"))).toBe(false);
-    expect(isRateLimit(new Error('{"errorKind":"rate_limit"}'))).toBe(false);
+    expect(errorKind(new RequestError(-32603, "Internal error", { errorKind: "rate_limit", message: "provider rate limit" }))).toBe("rate_limit");
+    expect(errorKind(RequestError.authRequired({ errorKind: "auth_error", message: "provider credentials required" }))).toBe("auth_error");
+    expect(errorKind(new RequestError(-32603, "Internal error", { errorKind: "billing_error", message: "provider rate limit" }))).toBe("billing_error");
+    expect(errorKind(new RequestError(-32603, "provider rate limit", { message: "rate_limit" }))).toBeNull();
+    expect(errorKind(new RequestError(-32603, "Internal error"))).toBeNull();
+    expect(errorKind(new Error('{"errorKind":"rate_limit"}'))).toBeNull();
   });
 });
