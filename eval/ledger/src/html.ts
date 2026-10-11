@@ -281,7 +281,6 @@ function lineRow(line: { description: string; quantity: number; unitPrice: strin
 }
 
 export function invoiceFormPage(ctx: Ctx, invoice: (Invoice & { lines: Line[] }) | null) {
-  const today = new Date().toISOString().slice(0, 10);
   const currency = invoice?.currency ?? "USD";
   const lines = invoice
     ? invoice.lines.map((line) => lineRow({ description: line.description, quantity: line.quantity, unitPrice: plainAmount(line.unitPrice, invoice.currency) })).join("")
@@ -296,7 +295,7 @@ export function invoiceFormPage(ctx: Ctx, invoice: (Invoice & { lines: Line[] })
 <p id="form-status" class="notice" role="status"></p>
 <label for="customer">Customer</label><input id="customer" name="customer" required maxlength="120" dir="auto" value="${esc(invoice?.customer ?? "")}">
 <div class="row">
-<div><label for="issueDate">Issue date</label><input id="issueDate" name="issueDate" type="date" required value="${invoice?.issueDate ?? today}"></div>
+<div><label for="issueDate">Issue date</label><input id="issueDate" name="issueDate" type="date" required value="${invoice?.issueDate ?? ""}"></div>
 <div><label for="dueDate">Due date</label><input id="dueDate" name="dueDate" type="date" required value="${invoice?.dueDate ?? ""}"></div>
 <div><label for="currency">Currency</label><select id="currency" name="currency">${currencies
       .map((code) => `<option${code === currency ? " selected" : ""}>${code}</option>`)
@@ -318,6 +317,10 @@ export function invoiceFormPage(ctx: Ctx, invoice: (Invoice & { lines: Line[] })
 const form = document.getElementById("invoice-form");
 const lines = document.getElementById("lines");
 const errorBox = document.getElementById("form-error");
+if (!form.issueDate.value) {
+  const now = new Date();
+  form.issueDate.value = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
+}
 const digits = { USD: 2, EUR: 2, KRW: 0 };
 function setPriceSteps() {
   const step = digits[form.currency.value] ? "0.01" : "1";
