@@ -133,6 +133,9 @@ describe("resolveRunDir", () => {
   });
 
   test("picks the latest run by startedAt, a run id, or a path", async () => {
+    await mkdir(join(runsDir(), "starting"), { recursive: true });
+    await Bun.write(join(runsDir(), "stray-file"), "");
+    await expect(resolveRunDir(undefined)).rejects.toThrow(`No runs in ${runsDir()}`);
     const newer = await saveRun("0a1b2c3d", "2026-09-26T11:00:00.000Z");
     const older = await saveRun("ffee0011", "2026-09-26T09:00:00.000Z");
     expect(await resolveRunDir(undefined)).toBe(newer);
