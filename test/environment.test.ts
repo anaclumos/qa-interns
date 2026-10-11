@@ -37,7 +37,7 @@ import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
 import type { RelayRecord } from "../src/types.ts";
 import { freeBlock } from "./subnet.ts";
-import { suiteLabel } from "./suite-lock.ts";
+import { runtimeRoot, suiteLabel } from "./suite-lock.ts";
 
 const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 
@@ -128,7 +128,7 @@ async function normalize(runDir: string, composeFiles: string[], override: strin
 describe("run locks", () => {
   test("refuse a run that another process holds, keep the file of a run whose process ended, and delete only a file the holder wrote", async () => {
     const runId = `qair-t-hold-${crypto.randomUUID().slice(0, 8)}`;
-    const locks = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs");
+    const locks = join(runtimeRoot, "runs");
     const module = join(import.meta.dir, "..", "src", "environment.ts");
     const holder = Bun.spawn([process.execPath, "-e", `const { holdRun } = await import(${JSON.stringify(module)}); holdRun(${JSON.stringify(runId)}, "/runs/original"); console.log("held"); await Bun.sleep(600000);`], {
       env: { ...process.env },
@@ -155,7 +155,7 @@ describe("run locks", () => {
 
   test("keep the lock of a killed run held until the commands that it started end", async () => {
     const runId = `qair-t-cmd-${crypto.randomUUID().slice(0, 8)}`;
-    const entry = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs", runId);
+    const entry = join(runtimeRoot, "runs", runId);
     const duration = `30.${crypto.getRandomValues(new Uint32Array(1))[0]}`;
     const target = join(import.meta.dir, "..", "src", "target.ts");
     const environment = join(import.meta.dir, "..", "src", "environment.ts");
@@ -874,7 +874,7 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
     const { images, release } = await buildImages(runId, await loadTarget(ref, source), source, join(await scratch(), "build.log"));
     const own = [images.web ?? "", images.api ?? ""];
     const [web = "", api = ""] = await Promise.all(own.map(async (name) => (await sharedTags([name]))[0] ?? ""));
-    const use = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "images", web.slice("qa-build-".length).split("-")[0] ?? "");
+    const use = join(runtimeRoot, "images",web.slice("qa-build-".length).split("-")[0] ?? "");
     const released = async (minutes: number) => {
       const then = new Date(Date.now() - minutes * 60_000);
       await utimes(use, then, then);

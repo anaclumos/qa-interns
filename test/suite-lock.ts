@@ -6,9 +6,9 @@ import { execute } from "../src/target.ts";
 
 const runtime = process.env.XDG_RUNTIME_DIR;
 if (runtime === undefined || runtime === "") throw new Error("XDG_RUNTIME_DIR is not set, and the test suite keeps its lock there");
-const dir = join(runtime, "qa-interns");
-mkdirSync(dir, { recursive: true, mode: 0o700 });
-const file = join(realpathSync(dir), "suite.lock");
+export const runtimeRoot = join(runtime, "qa-interns");
+mkdirSync(runtimeRoot, { recursive: true, mode: 0o700 });
+const file = join(realpathSync(runtimeRoot), "suite.lock");
 export const suiteLabel = `qa-interns.suite=${file}`;
 
 async function labeled(...list: string[]): Promise<string[]> {
