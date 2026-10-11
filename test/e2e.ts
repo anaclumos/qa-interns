@@ -8,14 +8,14 @@ import type { AskOptions } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { capture, execute } from "../src/target.ts";
 import type { RunState } from "../src/types.ts";
-import { suiteLabel } from "./suite-lock.ts";
+import { runtimeRoot, suiteLabel } from "./suite-lock.ts";
 
 export const dockerAvailable = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0;
 export const timeout = 20 * 60_000;
 export const cliScript = join(import.meta.dir, "..", "src", "cli.ts");
 export const title = "Home page shows the fake defect";
 export const knownGap = "The environment has no video model.";
-export const runLocks = join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "runs");
+export const runLocks = join(runtimeRoot, "runs");
 export const intendedBehavior = "The invoices table scrolls sideways at narrow viewports instead of clipping its columns.";
 
 type FakeAgent = { limit?: true | "charter"; rateLimit?: number;confirms?: false; late?: true; deaf?: true; swap?: true; flood?: true; idle?: true; hang?: true | string; stray?: true; second?: true; printKey?: true; nonce?: string };
@@ -163,9 +163,6 @@ export async function firstPrompt(runDir: string, internId: string): Promise<str
 }
 
 export function internalSubnet(runDir: string, internId: string): string {
-  const network = readFileSync(join(runDir, "envs", internId, "compose.qa.yml"), "utf8")
-    .split("\n")
-    .find((entry) => entry.startsWith("  qa_internal: !override "));
-  if (network === undefined) throw new Error(`compose.qa.yml of ${internId} has no qa_internal network`);
-  return JSON.parse(network.slice("  qa_internal: !override ".length)).ipam.config[0].subnet;
+  const compose = Bun.YAML.parse(readFileSync(join(runDir, "envs", internId, "compose.qa.yml"), "utf8")) as { networks: { qa_internal: { ipam: { config: [{ subnet: string }] } } } };
+  return compose.networks.qa_internal.ipam.config[0].subnet;
 }

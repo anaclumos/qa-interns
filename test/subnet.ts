@@ -2,10 +2,9 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { freeSlots } from "../src/environment.ts";
 import { flock } from "../src/logins.ts";
+import { runtimeRoot } from "./suite-lock.ts";
 
-const runtime = process.env.XDG_RUNTIME_DIR;
-if (runtime === undefined || runtime === "") throw new Error("XDG_RUNTIME_DIR is not set, and the tests keep the locks of their network blocks there");
-const locks = join(runtime, "qa-interns", "blocks");
+const locks = join(runtimeRoot, "blocks");
 mkdirSync(locks, { recursive: true, mode: 0o700 });
 
 export async function freeBlock(second: number): Promise<number> {

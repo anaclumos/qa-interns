@@ -62,7 +62,7 @@ export type CopyOptions = {
   print(line: string): void;
 };
 
-export type AskOptions = {
+export type AskOptions<T = unknown> = {
   runDir: string;
   runId: string;
   name: string;
@@ -71,7 +71,7 @@ export type AskOptions = {
   admit: Admit;
   prompt: string;
   file: string;
-  parse(raw: string): unknown;
+  parse(raw: string): T;
 };
 
 type Admit = (memory: number) => (() => void) | null;
@@ -682,7 +682,7 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
   }
 }
 
-export async function ask(opts: AskOptions): Promise<unknown> {
+export async function ask<T>(opts: AskOptions<T>): Promise<T> {
   const scheduler = new Scheduler(await loadLogin(opts.loginsFile));
   const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, opts.admit, async () => {});
   const project = `qa-${opts.runId}-${opts.name}`;

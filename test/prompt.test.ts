@@ -183,6 +183,10 @@ describe("confirmPrompt", () => {
     expect(prompt).toContain("http://web:3000");
   });
 
+  test("states the session-end rule as its own bullet", () => {
+    expect(prompt.split("\n")).toContain("- The session ends when the time box ends. Write the file before then.");
+  });
+
   test("lists every intended behavior", () => {
     const lines = prompt.split("\n");
     for (const entry of intendedBehaviors) expect(lines).toContain(`  - ${entry}`);

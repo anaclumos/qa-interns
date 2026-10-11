@@ -229,7 +229,8 @@ Confirmation:
 - When the finding states that an account cannot see or reach something, use each select, menu, or switcher on that account's pages, as How to work says, in each attempt. An attempt in which such a control reaches it does not show the failure.
 - \`observed\` states what your attempts showed, for the steps and for the task.
 - Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.${intended}
-- \`evidence\` includes at least one screenshot that shows what your attempts showed whenever a page shows it. Take it while the page shows the result. Leave screenshots out only when no page shows the result, such as a failure that only an HTTP response or the console shows.- The session ends when the time box ends. Write the file before then.`;
+- \`evidence\` includes at least one screenshot that shows what your attempts showed whenever a page shows it. Take it while the page shows the result. Leave screenshots out only when no page shows the result, such as a failure that only an HTTP response or the console shows.
+- The session ends when the time box ends. Write the file before then.`;
 }
 
 export function timeUpPrompt(): string {
