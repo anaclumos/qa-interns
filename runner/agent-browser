@@ -3,6 +3,8 @@ set -eu
 real=/usr/local/lib/node_modules/agent-browser/bin/agent-browser-linux-x64
 limit=4
 session=${AGENT_BROWSER_SESSION-default}
+namespace=${AGENT_BROWSER_NAMESPACE-default}
+launch=profile
 command=
 next=
 for arg in "$@"; do
@@ -11,6 +13,7 @@ for arg in "$@"; do
   esac
   case $next in
     session) session=$arg ;;
+    namespace) namespace=$arg ;;
   esac
   if [ -n "$next" ]; then
     next=
@@ -18,12 +21,16 @@ for arg in "$@"; do
   fi
   case $arg in
     --session) next=session ;;
-    --restore-save | --restore-check-url | --restore-check-text | --restore-check-fn | --namespace | --headers | --executable-path | --cdp | --extension | --init-script | --enable | --profile | --state | --proxy | --proxy-bypass | --args | --user-agent | -p | --provider | --device | --session-name | --color-scheme | --download-path | --max-output | --allowed-domains | --action-policy | --confirm-actions | --config | --engine | --input-mode | --screenshot-dir | --screenshot-quality | --screenshot-format | --idle-timeout | --ca-cert | --model) next=value ;;
+    --namespace) next=namespace ;;
+    --profile | --state | --ca-cert) launch=; next=value ;;
+    --restore-save | --restore-check-url | --restore-check-text | --restore-check-fn | --headers | --executable-path | --cdp | --extension | --init-script | --enable | --proxy | --proxy-bypass | --args | --user-agent | -p | --provider | --device | --session-name | --color-scheme | --download-path | --max-output | --allowed-domains | --action-policy | --confirm-actions | --config | --engine | --input-mode | --screenshot-dir | --screenshot-quality | --screenshot-format | --idle-timeout | --model) next=value ;;
     -*) ;;
     *) [ -n "$command" ] || command=$arg ;;
   esac
 done
-export AGENT_BROWSER_PROFILE=/tmp/agent-browser-profiles/$session
+if [ -n "$launch" ] && [ -z "${AGENT_BROWSER_PROFILE-}${AGENT_BROWSER_STATE-}${AGENT_BROWSER_CA_CERT-}" ]; then
+  export AGENT_BROWSER_PROFILE=/tmp/agent-browser-profiles/$namespace/$session
+fi
 case $command in
   "" | close | quit | exit | session | skills) exec "$real" "$@" ;;
 esac

@@ -1687,7 +1687,7 @@ describe.skipIf(!dockerAvailable)("agent-browser in the runner", () => {
   );
 
   test(
-    "keep the cookies a session holds when it closes and opens again, and share none with another session",
+    "keep the cookies a session holds when it closes and opens again, share none with another session or namespace, and leave a launch that names its own profile, state, or CA certificate alone",
     async () => {
       const image = await ensureRunnerImage();
       const runDir = await scratch();
@@ -1704,6 +1704,16 @@ describe.skipIf(!dockerAvailable)("agent-browser in the runner", () => {
         "agent-browser --session c2 open http://127.0.0.1:18318/echo > /dev/null",
         "agent-browser --session c2 open http://127.0.0.1:18318/echo > /dev/null",
         'echo "other $(agent-browser --session c2 eval "document.body.innerText")"',
+        "agent-browser --session c2 close > /dev/null",
+        "AGENT_BROWSER_NAMESPACE=n2 agent-browser --session c1 open http://127.0.0.1:18318/echo > /dev/null",
+        "AGENT_BROWSER_NAMESPACE=n2 agent-browser --session c1 open http://127.0.0.1:18318/echo > /dev/null",
+        'echo "namespace $(AGENT_BROWSER_NAMESPACE=n2 agent-browser --session c1 eval "document.body.innerText")"',
+        "AGENT_BROWSER_NAMESPACE=n2 agent-browser --session c1 close > /dev/null",
+        `echo '{"cookies":[],"origins":[]}' > /tmp/state.json`,
+        "agent-browser --session c3 --state /tmp/state.json open http://127.0.0.1:18318/echo > /dev/null; echo \"state $?\"",
+        "agent-browser --session c3 close > /dev/null",
+        "agent-browser --session c4 --profile /tmp/own-profile open http://127.0.0.1:18318/echo > /dev/null; echo \"profile $?\"",
+        "agent-browser --session c4 close > /dev/null",
       ].join("\n");
       const policy = "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json";
       const { code, stdout } = await capture(
@@ -1711,7 +1721,7 @@ describe.skipIf(!dockerAvailable)("agent-browser in the runner", () => {
         { timeout: 5 * 60_000 },
       );
       expect(code).toBe(0);
-      expect(stdout.trim().split("\n")).toEqual(['restarted "cookie: persist=1\\n"', 'other "cookie: none\\n"']);
+      expect(stdout.trim().split("\n")).toEqual(['restarted "cookie: persist=1\\n"', 'other "cookie: none\\n"', 'namespace "cookie: none\\n"', "state 0", "profile 0"]);
     },
     20 * 60_000,
   );
