@@ -167,7 +167,6 @@ describe.skipIf(!dockerAvailable)("prune", () => {
       FAKE_GH_FINISH: join(finishing, "findings.json"),
     };
     const lock = flock(replayLock(replayed), "shared", "block");
-    if (lock === null) throw new Error(`flock on ${replayLock(replayed)} returned no lock`);
     const pruned = await capture(["bun", cliScript, "prune"], { env }).finally(() => closeSync(lock));
     expect(pruned.stderr).toBe("");
     expect(pruned.code).toBe(0);

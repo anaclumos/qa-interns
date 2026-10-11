@@ -5,7 +5,7 @@ import path from "node:path";
 import { z } from "zod";
 import { kinds, type Confirmation, type Finding, type FindingEnvironment, type Rejected } from "./types.ts";
 
-class Invalid extends Error {}
+export class Invalid extends Error {}
 
 const maxBytes = 1024 ** 2;
 

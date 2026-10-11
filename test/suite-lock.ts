@@ -51,7 +51,6 @@ async function take(): Promise<number> {
   if (fd === null) {
     console.error(`Waiting for the test suite that holds ${file} to end`);
     fd = flock(file, "exclusive", "block");
-    if (fd === null) throw new Error(`flock on ${file} reported the lock as held after it waited for it`);
   }
   if (Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0) {
     const containers = await labeled("ps", "-a");

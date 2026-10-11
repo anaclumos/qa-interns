@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import { existsSync, lstatSync } from "node:fs";
-import { appendFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtempDisposable, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -128,12 +128,8 @@ export async function targetEnv(hostEnv: string[], dir: string): Promise<Record<
 }
 
 async function withTargetEnv<T>(hostEnv: string[], work: (env: Record<string, string | undefined>) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), "qa-interns-check-"));
-  try {
-    return await work(await targetEnv(hostEnv, dir));
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
+  await using dir = await mkdtempDisposable(join(tmpdir(), "qa-interns-check-"));
+  return await work(await targetEnv(hostEnv, dir.path));
 }
 
 export function isHttpUrl(value: string): boolean {

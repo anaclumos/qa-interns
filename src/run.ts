@@ -27,7 +27,7 @@ import {
   type EnvironmentSpec,
   type HeldSlot,
 } from "./environment.ts";
-import { message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
+import { Invalid, message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
 import { admit, loadLogin, Scheduler, watchReleases, type Lease } from "./logins.ts";
 import { credentialRule, pi, readKey } from "./pi.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
@@ -545,6 +545,7 @@ async function check(ctx: Context, id: string): Promise<Answer> {
   try {
     return { result: await readConfirmation(ctx.runDir, id), error: null };
   } catch (error) {
+    if (!(error instanceof Invalid)) throw error;
     return { result: null, error: message(error) };
   }
 }

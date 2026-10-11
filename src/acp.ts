@@ -11,7 +11,7 @@ import {
 import { appendFileSync, statSync } from "node:fs";
 import { z } from "zod";
 import { version } from "../package.json";
-import { oneLine, stripControl } from "./findings.ts";
+import { message, oneLine, stripControl } from "./findings.ts";
 import { longestSecret, redact, redactAcross } from "./secrets.ts";
 
 const startupMs = 5 * 60_000;
@@ -195,7 +195,7 @@ export async function openSession(opts: { container: string; adapter: string[]; 
     await close();
     if (error === overlong || error === oversent) return error;
     const stderr = redact(await Bun.file(opts.adapterLog).text()).slice(-2000);
-    return new Error(`${argv.join(" ")} exited with ${child.exitCode ?? child.signalCode}: ${stderr}`, { cause: error });
+    return new Error(`${argv.join(" ")} exited with ${child.exitCode ?? child.signalCode}: ${stderr}; ${message(error)}`);
   };
 
   const setup = async () => {

@@ -66,6 +66,8 @@ const libc = dlopen("libc.so.6", {
 const lockModes = { shared: 1, exclusive: 2 };
 const lockNonblock = 4;
 
+export function flock(file: string, mode: "shared" | "exclusive", wait: "block"): number;
+export function flock(file: string, mode: "shared" | "exclusive", wait: "nonblock"): number | null;
 export function flock(file: string, mode: "shared" | "exclusive", wait: "block" | "nonblock"): number | null {
   const fd = openSync(file, "a", 0o600);
   const operation = lockModes[mode] | (wait === "nonblock" ? lockNonblock : 0);
@@ -98,14 +100,8 @@ function lockFile(dir: string, path: string, kind: string): string {
   return join(dir, `${createHash("sha256").update(path).digest("hex")}-${kind}.lock`);
 }
 
-function take(dir: string, file: string, mode: "shared" | "exclusive", wait: "block" | "nonblock"): number {
-  const fd = flock(file, mode, wait);
-  if (fd === null) throw new Error(`${file} is locked by a process that does not hold ${join(dir, "acquire.lock")}`);
-  return fd;
-}
-
 function exclusive<T>(dir: string, body: () => T): T {
-  const mutex = take(dir, join(dir, "acquire.lock"), "exclusive", "block");
+  const mutex = flock(join(dir, "acquire.lock"), "exclusive", "block");
   try {
     return body();
   } finally {
@@ -228,7 +224,8 @@ export function admit(environmentMemory: number, pressureLimit = cpuPressureLimi
     }
     if (hostMemory().available - reserve - starting < memory) return null;
     const file = join(dir, `${startingPrefix}${memory}-${crypto.randomUUID()}`);
-    const fd = take(dir, file, "exclusive", "nonblock");
+    const fd = flock(file, "exclusive", "nonblock");
+    if (fd === null) throw new Error(`${file} is locked by a process that does not hold ${join(dir, "acquire.lock")}`);
     let started = false;
     return () => {
       if (started) return;

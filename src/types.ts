@@ -10,8 +10,6 @@ export type Mount = { source: string; target: string; readOnly: boolean };
 
 export const internStatuses = ["queued", "starting", "testing", "done", "failed", "limited"] as const;
 
-export type InternStatus = (typeof internStatuses)[number];
-
 export const roles = ["intern", "judge", "confirm"] as const;
 
 export type InternState = RunState["interns"][number];
@@ -27,8 +25,6 @@ export type RunPhase = (typeof runPhases)[number];
 export type RunState = z.infer<typeof stateSchema>;
 
 export const kinds = ["crash", "error", "wrong-data", "data-loss", "inconsistency", "access", "visual", "slow"] as const;
-
-export type Kind = (typeof kinds)[number];
 
 export type FindingEnvironment = Finding["environment"];
 
