@@ -83,7 +83,7 @@ async function latestRunDir(): Promise<string> {
   const root = runsDir();
   if (!existsSync(root)) throw new Error(`No runs in ${root}`);
   const runs = await Promise.all(
-    (await readdir(root)).map(async (name) => {
+    (await readdir(root)).filter((name) => existsSync(join(root, name, "state.json"))).map(async (name) => {
       const dir = join(root, name);
       return { dir, startedAt: Date.parse((await readState(dir)).startedAt) };
     }),
