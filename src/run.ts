@@ -1,6 +1,6 @@
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { isRateLimit, openSession, type Session } from "./acp.ts";
+import { errorKind, openSession, type Session } from "./acp.ts";
 import {
   buildImages,
   containerStats,
@@ -29,7 +29,7 @@ import {
 } from "./environment.ts";
 import { Invalid, message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
 import { admit, loadLogin, Scheduler, watchReleases, type Lease } from "./logins.ts";
-import { credentialRule, pi, readKey } from "./pi.ts";
+import { credentialRule, keyProblem, pi, readKey } from "./pi.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
 import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
@@ -287,6 +287,10 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     stopped = true;
     await execute(["docker", "kill", env.runner]);
     throw new Error(`${result}, so its runner was stopped`);
+  } catch (error) {
+    const key = errorKind(error) === "auth_error" ? readKey(lease.credential) : null;
+    const problem = key === null ? null : await keyProblem(key).catch(message);
+    throw problem === null ? error : new Error(`${message(error)}; ${problem}`);
   } finally {
     done.abort();
     if (session !== undefined) {
@@ -412,7 +416,7 @@ async function promptBackingOff(ctx: Context, note: Note, session: Session, text
     try {
       return await session.prompt(text);
     } catch (error) {
-      if (!isRateLimit(error)) throw error;
+      if (errorKind(error) !== "rate_limit") throw error;
       checkStopping(ctx);
       const ceiling = Math.min(rateLimitCapMs, rateLimitBaseMs * 2 ** retries);
       const wait = ceiling / 2 + (Math.random() * ceiling) / 2;

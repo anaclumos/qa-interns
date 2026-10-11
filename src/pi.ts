@@ -30,6 +30,24 @@ export function readKey(file: string): string | null {
   return authSchema.safeParse(value).data?.openrouter.key ?? null;
 }
 
+const keyUrl = "https://openrouter.ai/api/v1/key";
+
+const keySchema = z.looseObject({
+  data: z.looseObject({
+    effective_budget: z
+      .looseObject({ scope: z.string(), limit_usd: z.number(), spend_usd: z.number(), remaining_usd: z.number(), resets_at: z.string().nullable() })
+      .nullable(),
+  }),
+});
+
+export async function keyProblem(key: string): Promise<string | null> {
+  const response = await fetch(keyUrl, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(30_000) });
+  if (response.status !== 200) return `${keyUrl} answered ${response.status}`;
+  const budget = keySchema.parse(await response.json()).data.effective_budget;
+  if (budget === null || budget.remaining_usd > 0) return null;
+  return `the OpenRouter ${budget.scope} budget is spent, $${budget.spend_usd} of $${budget.limit_usd}, ${budget.resets_at === null ? "and never resets" : `until ${budget.resets_at}`}`;
+}
+
 export const pi = {
   adapter: ["pi-acp"],
   model: "openrouter/anthropic/claude-haiku-5.5",
