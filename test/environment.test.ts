@@ -1721,7 +1721,7 @@ describe.skipIf(!dockerAvailable)("agent-browser in the runner", () => {
         { timeout: 5 * 60_000 },
       );
       expect(code).toBe(0);
-      expect(stdout.trim().split("\n")).toEqual(['restarted "cookie: persist=1\\n"', 'other "cookie: none\\n"', 'namespace "cookie: none\\n"', "state 0", "profile 0"]);
+      expect(stdout.trim().split("\n")).toEqual(['restarted "cookie: persist=1"', 'other "cookie: none"', 'namespace "cookie: none"', "state 0", "profile 0"]);
     },
     20 * 60_000,
   );
