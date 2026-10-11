@@ -1685,4 +1685,34 @@ describe.skipIf(!dockerAvailable)("agent-browser in the runner", () => {
     },
     20 * 60_000,
   );
+
+  test(
+    "keep the cookies a session holds when it closes and opens again, and share none with another session",
+    async () => {
+      const image = await ensureRunnerImage();
+      const runDir = await scratch();
+      await writeChromePolicy(runDir, { app: "http://127.0.0.1:18318" });
+      const server =
+        'require("node:http").createServer((req, res) => { if (req.url === "/set") res.setHeader("set-cookie", ["persist=1; Max-Age=2592000; Path=/; HttpOnly", "sess=1; Path=/; HttpOnly"]); res.end("cookie: " + (req.headers.cookie ?? "none")); }).listen(18318, "127.0.0.1")';
+      const script = [
+        `node -e '${server}' &`,
+        "until curl -s http://127.0.0.1:18318/echo > /dev/null; do sleep 0.1; done",
+        "agent-browser --session c1 open http://127.0.0.1:18318/set > /dev/null",
+        "agent-browser --session c1 close > /dev/null",
+        "agent-browser --session c1 open http://127.0.0.1:18318/echo > /dev/null",
+        'echo "restarted $(agent-browser --session c1 eval "document.body.innerText")"',
+        "agent-browser --session c2 open http://127.0.0.1:18318/echo > /dev/null",
+        "agent-browser --session c2 open http://127.0.0.1:18318/echo > /dev/null",
+        'echo "other $(agent-browser --session c2 eval "document.body.innerText")"',
+      ].join("\n");
+      const policy = "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json";
+      const { code, stdout } = await capture(
+        ["docker", "run", "--rm", "--init", "--network", "none", "-v", `${join(runDir, "chrome-policy.json")}:${policy}:ro`, image, "sh", "-c", script],
+        { timeout: 5 * 60_000 },
+      );
+      expect(code).toBe(0);
+      expect(stdout.trim().split("\n")).toEqual(['restarted "cookie: persist=1\\n"', 'other "cookie: none\\n"']);
+    },
+    20 * 60_000,
+  );
 });

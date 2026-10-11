@@ -23,6 +23,7 @@ for arg in "$@"; do
     *) [ -n "$command" ] || command=$arg ;;
   esac
 done
+export AGENT_BROWSER_PROFILE=/tmp/agent-browser-profiles/$session
 case $command in
   "" | close | quit | exit | session | skills) exec "$real" "$@" ;;
 esac
