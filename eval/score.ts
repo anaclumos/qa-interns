@@ -35,26 +35,18 @@ const findingsSchema = z.object({
   ),
 });
 
-const scoreSchema = z.strictObject({ matches: z.record(z.string(), z.array(z.string())) });
+const scoreSchema = (defectIds: string[], groupIds: string[]) =>
+  z.strictObject({ matches: z.record(z.enum(defectIds), z.array(z.enum(groupIds))) });
 
-type Score = z.infer<typeof scoreSchema>;
-
-function parseScore(raw: string, defectIds: string[], groupIds: string[]): Score {
+function parseScore(raw: string, defectIds: string[], groupIds: string[]) {
   let data: unknown;
   try {
     data = JSON.parse(raw);
   } catch (error) {
     throw new Error(`not valid JSON: ${message(error)}`);
   }
-  const parsed = scoreSchema.safeParse(data);
+  const parsed = scoreSchema(defectIds, groupIds).safeParse(data);
   if (!parsed.success) throw new Error(z.prettifyError(parsed.error));
-  const problems: string[] = [];
-  for (const id of defectIds) if (!Object.hasOwn(parsed.data.matches, id)) problems.push(`defect ${id} is missing`);
-  for (const [id, groups] of Object.entries(parsed.data.matches)) {
-    if (!defectIds.includes(id)) problems.push(`${id} is not a planted defect id`);
-    for (const group of groups) if (!groupIds.includes(group)) problems.push(`${group} under ${id} is not a group id`);
-  }
-  if (problems.length > 0) throw new Error(problems.join("; "));
   return parsed.data;
 }
 
@@ -108,7 +100,7 @@ async function main(): Promise<void> {
     file: "score.json",
     parse: (raw) => parseScore(raw, defectIds, groupIds),
   });
-  const { matches } = scoreSchema.parse(score);
+  const { matches } = score;
   await Bun.write(join(runDir, "score.json"), `${JSON.stringify({ matches }, null, 2)}\n`);
 
   const confirmedGroups = new Set(groups.filter((group) => group.confirmed).map((group) => group.id));
@@ -116,8 +108,7 @@ async function main(): Promise<void> {
   let found = 0;
   let confirmed = 0;
   for (const id of defectIds) {
-    const matched = matches[id];
-    if (matched === undefined) throw new Error(`score.json has no entry for defect ${id}`);
+    const matched = matches[id]!;
     const isConfirmed = matched.some((group) => confirmedGroups.has(group));
     if (matched.length > 0) found += 1;
     if (isConfirmed) confirmed += 1;

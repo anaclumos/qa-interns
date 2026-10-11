@@ -194,8 +194,8 @@ document.getElementById("bulk-paid").addEventListener("click", async () => {
   if (response.ok) {
     location.reload();
   } else {
-    const data = await response.json().catch(() => ({}));
-    message.textContent = data.error || "Could not update the selected invoices.";
+    const data = await response.json();
+    message.textContent = data.error;
   }
 });
 </script>`
@@ -261,8 +261,8 @@ document.getElementById("delete-invoice").addEventListener("click", async () => 
   if (response.ok) {
     location.href = "/invoices";
   } else {
-    const data = await response.json().catch(() => ({}));
-    document.getElementById("delete-error").textContent = data.error || "Could not delete the invoice.";
+    const data = await response.json();
+    document.getElementById("delete-error").textContent = data.error;
   }
 });
 </script>`
@@ -371,7 +371,7 @@ form.addEventListener("submit", async (event) => {
       location.href = "/invoices/" + data.id;
     }, 1000);
   } catch (error) {
-    errorBox.textContent = error.message || "Could not save the invoice.";
+    errorBox.textContent = error.message;
     errorBox.hidden = false;
   }
 });

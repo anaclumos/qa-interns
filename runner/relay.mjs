@@ -1,15 +1,7 @@
 import { connect, createServer } from "node:net";
 
-const allow = (process.env.QA_RELAY_ALLOW ?? "").split(",");
-if (allow.includes("")) {
-  console.error(`QA_RELAY_ALLOW must be a comma list of hosts, got ${JSON.stringify(process.env.QA_RELAY_ALLOW ?? null)}`);
-  process.exit(1);
-}
-const limits = JSON.parse(process.env.QA_RELAY_LIMITS ?? "null");
-if (limits === null || typeof limits !== "object" || Array.isArray(limits) || Object.keys(limits).some((host) => !allow.includes(host))) {
-  console.error(`QA_RELAY_LIMITS must be a JSON object keyed by hosts of QA_RELAY_ALLOW, got ${JSON.stringify(process.env.QA_RELAY_LIMITS ?? null)}`);
-  process.exit(1);
-}
+const allow = process.env.QA_RELAY_ALLOW.split(",");
+const limits = JSON.parse(process.env.QA_RELAY_LIMITS);
 const budgets = new Map(Object.entries(limits).map(([host, limit]) => [host, { limit, open: 0, opened: [], total: 0 }]));
 
 function exceeded(budget, now) {

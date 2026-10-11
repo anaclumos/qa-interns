@@ -6,11 +6,11 @@ if (!url) throw new Error("DATABASE_URL is not set. Point it at a Postgres datab
 export const sql = new SQL(url);
 
 export type Role = "owner" | "editor" | "viewer";
-export type Status = "draft" | "sent" | "paid";
-export type Currency = "USD" | "EUR" | "KRW";
 
-export const currencies: Currency[] = ["USD", "EUR", "KRW"];
-export const statuses: Status[] = ["draft", "sent", "paid"];
+export const statuses = ["draft", "sent", "paid"] as const;
+export type Status = (typeof statuses)[number];
+export const currencies = ["USD", "EUR", "KRW"] as const;
+export type Currency = (typeof currencies)[number];
 export const minorDigits: Record<Currency, number> = { USD: 2, EUR: 2, KRW: 0 };
 
 export type LineInput = { description: string; quantity: number; unitPrice: number };
