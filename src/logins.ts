@@ -13,7 +13,7 @@ export const defaultLoginsPath = join(process.env.XDG_CONFIG_HOME || join(homedi
 
 const example = `{"id": "openrouter-1", "store": "/absolute/path/to/login-store", "concurrency": 4}`;
 
-const loginSchema = z.strictObject({
+export const loginSchema = z.strictObject({
   id: z.string().min(1),
   store: z
     .string()
@@ -49,12 +49,10 @@ function invalid(file: string, problems: string[]): Error {
 }
 
 export async function loadLogin(file: string): Promise<Login> {
-  const value = await readJson(file, z.unknown(), `No logins file at ${file}. Create it with this shape: ${example}`);
-  const parsed = loginSchema.safeParse(value);
-  if (!parsed.success) throw invalid(file, parsed.error.issues.map((issue) => (issue.path.length === 0 ? issue.message : `${z.core.toDotPath(issue.path)}: ${issue.message}`)));
-  const problem = credentialProblem(parsed.data.store);
+  const login = await readJson(file, loginSchema, `No logins file at ${file}. Create it with this shape: ${example}`);
+  const problem = credentialProblem(login.store);
   if (problem !== null) throw invalid(file, [problem]);
-  return { id: parsed.data.id, store: parsed.data.store, concurrency: parsed.data.concurrency };
+  return login;
 }
 
 export type Lease = { login: Login; credential: string; release(): void };

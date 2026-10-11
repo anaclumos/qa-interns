@@ -5,7 +5,6 @@ import {
   PROTOCOL_VERSION,
   RequestError,
   type AnyMessage,
-  type NewSessionResponse,
   type SetSessionConfigOptionResponse,
 } from "@agentclientprotocol/sdk";
 import { appendFileSync, statSync } from "node:fs";
@@ -30,7 +29,7 @@ const chunkSchema = z.looseObject({
 console.error = (...data: unknown[]) => process.stderr.write(`${oneLine(stripControl(redact(data.filter((item) => typeof item !== "object").join(" "))))}\n`);
 
 export type Session = {
-  model: string | null;
+  model: string;
   prompt(text: string): Promise<{ stopReason: string; toolCalls: number; lastMessage: string }>;
   toolCalls(): number;
   cancel(): Promise<void>;
@@ -43,10 +42,10 @@ export function isRateLimit(error: unknown): boolean {
   return error instanceof RequestError && rateLimitSchema.safeParse(error.data).success;
 }
 
-function modelOf(response: NewSessionResponse | SetSessionConfigOptionResponse): string | null {
-  const option = response.configOptions?.find((entry) => entry.id === "model");
-  if (option && typeof option.currentValue === "string") return option.currentValue;
-  return z.object({ models: z.object({ currentModelId: z.string() }) }).safeParse(response).data?.models.currentModelId ?? null;
+function modelOf(response: SetSessionConfigOptionResponse): string {
+  const option = response.configOptions.find((entry) => entry.id === "model");
+  if (option === undefined || typeof option.currentValue !== "string") throw new Error("the agent reported no model option");
+  return option.currentValue;
 }
 
 function appender(path: string): (data: string | Uint8Array) => void {

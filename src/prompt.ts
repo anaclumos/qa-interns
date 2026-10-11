@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { Finding, Rejected } from "./types.ts";
+import { kinds, type Finding, type Rejected } from "./types.ts";
 
 export const charters: readonly string[] = [
   "First-time user: sign-up, onboarding, empty states, first actions.",
@@ -83,7 +83,7 @@ Evidence:
 
 const findingFormat = `{
   "title": "one line: what breaks",
-  "kind": "crash | error | wrong-data | data-loss | inconsistency | access | visual | slow",
+  "kind": "${kinds.join(" | ")}",
   "conditions": { "account": "account and role", "data": "data state", "viewport": "viewport", "browser": "browser state", "network": "network state" },
   "steps": ["actions from a freshly seeded environment, one per entry, without numbers"],
   "observed": "what happened, quoted from the page, the console, or the response",
