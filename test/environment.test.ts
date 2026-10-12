@@ -92,7 +92,7 @@ function spec(runDir: string, target: Target | null, overrides: Partial<Environm
       image: "qa-interns-runner:0.1.0",
       out: join(runDir, "interns", "i1", "out"),
       env: { ...runnerEnv(urls), ...pi.env },
-      mounts: pi.mounts("/home/dev/.qa-interns/openrouter-1/auth.json"),
+      files: pi.files("/home/dev/.qa-interns/openrouter-1/auth.json"),
       tmpfs: pi.tmpfs,
     },
     egress: pi.egress,
@@ -348,7 +348,6 @@ describe.skipIf(!dockerAvailable)("renderOverride", () => {
         target: "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json",
         read_only: true,
       },
-      { type: "bind", source: "/home/dev/.qa-interns/openrouter-1/auth.json", target: "/home/qa/.pi/auth.json", read_only: true },
     ]);
 
     expect(config.networks.qa_internal).toMatchObject({
@@ -1056,16 +1055,21 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
 
 describe.skipIf(!dockerAvailable)("startEnvironment", () => {
   test(
-    "save the output disk of an environment that only down tears down",
+    "copy the login into the runner as qa, and save the output disk of an environment that only down tears down",
     async () => {
       const runId = crypto.randomUUID().slice(0, 8);
       const runDir = await scratch();
       const image = await ensureRunnerImage();
       await writeChromePolicy(runDir, {});
       const out = join(runDir, "interns", "i1", "out");
-      const runner = { image, out, env: runnerEnv({}), mounts: [], tmpfs: []};
+      const credential = join(runDir, "auth.json");
+      await Bun.write(credential, '{"openrouter":{"type":"api_key","key":"sk-or-v1-test"}}');
+      await chmod(credential, 0o600);
+      const runner = { image, out, env: { ...runnerEnv({}), ...pi.env }, files: pi.files(credential), tmpfs: pi.tmpfs };
       try {
         const environment = await startEnvironment(spec(runDir, null, { runId, slot: await takeSlot(), runner }));
+        expect(await execute(["docker", "exec", environment.runner, "stat", "-c", "%U %a", "/home/qa/.pi/auth.json"])).toBe("qa 400\n");
+        expect(await execute(["docker", "exec", environment.runner, "cat", "/home/qa/.pi/auth.json"])).toBe(await Bun.file(credential).text());
         await execute(["docker", "exec", environment.runner, "sh", "-c", "mkdir /qa/out/findings && echo '{}' > /qa/out/findings/left.json"]);
       } finally {
         await stopRun(runDir, runId);
@@ -1121,7 +1125,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         const target = await loadTarget(ref, source);
         const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
         await writeChromePolicy(runDir, target.settings.urls);
-        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], tmpfs: []};
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), files: [], tmpfs: []};
         const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner }));
         expect(environment.seed).toEqual({
           environment: ["listed", ""],
@@ -1155,7 +1159,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       try {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
-        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], tmpfs: []};
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), files: [], tmpfs: []};
         const failed = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), runner })).then(
           () => null,
           (error: unknown) => error,
@@ -1206,7 +1210,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
         const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
         shared = await sharedTags(Object.values(images));
         await writeChromePolicy(runDir, target.settings.urls);
-        const runner = (name: string, urls: Record<string, string>) => ({ image, out: join(runDir, "interns", name, "out"), env: runnerEnv(urls), mounts: [], tmpfs: []});
+        const runner = (name: string, urls: Record<string, string>) => ({ image, out: join(runDir, "interns", name, "out"), env: runnerEnv(urls), files: [], tmpfs: []});
         const intern = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner: runner("i1", target.settings.urls) }));
         const judge = await startEnvironment(spec(runDir, null, { runId, name: "judge", slot: await takeSlot(), runner: runner("judge", {}) }));
         const containers = [intern.project, judge.project].flatMap((project) => {
@@ -1257,7 +1261,7 @@ describe.skipIf(!dockerAvailable)("startEnvironment", () => {
       try {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
-        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], tmpfs: []};
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), files: [], tmpfs: []};
         const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), runner }));
         const web = (await execute(["docker", "compose", "-p", environment.project, "ps", "-q", "web"])).trim();
         await execute(["docker", "exec", web, "sh", "-c", `rmdir /app/uploads && ln -s ${host} /app/uploads && touch /app/stop`]);
@@ -1295,7 +1299,7 @@ ${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", 
       try {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
-        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], tmpfs: []};
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), files: [], tmpfs: []};
         let ready = false;
         const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), runner }), () => {
           ready = true;
@@ -1336,7 +1340,7 @@ ${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", 
       const runDir = await scratch();
       const image = await ensureRunnerImage();
       await writeChromePolicy(runDir, {});
-      const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv({}), mounts: [], tmpfs: []};
+      const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv({}), files: [], tmpfs: []};
       const flood = [
         "const { writeFileSync } = require('node:fs');",
         "const { connect } = require('node:net');",
@@ -1378,7 +1382,7 @@ ${service("[ -e /tmp/once ] || { touch /tmp/once; exit 1; }; exec sleep 86400", 
         const target = await loadTarget(ref, source);
         const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
         await writeChromePolicy(runDir, target.settings.urls);
-        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], tmpfs: []};
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), files: [], tmpfs: []};
         const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner }));
         expect(Object.keys(target.services).sort()).toEqual(["db", "web"]);
         for (const service of Object.keys(target.services)) {
@@ -1440,7 +1444,7 @@ ${sleeper}    profiles: ["mail"]
         expect(Object.keys(target.services).filter((name) => target.services[name]?.active).sort()).toEqual(expected);
         const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
         await writeChromePolicy(runDir, target.settings.urls);
-        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), mounts: [], tmpfs: []};
+        const runner = { image, out: join(runDir, "interns", "i1", "out"), env: runnerEnv(target.settings.urls), files: [], tmpfs: []};
         const environment = await startEnvironment(spec(runDir, target, { runId, slot: await takeSlot(), images, runner }));
         const running = (await execute(["docker", "compose", "-p", environment.project, "ps", "--services"])).split("\n").filter((name) => name !== "");
         expect(running.sort()).toEqual([...expected, "qa-proxy", "qa-runner"].sort());

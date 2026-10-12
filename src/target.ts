@@ -1,4 +1,4 @@
-import type { Subprocess } from "bun";
+import type { BunFile, Subprocess } from "bun";
 import { existsSync, lstatSync } from "node:fs";
 import { appendFile, mkdir, mkdtempDisposable, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -33,7 +33,7 @@ export type Target = TargetRef & {
   services: Record<string, ComposeService>;
 };
 
-type CommandOptions = { env?: Record<string, string | undefined>; log?: string; timeout?: number };
+type CommandOptions = { env?: Record<string, string | undefined>; log?: string; timeout?: number; stdin?: BunFile };
 
 const running = new Set<Subprocess>();
 const groups = new Set<Subprocess>();
@@ -59,7 +59,7 @@ export function trackGroup<T extends Subprocess>(proc: T): T {
 export async function capture(cmd: string[], options: CommandOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   const argv = options.timeout === undefined ? cmd : ["timeout", "--kill-after=10s", `${options.timeout / 1000}s`, ...cmd];
   const started = performance.now();
-  const proc = track(Bun.spawn(argv, { env: options.env, stdio: ["ignore", "pipe", "pipe", ...runLocks] }));
+  const proc = track(Bun.spawn(argv, { env: options.env, stdio: [options.stdin ?? "ignore", "pipe", "pipe", ...runLocks] }));
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   if (options.log !== undefined) await appendFile(options.log, stderr);
   if (options.timeout !== undefined && (code === 124 || code === 137) && performance.now() - started >= options.timeout) {

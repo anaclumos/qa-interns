@@ -120,7 +120,7 @@ describe.skipIf(!dockerAvailable)("a live intern on OpenRouter", () => {
             image,
             out: join(runDir, "interns", name, "out"),
             env: { ...runnerEnv({}), ...pi.env },
-            mounts: [...pi.mounts(join(store, "auth.json")), { source: settings, target: "/home/qa/.pi/settings.json", readOnly: true }],
+            files: [...pi.files(join(store, "auth.json")), { source: settings, target: "/home/qa/.pi/settings.json" }],
             tmpfs: pi.tmpfs,
           },
           egress: pi.egress,
