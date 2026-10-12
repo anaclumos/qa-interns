@@ -14,7 +14,7 @@ Repo-specific rules only. The product design is issue #1; user documentation is 
 ## Gates
 
 - The `ci.yml` `test` job passes on a change's head commit before the change merges.
-- `.env.actions.enc` holds only `OPENROUTER_API_KEY`, the OpenRouter API key `qa-interns-actions-e2e`, which the live interns of `test/e2e-live.test.ts` run on. The key is never copied from a login store.
+- `.env.actions.enc` holds only `OPENROUTER_API_KEY`, the OpenRouter API key `QA Interns Actions E2E`, which the live interns of `test/e2e-live.test.ts` run on. The key is never copied from a login store.
 - The key lives in the OpenRouter default workspace, on the Anthropic BYOK credentials that workspace holds: this project is the exception to the global rule that a project keys OpenRouter in its own workspace, and has no workspace of its own.
 - The tier's decrypt key is the repository secret `DOTENV_PRIVATE_KEY_ACTIONS`, and no other copy of it exists.
 - A change to the value writes a mode-600 plaintext file that holds the tier's `DOTENV_PUBLIC_KEY_ACTIONS` line and the new value, encrypts it in place with `dotenvx encrypt`, which uses that public key, and copies it over the tier, so the repository secret stays valid.
