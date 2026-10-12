@@ -32,6 +32,7 @@ import {
 } from "../src/environment.ts";
 import { flock } from "../src/logins.ts";
 import { pi } from "../src/pi.ts";
+import { defaultViewport } from "../src/prompt.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { forgetSecrets, redact } from "../src/secrets.ts";
 import { capture, execute, loadTarget, type Target } from "../src/target.ts";
@@ -1724,6 +1725,18 @@ describe.skipIf(!dockerAvailable)("agent-browser in the runner", () => {
       );
       expect(code).toBe(0);
       expect(stdout.trim().split("\n")).toEqual(['restarted "cookie: persist=1"', 'other "cookie: none"', 'namespace "cookie: none"', "state 0", "profile 0"]);
+    },
+    20 * 60_000,
+  );
+
+  test(
+    "open a session at the viewport that the intern prompt states",
+    async () => {
+      const image = await ensureRunnerImage();
+      const script = 'agent-browser open about:blank > /dev/null && agent-browser eval "innerWidth + \\"x\\" + innerHeight"';
+      const { code, stdout } = await capture(["docker", "run", "--rm", "--init", "--network", "none", image, "sh", "-c", script], { timeout: 5 * 60_000 });
+      expect(code).toBe(0);
+      expect(stdout.trim()).toBe(JSON.stringify(defaultViewport));
     },
     20 * 60_000,
   );

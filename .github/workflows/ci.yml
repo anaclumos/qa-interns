@@ -10,6 +10,25 @@ permissions:
   contents: read
 
 jobs:
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - name: Install Docker Compose 5.5.1
+        run: |
+          mkdir -p ~/.docker/cli-plugins
+          curl -fsSL -o ~/.docker/cli-plugins/docker-compose https://github.com/docker/compose/releases/download/v5.5.1/docker-compose-linux-aarch64
+          echo "732e3a84c1a0f67256ce80bc2598a24546b10ca05f9faa97efceb1171ece2ef7  $HOME/.docker/cli-plugins/docker-compose" | sha256sum -c -
+          chmod +x ~/.docker/cli-plugins/docker-compose
+          docker compose version
+      - run: docker info
+      - run: bun install --frozen-lockfile
+      - run: bun run test --timeout 1200000 $(ls test/*.test.ts | grep -v -x -F test/e2e-live.test.ts)
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 45

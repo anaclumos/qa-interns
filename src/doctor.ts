@@ -110,8 +110,9 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
   };
 
   await check("cpu", async () => {
-    if (arch() !== "x64") throw new Error(`the CPU is ${arch()}, and the runner image needs x86-64`);
-    return "x86-64";
+    if (arch() === "x64") return "x86-64";
+    if (arch() === "arm64") return "arm64";
+    throw new Error(`the CPU is ${arch()}, and the runner image needs x86-64 or arm64`);
   });
   await check("docker", async () => {
     const version = versionSchema.parse(JSON.parse(await execute(["docker", "version", "--format", "json"])));

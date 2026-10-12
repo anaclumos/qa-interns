@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
-real=/usr/local/lib/node_modules/agent-browser/bin/agent-browser-linux-x64
+case $(uname -m) in
+  x86_64) real=/usr/local/lib/node_modules/agent-browser/bin/agent-browser-linux-x64 ;;
+  aarch64) real=/usr/local/lib/node_modules/agent-browser/bin/agent-browser-linux-arm64 ;;
+esac
 limit=4
 session=${AGENT_BROWSER_SESSION-default}
 namespace=${AGENT_BROWSER_NAMESPACE-default}
