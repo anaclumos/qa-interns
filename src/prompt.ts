@@ -50,7 +50,7 @@ ${JSON.stringify(env.seed, null, 2)}
 \`\`\``;
 }
 
-const defaultViewport = "1280x577";
+export const defaultViewport = "1280x577";
 
 const howToWork = `How to work:
 - Drive the browser with agent-browser. \`agent-browser skills get core\` prints its command reference, and \`agent-browser skills get dogfood\` prints its guide to exploratory testing.

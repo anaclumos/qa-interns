@@ -9,6 +9,7 @@ RUN --mount=type=tmpfs,target=/usr/share/doc \
       libnss3-tools libnspr4 libatk-bridge2.0-0t64 libdrm2 libxkbcommon0 \
       libatspi2.0-0t64 libcups2t64 libxshmfence1 libgbm1 \
       fonts-noto-cjk fonts-noto-color-emoji fonts-freefont-ttf fonts-liberation" \
+ && if [ "$(dpkg --print-architecture)" = arm64 ]; then packages="$packages chromium"; fi \
  && apt-get update \
  && apt-get install -y --no-install-recommends --download-only $packages \
  && for deb in /var/cache/apt/archives/*.deb; do \
@@ -22,8 +23,12 @@ RUN --mount=type=tmpfs,target=/usr/share/doc \
 RUN npm install -g --no-audit --no-fund agent-browser@0.38.1 \
  && npm cache clean --force
 
-RUN HOME=/opt/agent-browser agent-browser install \
- && ln -s /opt/agent-browser/.agent-browser/browsers/chrome-*/chrome /usr/local/bin/chrome \
+RUN case "$(dpkg --print-architecture)" in \
+      amd64) HOME=/opt/agent-browser agent-browser install \
+        && ln -s /opt/agent-browser/.agent-browser/browsers/chrome-*/chrome /usr/local/bin/chrome ;; \
+      arm64) ln -s /usr/lib/chromium/chromium /usr/local/bin/chrome \
+        && ln -s /etc/opt/chrome_for_testing/policies /etc/chromium/policies ;; \
+    esac \
  && chrome --version
 
 COPY package.json package-lock.json /opt/pi-acp/
