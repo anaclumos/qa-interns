@@ -275,7 +275,7 @@ const referencesSchema = z
   })
   .nullable();
 
-const reservedServices = ["qa-proxy", "qa-relay", "qa-runner"];
+export const reservedServices =["qa-proxy", "qa-relay", "qa-runner"];
 const namespaces = ["pid", "ipc", "uts", "cgroup", "userns_mode"] as const;
 const hooks = ["pre_start", "post_start", "pre_stop"] as const;
 const buildNetworks = ["default", "none"];
