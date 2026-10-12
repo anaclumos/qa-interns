@@ -26,7 +26,8 @@ RUN npm install -g --no-audit --no-fund agent-browser@0.38.1 \
 RUN case "$(dpkg --print-architecture)" in \
       amd64) HOME=/opt/agent-browser agent-browser install \
         && ln -s /opt/agent-browser/.agent-browser/browsers/chrome-*/chrome /usr/local/bin/chrome ;; \
-      arm64) ln -s /usr/lib/chromium/chromium /usr/local/bin/chrome \
+      arm64) printf '#!/bin/sh\nexec /usr/lib/chromium/chromium "$@" --window-size=1280,664\n' > /usr/local/bin/chrome \
+        && chmod +x /usr/local/bin/chrome \
         && ln -s /etc/opt/chrome_for_testing/policies /etc/chromium/policies ;; \
     esac \
  && chrome --version

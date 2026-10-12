@@ -103,7 +103,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const confirmed = markdown.slice(markdown.indexOf("## Confirmed"), markdown.indexOf("## Not confirmed"));
       expect(confirmed).toContain(`### ${title}`);
       expect(confirmed).toContain("- Reproductions: 3 (i1, i2, c1)");
-      expect(report.run.browser).toMatch(/^Google Chrome for Testing \d+\./);
+      expect(report.run.browser).toMatch(/^(Google Chrome for Testing|Chromium) \d+\./);
       expect(markdown.split("\n")).toContain(`- Browser: ${report.run.browser}`);
       expect(confirmed).toContain(`  - Browser version: ${report.run.browser}`);
       const usage = markdown.slice(markdown.indexOf("## Environments"));
