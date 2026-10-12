@@ -25,12 +25,33 @@ jobs:
           echo "db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576  $HOME/.docker/cli-plugins/docker-compose" | sha256sum -c -
           chmod +x ~/.docker/cli-plugins/docker-compose
           docker compose version
-      - run: docker info
-      - run: bun install --frozen-lockfile
-      - run: bun run typecheck
+      - name: Run the job and Docker in a 4 GiB slice
+        run: |
+          printf '[Slice]\nMemoryAccounting=yes\nMemoryMax=4G\nMemorySwapMax=0\n' | sudo tee /etc/systemd/system/ci-job.slice
+          for unit in containerd docker; do
+            sudo mkdir -p /etc/systemd/system/$unit.service.d
+            printf '[Service]\nSlice=ci-job.slice\n' | sudo tee /etc/systemd/system/$unit.service.d/slice.conf
+          done
+          { sudo cat /etc/docker/daemon.json 2>/dev/null || echo '{}'; } | jq '. + {"cgroup-parent": "ci-job.slice"}' > /tmp/daemon.json
+          sudo cp /tmp/daemon.json /etc/docker/daemon.json
+          sudo systemctl daemon-reload
+          sudo systemctl restart containerd.service docker.service
+          printf '#!/bin/sh\nexec sudo --preserve-env env "PATH=$PATH" systemd-run --scope --quiet --slice=ci-job.slice -- sudo --preserve-env -u "$(id -un)" env "PATH=$PATH" "$@"\n' | sudo tee /usr/local/bin/ci-job
+          sudo chmod 755 /usr/local/bin/ci-job
+          slice=/sys/fs/cgroup/ci.slice/ci-job.slice
+          nohup bash -c 'peak=0; while sleep 1; do current=$(cat '$slice'/memory.current); while read -r key value; do [ "$key" = inactive_file ] && inactive=$value; done < '$slice'/memory.stat; used=$((current - inactive)); if [ $used -gt $peak ]; then peak=$used; echo $peak > /tmp/working-set-peak; fi; done' > /dev/null 2>&1 &
+      - run: ci-job docker info
+      - run: ci-job bun install --frozen-lockfile
+      - run: ci-job bun run typecheck
       - run: |
-          bunx @anthropic-ai/claude-code@2.1.283 plugin validate .
-          bunx @anthropic-ai/claude-code@2.1.283 plugin validate skills
-      - run: bunx @dotenvx/dotenvx@2.33.0 run -f .env.actions.enc --strict --no-native --no-armor -- bun run test --timeout 1200000
+          ci-job bunx @anthropic-ai/claude-code@2.1.283 plugin validate .
+          ci-job bunx @anthropic-ai/claude-code@2.1.283 plugin validate skills
+      - run: ci-job bunx @dotenvx/dotenvx@2.33.0 run -f .env.actions.enc --strict --no-native --no-armor -- bun run test --timeout 1200000
         env:
           DOTENV_PRIVATE_KEY_ACTIONS: ${{ secrets.DOTENV_PRIVATE_KEY_ACTIONS }}
+      - name: Print the job's peak memory
+        if: always()
+        run: |
+          numfmt --to=iec-i --suffix=B < /sys/fs/cgroup/ci.slice/ci-job.slice/memory.peak
+          cat /sys/fs/cgroup/ci.slice/ci-job.slice/memory.events
+          echo "working set peak:"; numfmt --to=iec-i --suffix=B < /tmp/working-set-peak
