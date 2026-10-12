@@ -50,12 +50,16 @@ jobs:
       - run: |
           ci-job bunx @anthropic-ai/claude-code@2.1.283 plugin validate .
           ci-job bunx @anthropic-ai/claude-code@2.1.283 plugin validate skills
+      - run: ci-job timeout 300 bun test test/target.test.ts
       - run: ci-job bunx @dotenvx/dotenvx@2.33.0 run -f .env.actions.enc --strict --no-native --no-armor -- bun run test --timeout 1200000
+        timeout-minutes: 30
         env:
           DOTENV_PRIVATE_KEY_ACTIONS: ${{ secrets.DOTENV_PRIVATE_KEY_ACTIONS }}
       - name: Print the job's peak memory
         if: always()
         run: |
+          sudo ps -eo pid,ppid,stat,wchan:32,etime,comm --forest | grep -v ' \[' | tail -60
+          for pid in $(pgrep -x bun); do echo "== $pid"; sudo cat /proc/$pid/stack; sudo ls -l /proc/$pid/fd | tail -n +2; done
           numfmt --to=iec-i --suffix=B < /sys/fs/cgroup/ci.slice/ci-job.slice/memory.peak
           cat /sys/fs/cgroup/ci.slice/ci-job.slice/memory.events
           echo "working set peak:"; numfmt --to=iec-i --suffix=B < /tmp/working-set-peak
