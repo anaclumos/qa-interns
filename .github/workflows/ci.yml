@@ -37,12 +37,12 @@ jobs:
           sudo cp /tmp/daemon.json /etc/docker/daemon.json
           sudo systemctl daemon-reload
           sudo systemctl restart containerd.service docker.service
-          printf '#!/bin/sh\nexec sudo --preserve-env env "PATH=$PATH" systemd-run --scope --quiet --slice=ci-job.slice --uid="$(id -u)" -- "$@"\n' | sudo tee /usr/local/bin/ci-job
+          printf '#!/bin/sh\nexec sudo --preserve-env env "PATH=$PATH" systemd-run --scope --quiet --slice=ci-job.slice -- sudo --preserve-env -u "$(id -un)" env "PATH=$PATH" "$@"\n' | sudo tee /usr/local/bin/ci-job
           sudo chmod 755 /usr/local/bin/ci-job
           ci-job id
           ci-job cat /proc/self/cgroup
           printf 'FROM busybox\nRUN cat /proc/self/cgroup\n' | ci-job docker build --no-cache --progress=plain -
-          slice=/sys/fs/cgroup/ci-job.slice
+          slice=/sys/fs/cgroup/ci.slice/ci-job.slice
           nohup bash -c 'peak=0; while sleep 1; do current=$(cat '$slice'/memory.current); while read -r key value; do [ "$key" = inactive_file ] && inactive=$value; done < '$slice'/memory.stat; used=$((current - inactive)); if [ $used -gt $peak ]; then peak=$used; echo $peak > /tmp/working-set-peak; fi; done' > /dev/null 2>&1 &
       - run: ci-job docker info
       - run: ci-job bun install --frozen-lockfile
@@ -56,8 +56,8 @@ jobs:
       - name: Print the job's peak memory
         if: always()
         run: |
-          numfmt --to=iec-i --suffix=B < /sys/fs/cgroup/ci-job.slice/memory.peak
-          cat /sys/fs/cgroup/ci-job.slice/memory.events
+          numfmt --to=iec-i --suffix=B < /sys/fs/cgroup/ci.slice/ci-job.slice/memory.peak
+          cat /sys/fs/cgroup/ci.slice/ci-job.slice/memory.events
           echo "working set peak:"; numfmt --to=iec-i --suffix=B < /tmp/working-set-peak
           docker ps -a --format '{{.Names}}' | head
           systemd-cgls --no-pager -u ci-job.slice | head -40
