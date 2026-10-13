@@ -5,6 +5,7 @@ import { z } from "zod";
 import { createDisk, devcontainer, execOut, freeSlot, memoryPeak, removeDir, saveDisk, slotSubnets } from "./environment.ts";
 import { message, oneLine } from "./findings.ts";
 import { cpuPressure, cpuPressureLimit, hostMemory, loadLogin, Scheduler } from "./logins.ts";
+import { credentialName, credentialRule, keyProblem, providerProblem, readKey } from "./pi.ts";
 import { ensureRunnerImage } from "./runner.ts";
 import { runsDir } from "./state.ts";
 import { composeVersion, execute } from "./target.ts";
@@ -144,7 +145,12 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
   await check("login", async () => {
     const login = await loadLogin(loginsFile);
     const scheduler = new Scheduler(login);
-    return `${loginsFile}: login ${login.id}, capacity ${scheduler.capacity()}`;
+    const file = join(login.store, credentialName);
+    const key = readKey(file);
+    if (key === null) throw new Error(`${file} ${credentialRule}`);
+    const problem = (await keyProblem(key)) ?? (await providerProblem(key));
+    if (problem !== null) throw new Error(problem);
+    return `${loginsFile}: login ${login.id}, capacity ${scheduler.capacity()}, and the model provider answered a one-token request`;
   });
   await check("memory", async () => {
     const { total, available, reserve, limit } = hostMemory();
