@@ -62,7 +62,7 @@ const completionsUrl = "https://openrouter.ai/api/v1/chat/completions";
 const errorSchema = z.looseObject({
   error: z.looseObject({
     message: z.string(),
-    metadata: z.looseObject({ raw: z.unknown() }).optional(),
+    metadata: z.looseObject({ raw: z.unknown().optional() }).optional(),
   }),
 });
 
