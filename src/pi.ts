@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { minLength } from "./secrets.ts";
-import type { Mount } from "./types.ts";
+import type { RunnerFile } from "./types.ts";
 
 const agentDir = "/home/qa/.pi";
 
@@ -54,5 +54,5 @@ export const pi = {
   env: { PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1" },
   egress: ["openrouter.ai"],
   tmpfs: [agentDir],
-  mounts: (credential: string): Mount[] => [{ source: credential, target: `${agentDir}/${credentialName}`, readOnly: true }],
+  files: (credential: string): RunnerFile[] => [{ source: credential, target: `${agentDir}/${credentialName}` }],
 };
