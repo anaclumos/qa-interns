@@ -99,6 +99,17 @@ async function checkNetwork(): Promise<string> {
   }
 }
 
+export async function checkLogin(loginsFile: string): Promise<string> {
+  const login = await loadLogin(loginsFile);
+  const scheduler = new Scheduler(login);
+  const file = join(login.store, credentialName);
+  const key = readKey(file);
+  if (key === null) throw new Error(`${file} ${credentialRule}`);
+  const problem = (await keyProblem(key)) ?? (await providerProblem(key));
+  if (problem !== null) throw new Error(problem);
+  return `${loginsFile}: login ${login.id}, capacity ${scheduler.capacity()}, and the model provider answered a one-token request`;
+}
+
 export async function doctor(loginsFile: string, print: (line: string) => void): Promise<boolean> {
   let passed = true;
   const check = async (name: string, run: () => Promise<string>): Promise<void> => {
@@ -142,16 +153,7 @@ export async function doctor(loginsFile: string, print: (line: string) => void):
     if (image === null) throw new Error("the runner image is not available");
     return checkMemoryPeak(image);
   });
-  await check("login", async () => {
-    const login = await loadLogin(loginsFile);
-    const scheduler = new Scheduler(login);
-    const file = join(login.store, credentialName);
-    const key = readKey(file);
-    if (key === null) throw new Error(`${file} ${credentialRule}`);
-    const problem = (await keyProblem(key)) ?? (await providerProblem(key));
-    if (problem !== null) throw new Error(problem);
-    return `${loginsFile}: login ${login.id}, capacity ${scheduler.capacity()}, and the model provider answered a one-token request`;
-  });
+  await check("login", () => checkLogin(loginsFile));
   await check("memory", async () => {
     const { total, available, reserve, limit } = hostMemory();
     const gib = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);

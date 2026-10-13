@@ -29,7 +29,7 @@ import {
 } from "./environment.ts";
 import { Invalid, message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
 import { admit, loadLogin, Scheduler, watchReleases, type Lease } from "./logins.ts";
-import { credentialName, credentialRule, keyProblem, pi, providerProblem, readKey } from "./pi.ts";
+import { credentialRule, keyProblem, pi, readKey } from "./pi.ts";
 import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
 import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
@@ -687,19 +687,8 @@ async function guard<T>(ctx: Context, body: () => Promise<T>, interrupted: () =>
   }
 }
 
-async function schedulerFor(loginsFile: string): Promise<Scheduler> {
-  const login = await loadLogin(loginsFile);
-  const file = join(login.store, credentialName);
-  const key = readKey(file);
-  if (key === null) throw new Error(`login ${login.id}: ${file} ${credentialRule}`);
-  keepLoginKey(key, login.id);
-  const problem = (await keyProblem(key)) ?? (await providerProblem(key));
-  if (problem !== null) throw new Error(redact(`login ${login.id}: ${problem}`));
-  return new Scheduler(login);
-}
-
 export async function ask<T>(opts: AskOptions<T>): Promise<T> {
-  const scheduler = await schedulerFor(opts.loginsFile);
+  const scheduler = new Scheduler(await loadLogin(opts.loginsFile));
   const ctx = context(opts.runId, opts.runDir, opts.runnerImage, scheduler, opts.admit, async () => {});
   const project = `qa-${opts.runId}-${opts.name}`;
   const held = holdRun(opts.runId, opts.runDir);
@@ -852,7 +841,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
 }
 
 export async function runQa(opts: RunOptions): Promise<string> {
-  const scheduler = await schedulerFor(opts.loginsFile);
+  const scheduler = new Scheduler(await loadLogin(opts.loginsFile));
   const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
   const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0, confirmConcurrency: 0 };
   const { runId, runDir, state, save, held } = await newRun(ref, options, opts.print);

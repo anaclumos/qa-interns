@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { z } from "zod";
-import { doctor } from "./doctor.ts";
+import { checkLogin, doctor } from "./doctor.ts";
 import { imageBuilders, removeCopies, stopRun, sweepImages } from "./environment.ts";
 import { errorCode, message, stripControl } from "./findings.ts";
 import { admit, defaultLoginsPath, flock } from "./logins.ts";
@@ -23,6 +23,9 @@ Commands:
       Check Docker, Compose, the isolated network mode, the Dev Container CLI,
       the runner image and its agent, the login, and the host's available
       memory and CPU pressure.
+  login [--logins <file>]
+      Check the login: its OpenRouter key budget, and a one-token request to the
+      interns' model. Exits 1 with the provider's message when either fails.
   validate <target-dir> [--commit <rev> | --dirty]
       Check the target's dev container and Compose files at the commit (default
       HEAD), or with --dirty in a copy of its working tree, as run does before it
@@ -105,6 +108,11 @@ async function main(args: string[]): Promise<number> {
     case "doctor": {
       const { values } = parseArgs({ args: rest, options: { logins: { type: "string", default: defaultLoginsPath } } });
       return (await doctor(values.logins, print)) ? 0 : 1;
+    }
+    case "login": {
+      const { values } = parseArgs({ args: rest, options: { logins: { type: "string", default: defaultLoginsPath } } });
+      print(await checkLogin(values.logins));
+      return 0;
     }
     case "validate": {
       const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { commit: { type: "string" }, dirty: { type: "boolean", default: false } } });
