@@ -9,9 +9,9 @@ import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { writeAtomic } from "./state.ts";
 import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, targetEnv, type Target } from "./target.ts";
-import { relayOutcomes, type ContainerStats, type Mount, type RelayRecord } from "./types.ts";
+import { relayOutcomes, type ContainerStats, type RelayRecord, type RunnerFile } from "./types.ts";
 
-export type RunnerSpec = { image: string; out: string; env: Record<string, string>; mounts: Mount[]; tmpfs: string[] };
+export type RunnerSpec = { image: string; out: string; env: Record<string, string>; files: RunnerFile[]; tmpfs: string[] };
 export type EnvironmentSpec = {
   runId: string;
   runDir: string;
@@ -225,7 +225,6 @@ export function renderOverride(spec: EnvironmentSpec, uid: number, gid: number):
   const volumes = [
     { type: "volume", source: outVolumeKey, target: "/qa/out" },
     bind(join(spec.runDir, "chrome-policy.json"), "/etc/opt/chrome_for_testing/policies/managed/qa-interns.json", true),
-    ...spec.runner.mounts.map((mount) => bind(mount.source, mount.target, mount.readOnly)),
   ];
   if (proxied) {
     lines.push(
@@ -475,6 +474,10 @@ async function runnerId(project: string): Promise<string> {
   return id;
 }
 
+async function writeRunnerFiles(runner: string, files: RunnerFile[]): Promise<void> {
+  for (const file of files) await execute(["docker", "exec", "-i", runner, "sh", "-c", 'umask 277 && cat > "$1"', "sh", file.target], { stdin: Bun.file(file.source) });
+}
+
 function qaServices(spec: EnvironmentSpec, target: Target): string[] {
   return [...(spec.egress.length > 0 ? ["qa-proxy"] : []), "qa-runner", ...(target.settings.egress.length > 0 ? ["qa-relay"] : [])];
 }
@@ -516,8 +519,10 @@ export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void
   const tmp = join(dir, "tmp");
   if (spec.target === null) {
     await execute(["docker", "compose", "-p", project, ...composeArgs(spec), "up", "-d", "--wait", "--wait-timeout", waitTimeoutSeconds], { env: { ...process.env, DOCKER_CONFIG: await dockerConfig(tmp) }, log });
+    const runner = await runnerId(project);
+    await writeRunnerFiles(runner, spec.runner.files);
     ready?.();
-    return { project, runner: await runnerId(project), out: spec.runner.out, devContainer: null, seed: null };
+    return { project, runner, out: spec.runner.out, devContainer: null, seed: null };
   }
   const target = spec.target;
   const env = await targetEnv(target.settings.hostEnv, tmp);
@@ -550,6 +555,7 @@ export async function startEnvironment(spec: EnvironmentSpec, ready?: () => void
     { env: upEnv, log },
   );
   const runner = await runnerId(project);
+  await writeRunnerFiles(runner, spec.runner.files);
   const exec = [process.execPath, devcontainer, "exec", "--container-id", devContainer, "--workspace-folder", workspace, "--override-config", config];
   await waitReady(target.settings.ready, runner, exec, env, log);
   ready?.();
@@ -765,15 +771,18 @@ async function saveServiceLogs(project: string, dir: string): Promise<void> {
   const containers = listed
     .split("\n")
     .filter((line) => line !== "")
-    .map((line) => z.tuple([z.string(), z.string()]).parse(line.split(" ")))
-    .filter(([, service]) => !reservedServices.includes(service));
+    .flatMap((line) => {
+      const [id, ...rest] = line.split(" ");
+      const service = rest.join(" ");
+      return id !== undefined && id !== "" && service !== "" && !reservedServices.includes(service) ? [[id, service]] : [];
+    });
   if (containers.length > 0) mkdirSync(dir, { recursive: true });
   for (const [id, service] of containers) await execute(["sh", "-c", 'docker logs "$1" > "$2" 2>&1', "sh", id, join(dir, `service-${service}-${id}.log`)]);
 }
 
 async function down(project: string, internDir: string | null): Promise<void> {
   await execute(["docker", "compose", "-p", project, "stop", "--timeout", "2"]);
-  if (internDir !== null) await Promise.all([saveRelayLogs(project, internDir), saveServiceLogs(project, internDir)]);
+  if (internDir !== null) await Promise.allSettled([saveRelayLogs(project, internDir), saveServiceLogs(project, internDir)]);
   await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
   const ids = await projectObjects(project);
   if (ids.length > 0) throw new Error(`docker compose down left objects of ${project} behind: ${ids.join(", ")}`);

@@ -257,7 +257,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
       image: ctx.runnerImage,
       out: join(ctx.runDir, outDir(name)),
       env: { ...runnerEnv(target === null ? {} : target.settings.urls), ...pi.env },
-      mounts: pi.mounts(lease.credential),
+      files: pi.files(lease.credential),
       tmpfs: pi.tmpfs,
     },
     egress: pi.egress,
@@ -816,7 +816,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
           slot: slot.slot,
           target,
           images,
-          runner: { image: ctx.runnerImage, out: join(runDir, outDir(copyName)), env: runnerEnv(target.settings.urls), mounts: [], tmpfs: [] },
+          runner: { image: ctx.runnerImage, out: join(runDir, outDir(copyName)), env: runnerEnv(target.settings.urls), files: [], tmpfs: [] },
           egress: [],
         });
         const envDir = join(runDir, "envs", copyName);

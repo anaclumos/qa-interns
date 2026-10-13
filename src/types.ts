@@ -7,7 +7,7 @@ import type { stateSchema } from "./state.ts";
 
 export type Login = z.infer<typeof loginSchema>;
 
-export type Mount = { source: string; target: string; readOnly: boolean };
+export type RunnerFile = { source: string; target: string };
 
 export const internStatuses = ["queued", "starting", "testing", "done", "failed", "limited"] as const;
 
