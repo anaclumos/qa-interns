@@ -771,7 +771,7 @@ async function saveServiceLogs(project: string, dir: string): Promise<void> {
   const containers = listed
     .split("\n")
     .filter((line) => line !== "")
-    .flatMap((line) => {
+    .flatMap((line): [string, string][] => {
       const [id, ...rest] = line.split(" ");
       const service = rest.join(" ");
       return id !== undefined && id !== "" && service !== "" && !reservedServices.includes(service) ? [[id, service]] : [];
