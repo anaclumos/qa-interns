@@ -59,29 +59,39 @@ export const pi = {
 
 const completionsUrl = "https://openrouter.ai/api/v1/chat/completions";
 
-const completionSchema = z.looseObject({
-  error: z
-    .looseObject({
-      message: z.string(),
-      metadata: z.looseObject({ raw: z.string() }).optional(),
-    })
-    .optional(),
+const errorSchema = z.looseObject({
+  error: z.looseObject({
+    message: z.string(),
+    metadata: z.looseObject({ raw: z.string().optional() }).optional(),
+  }),
 });
 
 const rawSchema = z.looseObject({ error: z.looseObject({ message: z.string() }) });
 
-export function providerError(body: unknown): string | null {
-  const parsed = completionSchema.safeParse(body);
-  if (!parsed.success || parsed.data.error === undefined) return null;
-  const { message, metadata } = parsed.data.error;
-  if (metadata?.raw !== undefined) {
-    try {
-      return rawSchema.parse(JSON.parse(metadata.raw)).error.message;
-    } catch {
-      return message;
-    }
+const choicesSchema = z.looseObject({ choices: z.array(z.unknown()).nonempty() });
+
+function parseJson(text: string): { value: unknown } | null {
+  try {
+    return { value: JSON.parse(text) };
+  } catch (error) {
+    if (error instanceof SyntaxError) return null;
+    throw error;
   }
-  return message;
+}
+
+export function completionProblem(status: number, text: string): string | null {
+  const body = parseJson(text);
+  if (body === null) return `${completionsUrl} answered ${status} with a body that is not JSON`;
+  const failed = errorSchema.safeParse(body.value);
+  if (failed.success) {
+    const { message, metadata } = failed.data.error;
+    const raw = metadata?.raw === undefined ? null : parseJson(metadata.raw);
+    const provider = raw === null ? null : (rawSchema.safeParse(raw.value).data?.error.message ?? null);
+    return `the model provider refused a one-token request: ${provider ?? message}`;
+  }
+  if (status !== 200) return `${completionsUrl} answered ${status}`;
+  if (!choicesSchema.safeParse(body.value).success) return `${completionsUrl} answered 200 without a completion choice`;
+  return null;
 }
 
 export async function providerProblem(key: string): Promise<string | null> {
@@ -91,15 +101,5 @@ export async function providerProblem(key: string): Promise<string | null> {
     body: JSON.stringify({ model: pi.model.slice("openrouter/".length), max_tokens: 1, messages: [{ role: "user", content: "hi" }] }),
     signal: AbortSignal.timeout(60_000),
   });
-  const text = await response.text();
-  let body: unknown = null;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = null;
-  }
-  const problem = body === null ? null : providerError(body);
-  if (problem !== null) return `the model provider refused a one-token request: ${problem}`;
-  if (response.status !== 200) return `${completionsUrl} answered ${response.status}`;
-  return null;
+  return completionProblem(response.status, await response.text());
 }
