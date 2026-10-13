@@ -56,3 +56,59 @@ export const pi = {
   tmpfs: [agentDir],
   files: (credential: string): RunnerFile[] => [{ source: credential, target: `${agentDir}/${credentialName}` }],
 };
+
+const completionsUrl = "https://openrouter.ai/api/v1/chat/completions";
+
+const errorSchema = z.looseObject({
+  error: z.looseObject({
+    message: z.string(),
+    metadata: z.looseObject({ raw: z.unknown().optional() }).optional(),
+  }),
+});
+
+const rawSchema = z.looseObject({ error: z.looseObject({ message: z.string() }) });
+
+const choicesSchema = z.looseObject({
+  choices: z
+    .array(
+      z.looseObject({
+        finish_reason: z.string().refine((reason) => reason !== "error"),
+        message: z.looseObject({ role: z.literal("assistant") }),
+      }),
+    )
+    .nonempty(),
+});
+
+function parseJson(text: string): { value: unknown } | null {
+  try {
+    return { value: JSON.parse(text) };
+  } catch (error) {
+    if (error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+export function completionProblem(status: number, text: string): string | null {
+  const body = parseJson(text);
+  if (body === null) return `${completionsUrl} answered ${status} with a body that is not JSON`;
+  const failed = errorSchema.safeParse(body.value);
+  if (failed.success) {
+    const { message, metadata } = failed.data.error;
+    const raw = typeof metadata?.raw === "string" ? parseJson(metadata.raw) : { value: metadata?.raw };
+    const provider = raw === null ? null : (rawSchema.safeParse(raw.value).data?.error.message ?? null);
+    return `the model provider refused a one-token request: ${provider ?? message}`;
+  }
+  if (status !== 200) return `${completionsUrl} answered ${status}`;
+  if (!choicesSchema.safeParse(body.value).success) return `${completionsUrl} answered 200 without a completion choice`;
+  return null;
+}
+
+export async function providerProblem(key: string): Promise<string | null> {
+  const response = await fetch(completionsUrl, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: pi.model.slice("openrouter/".length), max_tokens: 1, messages: [{ role: "user", content: "hi" }] }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  return completionProblem(response.status, await response.text());
+}
