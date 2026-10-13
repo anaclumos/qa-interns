@@ -8,7 +8,7 @@ import { errorCode, message } from "./findings.ts";
 import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { writeAtomic } from "./state.ts";
-import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, runLocks, targetEnv, type Target } from "./target.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, targetEnv, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type RelayRecord, type RunnerFile } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; files: RunnerFile[]; tmpfs: string[] };
@@ -766,16 +766,30 @@ async function saveRelayLogs(project: string, dir: string): Promise<void> {
   for (const id of ids) writeAtomic(join(dir, `${relayPrefix}${id}${relaySuffix}`), await execute(["docker", "logs", id]));
 }
 
-async function down(project: string, relayDir: string | null): Promise<void> {
+async function saveServiceLogs(project: string, dir: string): Promise<void> {
+  const listed = await execute(["docker", "ps", "-a", "--filter", `label=com.docker.compose.project=${project}`, "--format", '{{.ID}} {{.Label "com.docker.compose.service"}}']);
+  const containers = listed
+    .split("\n")
+    .filter((line) => line !== "")
+    .flatMap((line): [string, string][] => {
+      const [id, ...rest] = line.split(" ");
+      const service = rest.join(" ");
+      return id !== undefined && id !== "" && service !== "" && !reservedServices.includes(service) ? [[id, service]] : [];
+    });
+  if (containers.length > 0) mkdirSync(dir, { recursive: true });
+  for (const [id, service] of containers) await execute(["sh", "-c", 'docker logs "$1" > "$2" 2>&1', "sh", id, join(dir, `service-${service}-${id}.log`)]);
+}
+
+async function down(project: string, internDir: string | null): Promise<void> {
   await execute(["docker", "compose", "-p", project, "stop", "--timeout", "2"]);
-  if (relayDir !== null) await saveRelayLogs(project, relayDir);
+  if (internDir !== null) await Promise.allSettled([saveRelayLogs(project, internDir), saveServiceLogs(project, internDir)]);
   await execute(["docker", "compose", "-p", project, "down", "-v", "--remove-orphans", "--rmi", "local", "--timeout", "2"]);
   const ids = await projectObjects(project);
   if (ids.length > 0) throw new Error(`docker compose down left objects of ${project} behind: ${ids.join(", ")}`);
 }
 
-export async function stopProject(project: string, relayDir: string): Promise<void> {
-  if ((await projectObjects(project)).length > 0) await down(project, relayDir);
+export async function stopProject(project: string, internDir: string): Promise<void> {
+  if ((await projectObjects(project)).length > 0) await down(project, internDir);
 }
 
 async function removeImages(prefixes: string[]): Promise<void> {

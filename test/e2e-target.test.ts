@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { cp, mkdir, realpath, symlink } from "node:fs/promises";
+import { cp, mkdir, readdir, realpath, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { readRelayLogs } from "../src/environment.ts";
 import { runQa } from "../src/run.ts";
@@ -66,6 +66,12 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       for (const internId of ["i1", "c1"]) {
         const logs = await readRelayLogs(join(runDir, "interns", internId));
         expect(logs.map((records) => records.map((entry) => entry.n))).toEqual([[1, 2, 3]]);
+        const dir = join(runDir, "interns", internId);
+        const names = (await readdir(dir)).filter((name) => name.startsWith("service-")).sort();
+        expect(names.map((name) => name.split("-")[1])).toEqual(["db", "web"]);
+        const [db, web] = await Promise.all(names.map((name) => Bun.file(join(dir, name)).text()));
+        expect(db).toContain("database system is ready to accept connections");
+        expect(web).toContain("Ledger listening on port 3000");
       }
 
       expect(await leftovers(state.runId)).toEqual([]);
