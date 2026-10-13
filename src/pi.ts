@@ -62,7 +62,7 @@ const completionsUrl = "https://openrouter.ai/api/v1/chat/completions";
 const errorSchema = z.looseObject({
   error: z.looseObject({
     message: z.string(),
-    metadata: z.looseObject({ raw: z.string().optional() }).optional(),
+    metadata: z.looseObject({ raw: z.unknown() }).optional(),
   }),
 });
 
@@ -94,7 +94,7 @@ export function completionProblem(status: number, text: string): string | null {
   const failed = errorSchema.safeParse(body.value);
   if (failed.success) {
     const { message, metadata } = failed.data.error;
-    const raw = metadata?.raw === undefined ? null : parseJson(metadata.raw);
+    const raw = typeof metadata?.raw === "string" ? parseJson(metadata.raw) : { value: metadata?.raw };
     const provider = raw === null ? null : (rawSchema.safeParse(raw.value).data?.error.message ?? null);
     return `the model provider refused a one-token request: ${provider ?? message}`;
   }

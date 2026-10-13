@@ -35,6 +35,13 @@ describe("completionProblem", () => {
     expect(completionProblem(403, JSON.stringify({ error: { message: "Key limit exceeded", code: 403 } }))).toBe(`${refused}Key limit exceeded`);
     expect(completionProblem(502, JSON.stringify({ error: { message: "Upstream failed", metadata: { provider_name: "Anthropic" } } }))).toBe(`${refused}Upstream failed`);
     expect(completionProblem(502, JSON.stringify({ error: { message: "Upstream failed", metadata: { raw: "<html>" } } }))).toBe(`${refused}Upstream failed`);
+    expect(completionProblem(502, JSON.stringify({ error: { message: "Upstream failed", metadata: { raw: 42 } } }))).toBe(`${refused}Upstream failed`);
+  });
+
+  test("returns the provider message from a metadata.raw object", () => {
+    const body = { error: { message: "Provider returned error", metadata: { raw: { error: { message: "credit balance too low" } } } } };
+    expect(completionProblem(400, JSON.stringify(body))).toBe(`${refused}credit balance too low`);
+    expect(completionProblem(200, JSON.stringify(body))).toBe(`${refused}credit balance too low`);
   });
 
   test("fails an error inside a 200 body", () => {
