@@ -6,8 +6,14 @@ const refused = "the model provider refused a one-token request: ";
 
 describe("completionProblem", () => {
   test("passes a 200 completion with a choice", () => {
-    const body = { id: "gen-1", model: "anthropic/claude-haiku-5.5", choices: [{ message: { role: "assistant", content: "ok" } }] };
+    const body = { id: "gen-1", model: "anthropic/claude-haiku-5.5", choices: [{ finish_reason: "length", message: { role: "assistant", content: "ok" } }] };
     expect(completionProblem(200, JSON.stringify(body))).toBeNull();
+  });
+
+  test("fails a 200 body whose choice is null, empty, or failed", () => {
+    for (const choice of [null, {}, { finish_reason: "error", message: { role: "assistant", content: null } }, { finish_reason: "stop" }]) {
+      expect(completionProblem(200, JSON.stringify({ choices: [choice] }))).toBe(`${url} answered 200 without a completion choice`);
+    }
   });
 
   test("returns the provider message inside metadata.raw for a BYOK refusal", () => {

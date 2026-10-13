@@ -68,7 +68,16 @@ const errorSchema = z.looseObject({
 
 const rawSchema = z.looseObject({ error: z.looseObject({ message: z.string() }) });
 
-const choicesSchema = z.looseObject({ choices: z.array(z.unknown()).nonempty() });
+const choicesSchema = z.looseObject({
+  choices: z
+    .array(
+      z.looseObject({
+        finish_reason: z.string().refine((reason) => reason !== "error"),
+        message: z.looseObject({ role: z.literal("assistant") }),
+      }),
+    )
+    .nonempty(),
+});
 
 function parseJson(text: string): { value: unknown } | null {
   try {
