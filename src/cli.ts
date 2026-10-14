@@ -81,6 +81,19 @@ Commands:
 
 <run> is a run id or a run directory. Without it, the command uses the most recent run.
 The default logins file is ${defaultLoginsPath}.
+It holds {"id": "<name>", "store": "<directory>", "concurrency": <n>}, and the
+store's auth.json holds {"openrouter": {"type": "api_key", "key": "<OpenRouter
+API key>"}} and nothing else.
+
+A target describes its environment in a Compose-based
+.devcontainer/devcontainer.json, with QA Interns settings under
+customizations["qa-interns"]: urls, ready, seed, and optionally focus,
+offLimits, knownGaps, intendedBehaviors, hostEnv, secrets, egress, and
+connectionLimits.
+QA Interns runs the target's lifecycle commands, and initializeCommand runs on
+the host, so run it only against repositories you trust.
+Screenshots keep every value the page showed, secrets included, so check each
+image of a ticket draft before you post it.
 `;
 
 function print(line: string): void {
