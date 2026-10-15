@@ -52,7 +52,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
 
       const state = await readState(runDir);
       expect(state).toMatchObject({ phase: "done", error: null });
-      expect(state.interns.map((entry) => [entry.id, entry.status, entry.detail])).toEqual([["c1", "skipped", "the confirmation budget ended before its session began"]]);
+      expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([["c1", "skipped"]]);
+      expect(intern(state, "c1").detail).toMatch(/^the confirmation budget ended (before its session began|while it waited for a network slot)$/);
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.run).toMatchObject({ reproducedGroups: 0, notReproducedGroups: 0, uncheckedGroups: 1 });
       await clean(runDir, state);

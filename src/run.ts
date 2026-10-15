@@ -1054,11 +1054,12 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const prepared = await byDeadline(testingEnd - startMinMs, runTime, "it prepared the run", async () => {
       await exportTree(ref, source);
       const loaded = await loadTarget(ref, source);
+      const dealt = deck(loaded.settings.focus, opts.focus);
       ctx.runnerImage = await opts.runnerImage();
       for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
       browser = await browserVersion(ctx.runnerImage);
       slots = await freeSlots();
-      return loaded;
+      return { target: loaded, cards: dealt };
     }).catch((error: unknown) => {
       if (!(error instanceof TimeUp)) throw error;
       return error;
@@ -1068,9 +1069,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
       await phase("reporting");
       return;
     }
-    const target = prepared;
+    const { target, cards } = prepared;
     egress = target.settings.egress;
-    const cards = deck(target.settings.focus, opts.focus);
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
     const width = Math.min(scheduler.capacity(), slots);
     state.options.concurrency = Math.min(opts.interns, width);
