@@ -146,6 +146,7 @@ ${findingFormat}
 - \`contradicts\` is required when \`kind\` is \`inconsistency\`. Leave it out for every other kind.
 - Every string is non-empty, and \`steps\` has at least one entry. Write one action per entry, without a number.
 - The steps start from a freshly seeded environment, so another intern can follow them with no other context. Name every account, URL, and value you use.
+- Another intern's environment is seeded on its own, so an id or another value that the application generates, such as a record's id in a URL or a field, differs there. Wherever a step or a condition names such a value, also name the record by what a page shows for it, such as its name or title, and the page where it appears.
 - Browser state includes the time zone, the tabs, and whether you are signed in.
 - Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.
 - \`evidence\` includes at least one screenshot that shows the observed result whenever a page shows it. Take it while the page shows the result. Leave screenshots out only when no page shows the result, such as a failure that only an HTTP response or the console shows.
@@ -225,6 +226,7 @@ ${howToWork}
 
 Confirmation:
 - Your environment is freshly seeded. Follow the steps exactly, under the stated conditions. Try twice.
+- Your environment is seeded apart from the reporting intern's, so an id or another value that the application generates, such as a record's id in a URL or a field, can differ. Where a step or a condition names such a value, find the record the finding describes in your environment, such as by its name or title, and use its value from your environment in each attempt. An attempt in which the page answers that no such record exists, because the value came from the other environment, does not show the failure. When your environment has no such record, no attempt shows the failure.
 - Then do the same task again through the controls the page offers for it, under the same conditions. Where a step names a control, such as a button, a link, a field, or a square, use the one the page shows for that purpose. Keep every action, value, and condition that the finding names as part of the failure, such as a repeated click, a value typed into a field, Back, a second tab, or the keyboard. Try twice. When the steps are the only way to do the task, for example a request sent directly or another account's ID in a URL, the steps are the task.
 - Collect evidence under \`/qa/out/evidence/\`.
 - Then write \`/qa/out/confirmation.json\` with these fields and no others:
@@ -234,7 +236,7 @@ Confirmation:
 - \`steps\` is true when an attempt that follows the steps shows the failure the finding describes, and false when neither attempt does.
 - \`task\` is true when an attempt at the task through the page's controls shows the same failure, and false when neither attempt does. When the steps are the task, \`task\` has the value of \`steps\`.
 - When the finding states that an account cannot see or reach something, use each select, menu, or switcher on that account's pages, as How to work says, in each attempt. An attempt in which such a control reaches it does not show the failure.
-- \`observed\` states what your attempts showed, for the steps and for the task.
+- \`observed\` states what your attempts showed, for the steps and for the task. Quote every message the page showed after each action, such as a message beside a button, and state nothing that your screenshots contradict.
 - Each evidence path is absolute under \`/qa/out/\` or relative to \`/qa/out\`, and the file exists.${intended}
 - \`evidence\` includes at least one screenshot that shows what your attempts showed whenever a page shows it. Take it while the page shows the result. Leave screenshots out only when no page shows the result, such as a failure that only an HTTP response or the console shows.
 - The session ends when the time box ends. Write the file before then.`;
