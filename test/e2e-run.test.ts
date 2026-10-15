@@ -158,6 +158,38 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   );
 
   test(
+    "an intern that keeps making tool calls stops after five continue prompts, before its time box ends",
+    async () => {
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 5,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("busy", { busy: true }),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      const i1 = intern(state, "i1");
+      expect([i1?.status, i1?.detail]).toEqual(["done", 'stopped at minute 0 after 5 continue prompts: "Still testing."']);
+      const transcript = await Bun.file(join(runDir, "interns", "i1", "transcript.jsonl")).text();
+      const prompts = transcript
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line))
+        .filter((entry) => entry.from === "client" && entry.message.method === "session/prompt");
+      expect(prompts.length).toBe(6);
+      expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "the confirmation budget stops the confirmation that is running at its end and starts no later one, which the report lists as not confirmed",
     async () => {
       const runDir = await runQa({

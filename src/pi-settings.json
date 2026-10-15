@@ -1,0 +1,7 @@
+{
+  "compaction": {
+    "modelOverrides": {
+      "openrouter/anthropic/claude-haiku-5.5": { "reserveTokens": 920000, "keepRecentTokens": 30000 }
+    }
+  }
+}

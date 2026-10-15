@@ -18,7 +18,7 @@ export const knownGap = "The environment has no video model.";
 export const runLocks = join(runtimeRoot, "runs");
 export const intendedBehavior = { id: "invoice-table-scrolls", rule: "The invoices table scrolls sideways at narrow viewports instead of clipping its columns.", owner: "src/html.ts#invoices", examples: [] };
 
-type FakeAgent = { limit?: true | "charter"; rateLimit?: number;confirms?: false; late?: true; deaf?: true; swap?: true; flood?: true; idle?: true; hang?: true | string; stray?: true; second?: true; printKey?: true; nonce?: string };
+type FakeAgent = { limit?: true | "charter"; rateLimit?: number;confirms?: false; late?: true; deaf?: true; swap?: true; flood?: true; idle?: true; hang?: true | string; stray?: true; second?: true; printKey?: true; busy?: true; nonce?: string };
 
 export function endToEnd() {
   const id = crypto.randomUUID().slice(0, 8);

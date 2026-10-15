@@ -109,6 +109,7 @@ const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 let guarded = 0;
 const minute = 60_000;
 const askMinutes = 10;
+const continueLimit = 5;
 const settleMs = 60_000;
 const writeUpMs = 4 * minute;
 const stopWaitMs = 30_000;
@@ -526,15 +527,21 @@ async function explore(ctx: Context, explored: Explored, target: Target, minutes
     explored.environment = found;
     const start = Date.now();
     const deadline = start + minutes * minute;
+    let continued = 0;
     await converse(ctx, note, session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
+      const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
       if (idle) {
-        const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
         if (session.toolCalls() === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
         await note(`${stopped}: "${turn.lastMessage}"`);
         return null;
       }
       await pullDisk(env.out);
       const { rejected } = await readFindings(ctx.runDir, intern.id, found);
+      if (continued >= continueLimit && rejected.length === 0) {
+        await note(`${stopped} after ${continueLimit} continue prompts: "${turn.lastMessage}"`);
+        return null;
+      }
+      continued += 1;
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id));
     });
     if (session.toolCalls() === 0) throw new Error(`made no tool call in its ${minutes} minutes`);

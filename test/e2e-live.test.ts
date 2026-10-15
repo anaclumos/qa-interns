@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { openSession } from "../src/acp.ts";
 import { freeSlot, holdRun, removeCopy, removeDir, runnerEnv, saveDisks, startEnvironment, stopProject, writeChromePolicy } from "../src/environment.ts";
-import { pi } from "../src/pi.ts";
+import { pi, settingsFile } from "../src/pi.ts";
 import { ask } from "../src/run.ts";
 import { ensureRunnerImage } from "../src/runner.ts";
 import { forgetSecrets, keepLoginKey } from "../src/secrets.ts";
@@ -120,7 +120,7 @@ describe.skipIf(!dockerAvailable)("a live intern on OpenRouter", () => {
             image,
             out: join(runDir, "interns", name, "out"),
             env: { ...runnerEnv({}), ...pi.env },
-            files: [...pi.files(join(store, "auth.json")), { source: settings, target: "/home/qa/.pi/settings.json" }],
+            files: [...pi.files(join(store, "auth.json")).filter((file) => file.source !== settingsFile), { source: settings, target: "/home/qa/.pi/settings.json" }],
             tmpfs: pi.tmpfs,
           },
           egress: pi.egress,
