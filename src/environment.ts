@@ -1,5 +1,5 @@
 import { closeSync, existsSync, fstatSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
-import { lstat, mkdir, mkdtempDisposable, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtempDisposable, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -306,7 +306,9 @@ export async function writeChromePolicy(runDir: string, urls: Record<string, str
     RestoreOnStartup: 4,
     RestoreOnStartupURLs: ["about:blank"],
   };
-  await Bun.write(join(runDir, "chrome-policy.json"), `${JSON.stringify(policy, null, 2)}\n`);
+  const file = join(runDir, "chrome-policy.json");
+  await Bun.write(file, `${JSON.stringify(policy, null, 2)}\n`);
+  await chmod(file, 0o644);
 }
 
 export function runnerEnv(urls: Record<string, string>): Record<string, string> {
