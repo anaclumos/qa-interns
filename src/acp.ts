@@ -33,7 +33,7 @@ export type Session = {
   prompt(text: string): Promise<{ stopReason: string; toolCalls: number; lastMessage: string }>;
   toolCalls(): number;
   cancel(): Promise<void>;
-  close(): Promise<void>;
+  close(graceMs?: number): Promise<void>;
 };
 
 const errorKindSchema = z.looseObject({ errorKind: z.string() });
@@ -180,10 +180,10 @@ export async function openSession(opts: { container: string; adapter: string[]; 
   })();
 
   let closing: Promise<void> | undefined;
-  const close = () =>
+  const close = (graceMs = 10_000) =>
     (closing ??= (async () => {
       child.stdin.end();
-      const kill = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      const kill = setTimeout(() => child.kill("SIGKILL"), graceMs);
       await Promise.all([child.exited, logged]);
       clearTimeout(kill);
       connection.close();

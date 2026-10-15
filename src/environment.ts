@@ -9,7 +9,7 @@ import { flock } from "./logins.ts";
 import { qaUser } from "./runner.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { writeAtomic } from "./state.ts";
-import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, targetEnv, unscoped, type Target } from "./target.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, scopeSignal, targetEnv, unscoped, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type RelayRecord, type RunnerFile } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; files: RunnerFile[]; tmpfs: string[] };
@@ -853,6 +853,7 @@ async function settleDiskHelpers(runId: string): Promise<void> {
   if (created.length > 0) await execute(["docker", "rm", "-f", ...created]);
   const deadline = Date.now() + helperTimeout;
   for (let running = await diskHelpers(runId, "running"); running.length > 0; running = await diskHelpers(runId, "running")) {
+    scopeSignal()?.throwIfAborted();
     if (Date.now() >= deadline) throw new Error(`The helper containers ${running.join(", ")} of run ${runId} still run after ${helperTimeout / minute} minutes`);
     await Bun.sleep(1000);
   }

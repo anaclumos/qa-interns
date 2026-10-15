@@ -338,7 +338,7 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     done.abort();
     if (session !== undefined) {
       ctx.sessions.delete(session);
-      await session.close();
+      await session.close(Math.max(0, Math.min(killAfterMs, ctx.end - killAfterMs - Date.now())));
       try {
         await byDeadline(ctx.end, runTime, "it stopped its agent and copied its output", async () => {
           if (!runnerStopped) await stopAgent(env.runner);
