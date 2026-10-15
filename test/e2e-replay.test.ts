@@ -188,27 +188,31 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   );
 
   test(
-    "a replay sends no prompt after a turn that a cancel does not end",
+    "a replay sends no prompt after a turn that a cancel does not end, and reports the group as not checked in time",
     async () => {
       const replay = await readReplay(sourceDir, ["g1"]);
-      const deafLines: string[] = [];
-      await expect(
-        runQa({
-          dir: join(replay.target.repo, replay.target.path),
-          rev: next,
-          dirty: false,
-          interns: 0,
-          minutes: 0,
-          confirmMinutes: 0.5,
-          loginsFile: await logins("replay-deaf", { late: true, deaf: true }),
-          replay,
-          runnerImage: async () => fakeImage,
-          admit: () => () => {},
-          print: (line) => deafLines.push(line),
-        }),
-      ).rejects.toThrow("No confirming intern recorded a result: c1 done: confirmation failed: no confirmation.json written");
-      const deafDir = deafLines[0] ?? "";
+      const deafDir = await runQa({
+        dir: join(replay.target.repo, replay.target.path),
+        rev: next,
+        dirty: false,
+        interns: 0,
+        minutes: 0,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("replay-deaf", { late: true, deaf: true }),
+        replay,
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
+        print: () => {},
+      });
       const deaf = await readState(deafDir);
+      const outOfTime = "its time box ended before it wrote /qa/out/confirmation.json";
+      expect(deaf).toMatchObject({ phase: "done", error: null });
+      expect(intern(deaf, "c1").status).toBe("unfinished");
+      expect(intern(deaf, "c1").detail).toContain(`not confirmed in time: ${outOfTime}`);
+      const deafReport = await Bun.file(join(deafDir, "findings.json")).json();
+      expect(deafReport.run).toMatchObject({ reproducedGroups: 0, notReproducedGroups: 0, uncheckedGroups: 1, outOfTimeGroups: 1 });
+      expect(deafReport.groups[0]).toMatchObject({ id: "g1", reproduced: null, confirmation: { intern: "c1", result: null, error: outOfTime, outOfTime: true } });
+      expect(await Bun.file(join(deafDir, "report.md")).text()).toContain("- Groups not checked in time: 1 (g1)\n");
       const deafTraffic = (await Bun.file(join(deafDir, "interns", "c1", "transcript.jsonl")).text())
         .split("\n")
         .filter((line) => line !== "")

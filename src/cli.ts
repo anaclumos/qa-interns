@@ -41,11 +41,13 @@ Commands:
       group, all at once, confirms them until the last minute, which is left
       for teardown and the report, as far as login capacity, free network
       slots, free memory, and CPU pressure allow. An intern that the time leaves
-      less than a minute to begin is skipped, and a group whose confirmation
-      did not end is reported as not confirmed. Prints the run directory first.
+      less than a minute to begin is skipped, and a confirming intern that the
+      time stops before it writes a result is unfinished. Either way its group
+      is reported as not confirmed in time, neither confirmed nor refuted.
+      Prints the run directory first.
       With --confirm-budget, the confirming phase also ends after that many
-      minutes in all. A group that has not begun by then is reported as not
-      confirmed, and a running confirmation stops at it.
+      minutes in all. A group that has not begun by then is skipped, and a
+      running confirmation stops at it.
       With --focus, deal only the entries of the target's focus list at the
       given 1-based positions, in the order given, then the built-in charters.
       With --on-end, run the shell command when the run ends, done, failed, or

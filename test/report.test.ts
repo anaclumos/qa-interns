@@ -96,7 +96,7 @@ const exportTotal: Group = {
 const negative: Group = {
   id: "g3",
   findings: [finding("i3/negative-quantity", "An invoice with quantity -3 saves with a negative total", "The detail page shows \"Total -$75.00\".")],
-  confirmation: { intern: "c3", result: null, error: "no login with spare capacity" },
+  confirmation: { intern: "c3", result: null, error: "no login with spare capacity", outOfTime: false },
 };
 
 const rejected = [{ intern: "i2", file: "interns/i2/out/findings/slow-export.json", reason: "steps must have at least one entry" }];
@@ -243,7 +243,7 @@ describe("renderReport", () => {
     const notConfirmed = text.slice(text.indexOf("## Not confirmed"), text.indexOf("## Rejected finding files"));
     expect(notConfirmed).toContain("- Reproductions: 2 (i1, i2)");
     expect(notConfirmed).toContain("Confirmation: c1 did not reproduce it: the steps showed the failure, and the task done through the page's own controls did not show it.");
-    expect(text).toContain("- Confirmed groups: 0\n- Groups not confirmed: 1\n");
+    expect(text).toContain("- Confirmed groups: 0\n- Groups not confirmed: 1\n- Groups not confirmed in time: 0\n");
   });
 
   test("the intern table has one row per intern and escapes pipes in cells", () => {
@@ -286,7 +286,7 @@ describe("renderReport", () => {
     const noisy: Group = {
       id: "g1",
       findings: [{ ...finding("i1/bidi", "Totals \u{202e}disagree", "Row \u001b[31mred\u001b[0m"), evidence: ["interns/i1/out/evidence/a\u0007.png"] }],
-      confirmation: { intern: "c1", result: null, error: "adapter said \u009bno" },
+      confirmation: { intern: "c1", result: null, error: "adapter said \u009bno", outOfTime: false },
     };
     const relays = [{ intern: "i1", records: [record(1, "a\u001b[31m\u{202e}.example", "denied")] }];
     const text = renderReport(runPath, state, browser, [noisy], [{ intern: "i2", file: "interns/i2/out/findings/x\u{2066}y.json", reason: "bad\u0000 input" }], { hosts: [], relays }, []).markdown;
@@ -396,16 +396,42 @@ describe("ticket drafts", () => {
   });
 
   test("a group that two testing interns reported gets a draft when its confirmation failed", () => {
-    const failed: Group = { ...overlap, confirmation: { intern: "c3", result: null, error: "no login with spare capacity" } };
+    const failed: Group = { ...overlap, confirmation: { intern: "c3", result: null, error: "no login with spare capacity", outOfTime: false } };
     const [only] = renderReport(runPath, state, browser, [failed], [], none, []).tickets;
     expect(only?.body).toContain("- Reproductions: 2 (i1, i2)\n");
     expect(only?.body).toEndWith("## Confirmation\n\nc3 failed:\n\n```\nno login with spare capacity\n```\n");
     expect(only?.evidence).toEqual(["interns/i1/out/evidence/pagination-overlap.png"]);
   });
 
+  test("a group whose confirmation ran out of time is listed as not confirmed in time, neither confirmed nor failed, and keeps the confirmed count at zero", () => {
+    const queued: Group = { ...negative, confirmation: { intern: "c3", result: null, error: "the confirmation budget ended before its session began", outOfTime: true } };
+    const cut: Group = { ...exportTotal, confirmation: { intern: "c2", result: null, error: "its time box ended before it wrote /qa/out/confirmation.json", outOfTime: true } };
+    const { markdown: text, json: data, tickets } = renderReport(runPath, state, browser, [cut, queued], [], none, []);
+    expect(text).toContain("- Confirmed groups: 0\n- Groups not confirmed: 2\n- Groups not confirmed in time: 2 (g2, g3)\n");
+    const notConfirmed = text.slice(text.indexOf("## Not confirmed"), text.indexOf("## Rejected finding files"));
+    expect(notConfirmed).toContain("Confirmation: not confirmed in time, so neither confirmed nor refuted (c3: the confirmation budget ended before its session began).");
+    expect(notConfirmed).toContain("Confirmation: not confirmed in time, so neither confirmed nor refuted (c2: its time box ended before it wrote /qa/out/confirmation.json).");
+    expect(text).not.toContain("failed:");
+    const report = data as { run: { confirmedGroups: number; notConfirmedGroups: number; outOfTimeGroups: number }; groups: { id: string; confirmed: boolean; confirmation: { outOfTime: boolean } }[] };
+    expect(report.run).toMatchObject({ confirmedGroups: 0, notConfirmedGroups: 2, outOfTimeGroups: 2 });
+    expect(report.groups.map((group) => [group.id, group.confirmed, group.confirmation.outOfTime])).toEqual([
+      ["g2", false, true],
+      ["g3", false, true],
+    ]);
+    expect(tickets).toEqual([]);
+  });
+
+  test("a group that two testing interns reported stays confirmed when its confirmation ran out of time, and its draft says so", () => {
+    const cut: Group = { ...overlap, confirmation: { intern: "c1", result: null, error: "the run's time ended before it wrote /qa/out/confirmation.json", outOfTime: true } };
+    const { markdown: text, json: data, tickets } = renderReport(runPath, state, browser, [cut], [], none, []);
+    expect((data as { run: unknown }).run).toMatchObject({ confirmedGroups: 1, notConfirmedGroups: 0, outOfTimeGroups: 0 });
+    expect(text).toContain("- Groups not confirmed in time: 0\n");
+    expect(tickets[0]?.body).toEndWith("## Confirmation\n\nc1 ran out of time before it confirmed or refuted the finding:\n\n```\nthe run's time ended before it wrote /qa/out/confirmation.json\n```\n");
+  });
+
   test("control characters between backticks cannot close a code block", () => {
     const error = "has unknown fields x\n`\u0000`\u0000`\n![p](http://attacker.test/p.png)\n## Forged";
-    const [only] = renderReport(runPath, state, browser, [{ ...overlap, confirmation: { intern: "c1", result: null, error } }], [], none, []).tickets;
+    const [only] = renderReport(runPath, state, browser, [{ ...overlap, confirmation: { intern: "c1", result: null, error, outOfTime: false } }], [], none, []).tickets;
     const html = Bun.markdown.html(only!.body);
     expect(imageTags(html)).toEqual([["interns/i1/out/evidence/pagination-overlap.png", "pagination-overlap.png"]]);
     expect(html).not.toContain("<h2>Forged</h2>");
@@ -513,7 +539,7 @@ describe("renderReplay", () => {
     expect(markdown).toContain(`- Replay of: run \`7c1e9a04\` at commit \`${state.target.commit}\`\n`);
     expect(markdown).toContain(`- Commit: \`${replayState.target.commit}\`\n- Browser: ${browser}\n`);
     expect(markdown).not.toContain("Browser version");
-    expect(markdown).toContain("- Groups reproduced: 1\n- Groups not reproduced: 1\n- Groups not checked: 1\n");
+    expect(markdown).toContain("- Groups reproduced: 1\n- Groups not reproduced: 1\n- Groups not checked: 1\n- Groups not checked in time: 0\n");
     const reproduced = between(markdown, "## Reproduced", "## Not reproduced");
     expect(reproduced).toContain(`### ${overlap.findings[0]!.title}`);
     expect(reproduced).toContain("- Group: g1 in run 7c1e9a04\n");
@@ -541,6 +567,7 @@ describe("renderReplay", () => {
       reproducedGroups: 1,
       notReproducedGroups: 1,
       uncheckedGroups: 1,
+      outOfTimeGroups: 0,
     });
     expect(data.groups.map((group) => [group.id, group.reproduced, group.finding.id])).toEqual([
       ["g1", true, "i1/pagination-overlap"],
@@ -591,6 +618,14 @@ describe("renderReplay", () => {
     const dirty = renderReplay(replayPath, replayState, browser, { ...replay, target: { ...state.target, dirty: true } }, none, []);
     expect(dirty.markdown).toContain(`- Replay of: run \`7c1e9a04\` at commit \`${state.target.commit}\`, with the uncommitted changes and untracked files of the working tree\n`);
     expect((dirty.json as { run: unknown }).run).toMatchObject({ replay: { runId: "7c1e9a04", commit: state.target.commit, dirty: true } });
+  });
+
+  test("a group whose confirmation ran out of time is not checked, and the summary names it", () => {
+    const cut: Group = { ...overlap, confirmation: { intern: "c1", result: null, error: "the confirmation budget ended before it wrote /qa/out/confirmation.json", outOfTime: true } };
+    const { markdown: text, json: data } = renderReplay(replayPath, replayState, browser, { ...replay, groups: [cut] }, none, []);
+    expect(text).toContain("- Groups not checked: 1\n- Groups not checked in time: 1 (g1)\n");
+    expect(between(text, "## Not checked", "## Interns")).toContain("Confirmation: not confirmed in time, so neither confirmed nor refuted (c1: the confirmation budget ended before it wrote /qa/out/confirmation.json).");
+    expect((data as { run: unknown }).run).toMatchObject({ reproducedGroups: 0, notReproducedGroups: 0, uncheckedGroups: 1, outOfTimeGroups: 1 });
   });
 
   test("a group without a confirmation is not checked", () => {
