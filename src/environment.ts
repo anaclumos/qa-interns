@@ -44,6 +44,7 @@ const fullBelow = 16 * mib;
 const diskLabel = "qa-interns.disk";
 const outLabel = "qa-interns.out";
 const helperTimeout = 10 * minute;
+const rollbackTimeout = 5_000;
 const buildProject = "qa-build";
 const imagePrefix = `${buildProject}-`;
 const keyLength = 12;
@@ -606,8 +607,8 @@ export async function createDisk(out: string, image: string, owner: string): Pro
     ]);
   } catch (error) {
     await unscoped(async () => {
-      await capture(["docker", "rm", "-f", name]);
-      await execute(["docker", "volume", "rm", "--force", name]);
+      await capture(["docker", "rm", "-f", name], { timeout: rollbackTimeout });
+      await execute(["docker", "volume", "rm", "--force", name], { timeout: rollbackTimeout });
     });
     throw error;
   }
