@@ -16,6 +16,7 @@ import {
   runnerEnv,
   saveDisks,
   startEnvironment,
+  stopAgent,
   stopEnvironment,
   stopProject,
   stopRun,
@@ -198,6 +199,10 @@ async function byDeadline<T>(until: number, limit: string, what: string, task: (
   }
 }
 
+function copyOut(ctx: Context, env: Environment): Promise<void> {
+  return byDeadline(ctx.end, runTime, "it copied its output", () => pullDisk(env.out));
+}
+
 function timeBox(ctx: Context, until: number, limit = runTime): void {
   ctx.until = until;
   ctx.limit = limit;
@@ -300,6 +305,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
 
 async function withSession<T>(ctx: Context, id: string, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<T> {
   let session: Session | undefined;
+  let runnerStopped = false;
   const done = new AbortController();
   try {
     session = await openSession({
@@ -320,6 +326,7 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     const result = await Promise.race([work(session, env, live).then((value) => ({ value })), watchOut(env.out, done.signal)]);
     if (typeof result !== "string") return result.value;
     stopped = true;
+    runnerStopped = true;
     await execute(["docker", "kill", env.runner]);
     throw new Error(`${result}, so its runner was stopped`);
   } catch (error) {
@@ -333,7 +340,10 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
       ctx.sessions.delete(session);
       await session.close();
       try {
-        await byDeadline(ctx.end, runTime, "it copied its output", () => pullDisk(env.out));
+        await byDeadline(ctx.end, runTime, "it stopped its agent and copied its output", async () => {
+          if (!runnerStopped) await stopAgent(env.runner);
+          await pullDisk(env.out);
+        });
       } catch (error) {
         if (error instanceof TimeUp) ctx.deferred.push(`${id}: ${error.message} after its session closed`);
         else await note(`copying its output after its session closed failed: ${message(error)}`);
@@ -528,7 +538,7 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
     const deadline = Math.min(Date.now() + askMinutes * minute, ctx.until);
     minutes = Math.round(((deadline - Date.now()) / minute) * 10) / 10;
     await converse(ctx, note, session, prompt, deadline, async () => {
-      await pullDisk(env.out);
+      await copyOut(ctx, env);
       try {
         parsed = { value: parse(await readAgentFile(path)) };
         return null;
@@ -538,7 +548,7 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
         return correctionPrompt(`/qa/out/${file}`, message(error));
       }
     });
-    await pullDisk(env.out);
+    await copyOut(ctx, env);
     if (parsed === null && (await Bun.file(path).exists())) {
       try {
         parsed = { value: parse(await readAgentFile(path)) };
@@ -593,7 +603,7 @@ async function explore(ctx: Context, explored: Explored, target: Target, free: (
         await note(`${stopped}: "${turn.lastMessage}"`);
         return null;
       }
-      await pullDisk(env.out);
+      await copyOut(ctx, env);
       const { rejected } = await readFindings(ctx.runDir, intern.id, found);
       if (continued >= continueLimit && rejected.length === 0) {
         await note(`${stopped} after ${continueLimit} continue prompts: "${turn.lastMessage}"`);
@@ -602,7 +612,7 @@ async function explore(ctx: Context, explored: Explored, target: Target, free: (
       continued += 1;
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id));
     });
-    await byDeadline(ctx.end, runTime, "it copied its output", () => pullDisk(env.out));
+    await copyOut(ctx, env);
     if (session.toolCalls() === 0) {
       const reason = "made no tool call before its time ended";
       throw granted < startMinMs && Date.now() >= deadline ? new TimeUp(`${reason}, which left it under a minute`) : new Error(reason);
@@ -641,18 +651,17 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
     let answer: Answer = { result: null, error: "no confirmation.json written" };
     let corrected = false;
     const end = await converse(ctx, note, session, confirmPrompt(finding, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
-      await pullDisk(env.out);
+      await copyOut(ctx, env);
       if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
       answer = await check(ctx, intern.id);
       if (answer.error === null || corrected) return null;
       corrected = true;
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
-    const copy = () => byDeadline(ctx.end, runTime, "it copied its output", () => pullDisk(env.out));
-    await copy();
+    await copyOut(ctx, env);
     if (end === "ended" && !(await Bun.file(file).exists())) {
       await turnUntil(ctx, note, session, timeUpPrompt(), closes);
-      await copy();
+      await copyOut(ctx, env);
     }
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check(ctx, intern.id);
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");

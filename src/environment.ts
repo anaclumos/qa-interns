@@ -661,6 +661,10 @@ async function holderOf(out: string): Promise<Holder> {
   return holder;
 }
 
+export async function stopAgent(runner: string): Promise<void> {
+  await execute(["docker", "exec", runner, "sh", "-c", "kill -KILL -1 2>/dev/null || true"]);
+}
+
 export async function pullDisk(out: string): Promise<void> {
   await copyOut(await holderOf(out));
 }
