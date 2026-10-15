@@ -15,6 +15,7 @@ echo "$*" >> ${dir}/calls
 case "$1 $2" in
   "version --format") echo linux/amd64; exit 0 ;;
   "push --quiet") case "$3" in *:qa-api-*) echo "denied: permission_denied: write_package" >&2; exit 1 ;; esac; exit 0 ;;
+  "image rm") case "$3" in *:qa-api-*) echo "Error response from daemon: conflict: unable to remove repository reference" >&2; exit 1 ;; esac; exit 0 ;;
 esac
 case " $* " in
   *" config "*) echo '${JSON.stringify(config)}' ;;
@@ -92,6 +93,7 @@ test("read each service's cache from its image tag for its platform, push the bu
     ]),
   ]);
   expect(log).toContain(`The build cache was not written, so the next build does not read this one: docker push ${refs.api} exited with 1: denied: permission_denied: write_package`);
+  expect(log).toContain(`The build cache was not written, so the next build does not read this one: docker image rm ${refs.api} exited with 1: Error response from daemon: conflict: unable to remove repository reference`);
   expect(log).not.toContain(refs.web);
 });
 

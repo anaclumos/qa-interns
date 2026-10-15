@@ -418,7 +418,8 @@ async function pushCache(image: string, ref: string, env: Record<string, string 
     problems.push(`pushing ${ref} stopped: ${message(error)}`);
   } finally {
     try {
-      await cleanupScope(() => capture(["docker", "image", "rm", ref], { env, timeout: rollbackTimeout }));
+      const removed = await cleanupScope(() => capture(["docker", "image", "rm", ref], { env, timeout: rollbackTimeout }));
+      if (removed.code !== 0 && !/no such image/i.test(removed.stderr)) problems.push(`docker image rm ${ref} exited with ${removed.code}: ${removed.stderr.trim()}`);
     } catch (error) {
       problems.push(`removing the tag ${ref} failed: ${message(error)}`);
     } finally {
