@@ -48,6 +48,7 @@ export type RunOptions = {
   confirmMinutes: number;
   confirmBudget?: number;
   focus?: number[];
+  buildCache?: string;
   loginsFile: string;
   replay: Replay | null;
   onEnd?: string;
@@ -59,6 +60,7 @@ export type RunOptions = {
 export type CopyOptions = {
   dir: string;
   rev: string;
+  buildCache?: string;
   runnerImage(): Promise<string>;
   print(line: string): void;
 };
@@ -904,7 +906,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
         await phase("building");
-        const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
+        const { images } = await buildImages(runId, target, source, join(runDir, "build.log"), opts.buildCache ?? null);
         await phase("starting");
         slot = await freeSlot();
         const env = await startEnvironment({
@@ -1101,7 +1103,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await phase("building");
     let built: Awaited<ReturnType<typeof buildImages>>;
     try {
-      built = await byDeadline(ctx, testingEnd - startMinMs, runTime, "its images built", () => buildImages(runId, target, source, join(runDir, "build.log")));
+      built = await byDeadline(ctx, testingEnd - startMinMs, runTime, "its images built", () => buildImages(runId, target, source, join(runDir, "build.log"), opts.buildCache ?? null));
     } catch (error) {
       if (!(error instanceof TimeUp)) throw error;
       for (const intern of state.interns) await ctx.update(intern.id, { status: "skipped", detail: error.message, endedAt: now() });

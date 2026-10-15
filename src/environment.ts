@@ -48,6 +48,7 @@ const rollbackTimeout = 5_000;
 const buildProject = "qa-build";
 const imagePrefix = `${buildProject}-`;
 const keyLength = 12;
+const cacheBuilder = "qa-interns-cache";
 const keepImages = 30 * minute;
 
 const defaultSubnet = "10.213.0.0/16";
@@ -391,7 +392,26 @@ async function tagShared(pairs: [string, string][]): Promise<boolean> {
   return true;
 }
 
-export async function buildImages(runId: string, target: Target, sourceDir: string, log: string): Promise<BuiltImages> {
+async function useCacheBuilder(env: Record<string, string | undefined>): Promise<void> {
+  const inspect = ["docker", "buildx", "inspect", cacheBuilder];
+  if ((await capture(inspect, { env })).code === 0) return;
+  const create = ["docker", "buildx", "create", "--name", cacheBuilder, "--driver", "docker-container"];
+  const result = await capture(create, { env });
+  if (result.code !== 0 && (await capture(inspect, { env })).code !== 0) throw failure(create, result.code, result.stderr);
+}
+
+async function cacheLines(cache: string, builds: { name: string; platform: string | null }[], env: Record<string, string | undefined>): Promise<Map<string, string[]>> {
+  await useCacheBuilder(env);
+  const server = builds.every(({ platform }) => platform !== null) ? "" : (await execute(["docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"], { env })).trim();
+  return new Map(
+    builds.map(({ name, platform }) => {
+      const ref = `${cache}:${`qa-${name}-${platform ?? server}`.replaceAll(/[^\w.-]/g, "-")}`;
+      return [name, [`      cache_from: ${JSON.stringify([`type=registry,ref=${ref}`])}`, `      cache_to: ${JSON.stringify([`type=registry,ref=${ref},mode=max,ignore-error=true`])}`]];
+    }),
+  );
+}
+
+export async function buildImages(runId: string, target: Target, sourceDir: string, log: string, cache: string | null = null): Promise<BuiltImages> {
   const own = (builder: string) => `qa-${runId}-${builder.toLowerCase()}:latest`;
   const images = Object.fromEntries(Object.entries(imageBuilders(target)).map(([name, builder]) => [name, own(builder)]));
   const services = Object.entries(target.services).filter(([, service]) => service.build && service.active).map(([name]) => name);
@@ -420,10 +440,17 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   const fresh = builds.some(({ build }) => build.pull === true || build.no_cache === true);
   if (!fresh && (await tagShared(services.map((name) => [shared(name), own(name)])))) return { images, release };
   const tags = join(dir.path, "tags.yml");
-  const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(own(name))}`, "    build:", `      tags: !override ${JSON.stringify([shared(name)])}`]);
+  const caches = cache === null ? new Map<string, string[]>() : await cacheLines(cache, builds, env);
+  const lines = services.flatMap((name) => [
+    `  ${JSON.stringify(name)}:`,
+    `    image: ${JSON.stringify(own(name))}`,
+    "    build:",
+    `      tags: !override ${JSON.stringify([shared(name)])}`,
+    ...(caches.get(name) ?? []),
+  ]);
   await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
   const cmd = [...compose, "-f", tags, "build", ...services];
-  const result = await capture(cmd, { env, timeout: 30 * minute }).catch(async (error: unknown) => {
+  const result = await capture(cmd, { env: cache === null ? env : { ...env, BUILDX_BUILDER: cacheBuilder }, timeout: 30 * minute }).catch(async (error: unknown) => {
     if (!(error instanceof CommandTimeout)) throw error;
     await Bun.write(log, redact(`${error.stdout}\n${error.stderr}`));
     throw new Error(`${error.message} (log: ${log})`);
