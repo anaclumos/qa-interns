@@ -41,7 +41,7 @@ const running = new Set<Subprocess>();
 const groups = new Set<Subprocess>();
 export const runLocks = new Set<number>();
 const scope = new AsyncLocalStorage<AbortSignal>();
-const killAfterMs = 10_000;
+export const killAfterMs = 10_000;
 
 export function abortable<T>(signal: AbortSignal, task: () => Promise<T>): Promise<T> {
   return scope.run(signal, task);

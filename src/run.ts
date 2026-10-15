@@ -35,7 +35,7 @@ import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeAtomic, writeState } from "./state.ts";
-import { abortable, execute, exportTree, killCommands, loadTarget, resolveTarget, signalGroup, trackGroup, type Target, type TargetRef } from "./target.ts";
+import { abortable, execute, exportTree, killAfterMs, killCommands, loadTarget, resolveTarget, signalGroup, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Answer, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
@@ -186,7 +186,7 @@ function checkBudget(ctx: Context, margin = 0): void {
 
 async function byDeadline<T>(until: number, limit: string, what: string, task: () => Promise<T>): Promise<T> {
   const controller = new AbortController();
-  const timer = Number.isFinite(until) ? setTimeout(() => controller.abort(), Math.max(0, until - Date.now())) : undefined;
+  const timer = Number.isFinite(until) ? setTimeout(() => controller.abort(), Math.max(0, until - killAfterMs - Date.now())) : undefined;
   try {
     return await abortable(controller.signal, task);
   } catch (error) {
@@ -350,16 +350,16 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
   const teardown = async (handOff: () => void) => {
     const environment = unread;
     unread = null;
-    try {
-      if (environment !== null) environment.containers = await containerStats(project);
-    } finally {
-      await byDeadline(ctx.end, runTime, "its environment was torn down", () =>
-        stopEnvironment(ctx.runDir, id, project, () => {
+    await byDeadline(ctx.end, runTime, "its environment was torn down", async () => {
+      try {
+        if (environment !== null) environment.containers = await containerStats(project);
+      } finally {
+        await stopEnvironment(ctx.runDir, id, project, () => {
           removed = true;
           handOff();
-        }),
-      );
-    }
+        });
+      }
+    });
   };
   try {
     if (ctx.scheduler === null) throw new Error(`Run ${ctx.runId} has no login`);
@@ -594,6 +594,7 @@ async function explore(ctx: Context, explored: Explored, target: Target, free: (
       continued += 1;
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id));
     });
+    await byDeadline(ctx.end, runTime, "it copied its output", () => pullDisk(env.out));
     if (session.toolCalls() === 0) {
       const reason = "made no tool call before its time ended";
       throw granted < startMinMs && Date.now() >= deadline ? new TimeUp(`${reason}, which left it under a minute`) : new Error(reason);
@@ -639,10 +640,11 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
       corrected = true;
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
-    await pullDisk(env.out);
+    const copy = () => byDeadline(ctx.end, runTime, "it copied its output", () => pullDisk(env.out));
+    await copy();
     if (end === "ended" && !(await Bun.file(file).exists())) {
       await turnUntil(ctx, note, session, timeUpPrompt(), closes);
-      await pullDisk(env.out);
+      await copy();
     }
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check(ctx, intern.id);
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
