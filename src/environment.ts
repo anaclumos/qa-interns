@@ -663,14 +663,32 @@ async function holderOf(out: string): Promise<Holder> {
 
 const stopAgentScript = `
 const { readdirSync, readFileSync } = require("node:fs");
-const parent = (pid) => Number(readFileSync("/proc/" + pid + "/stat", "utf8").split(") ")[1].split(" ")[1]);
-const pids = readdirSync("/proc").filter((name) => /^[0-9]+$/.test(name)).map(Number);
-const live = pids.flatMap((pid) => { try { return [[pid, parent(pid)]]; } catch { return []; } });
-const keepalive = Math.min(...live.filter(([, ppid]) => ppid === 1).map(([pid]) => pid));
-for (const [pid] of live) {
-  if (pid === 1 || pid === keepalive || pid === process.pid) continue;
-  try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH" && error.code !== "EPERM") throw error; }
+const live = () => readdirSync("/proc").filter((name) => /^[0-9]+$/.test(name)).flatMap((name) => {
+  try {
+    const [state, ppid] = readFileSync("/proc/" + name + "/stat", "utf8").split(") ")[1].split(" ");
+    return state === "Z" ? [] : [[Number(name), Number(ppid)]];
+  } catch {
+    return [];
+  }
+});
+const keepalive = Math.min(...live().filter(([, ppid]) => ppid === 1).map(([pid]) => pid));
+const denied = new Set();
+const others = () => live().filter(([pid]) => pid !== 1 && pid !== keepalive && pid !== process.pid && !denied.has(pid));
+for (let pass = 0; pass < 200; pass += 1) {
+  const left = others();
+  if (left.length === 0) process.exit(0);
+  for (const [pid] of left) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (error.code === "EPERM") denied.add(pid);
+      else if (error.code !== "ESRCH") throw error;
+    }
+  }
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
 }
+console.error("processes still running after 200 passes: " + others().map(([pid]) => pid).join(" "));
+process.exit(1);
 `;
 
 export async function stopAgent(runner: string): Promise<void> {
