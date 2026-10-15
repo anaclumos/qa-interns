@@ -819,12 +819,10 @@ services:
   });
 
   test("accept intended behaviors as rules with an owner, and default their examples to none", async () => {
-    const intendedBehaviors = [
-      { id: "invoice-table-scrolls", rule: "The invoices table scrolls sideways at narrow viewports.", owner: "src/html.ts#invoiceTable", examples: ["At 320 pixels the Total column is past the right edge until the table scrolls."] },
-      { id: "paid-invoice-locked", rule: "A Paid invoice cannot be edited.", owner: "src/db.ts#payInvoice" },
-    ];
-    const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n", devcontainer({}, { ...settings, intendedBehaviors })));
-    expect(target.settings.intendedBehaviors).toEqual([intendedBehaviors[0], { ...intendedBehaviors[1], examples: [] }]);
+    const scrolls = { id: "invoice-table-scrolls", rule: "The invoices table scrolls sideways at narrow viewports.", owner: "src/html.ts#invoiceTable", examples: ["At 320 pixels the Total column is past the right edge until the table scrolls."] };
+    const locked = { id: "paid-invoice-locked", rule: "A Paid invoice cannot be edited.", owner: "src/db.ts#payInvoice" };
+    const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n", devcontainer({}, { ...settings, intendedBehaviors: [scrolls, locked] })));
+    expect(target.settings.intendedBehaviors).toEqual([scrolls, { ...locked, examples: [] }]);
   });
 
   test("accept egress host names", async () => {
