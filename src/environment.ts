@@ -661,8 +661,20 @@ async function holderOf(out: string): Promise<Holder> {
   return holder;
 }
 
+const stopAgentScript = `
+const { readdirSync, readFileSync } = require("node:fs");
+const parent = (pid) => Number(readFileSync("/proc/" + pid + "/stat", "utf8").split(") ")[1].split(" ")[1]);
+const pids = readdirSync("/proc").filter((name) => /^[0-9]+$/.test(name)).map(Number);
+const live = pids.flatMap((pid) => { try { return [[pid, parent(pid)]]; } catch { return []; } });
+const keepalive = Math.min(...live.filter(([, ppid]) => ppid === 1).map(([pid]) => pid));
+for (const [pid] of live) {
+  if (pid === 1 || pid === keepalive || pid === process.pid) continue;
+  try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH" && error.code !== "EPERM") throw error; }
+}
+`;
+
 export async function stopAgent(runner: string): Promise<void> {
-  await execute(["docker", "exec", runner, "sh", "-c", "kill -KILL -1 2>/dev/null || true"]);
+  await execute(["docker", "exec", runner, "node", "-e", stopAgentScript]);
 }
 
 export async function pullDisk(out: string): Promise<void> {
