@@ -331,7 +331,7 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     const live: Note = async (text) => {
       if (!stopped) await note(text);
     };
-    const result = await Promise.race([work(session, env, live).then((value) => ({ value })), watchOut(env.out, done.signal)]);
+    const result = await Promise.race([work(session, env, live).then((value) => ({ value })), abortable(done.signal, () => watchOut(env.out, done.signal))]);
     if (typeof result !== "string") return result.value;
     stopped = true;
     runnerStopped = true;
