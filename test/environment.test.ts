@@ -1493,8 +1493,8 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       const certs = join(source, "certs");
       await mkdir(certs);
       await execute([
-        "docker", "run", "--rm", "--network", "none", "-v", `${certs}:/certs`, image,
-        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=api.example.test",
+        "docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${certs}:/certs`, image,
+        "sh", "-c", 'chmod 755 /certs && "$@" && chmod 644 /certs/key.pem', "sh", "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=api.example.test",
         "-addext", "subjectAltName=DNS:api.example.test,DNS:blocked.example.test", "-keyout", "/certs/key.pem", "-out", "/certs/cert.pem",
       ]);
       await Bun.write(
@@ -1567,8 +1567,8 @@ describe.skipIf(!dockerAvailable)("qa-relay", () => {
       const certs = join(source, "certs");
       await mkdir(certs);
       await execute([
-        "docker", "run", "--rm", "--network", "none", "-v", `${certs}:/certs`, image,
-        "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=limited.example.test",
+        "docker", "run", "--rm", "--network", "none", "--user", "0:0", "-v", `${certs}:/certs`, image,
+        "sh", "-c", 'chmod 755 /certs && "$@" && chmod 644 /certs/key.pem', "sh", "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=limited.example.test",
         "-addext", "subjectAltName=DNS:limited.example.test,DNS:rate.example.test", "-keyout", "/certs/key.pem", "-out", "/certs/cert.pem",
       ]);
       const connectionLimits = { "limited.example.test": { concurrent: 1, total: 3 }, "rate.example.test": { perMinute: 2 } };
