@@ -403,10 +403,9 @@ async function cacheRefs(cache: string, builds: { name: string; platform: string
 }
 
 async function pushCache(image: string, ref: string, env: Record<string, string | undefined>): Promise<string | null> {
-  const daemon = JSON.stringify([env.DOCKER_HOST ?? null, env.DOCKER_CONTEXT ?? null, ref]);
-  const lock = join(runtimeDir("cache", "a lock for each build cache push"), `${new Bun.CryptoHasher("sha256").update(daemon).digest("hex")}.lock`);
+  const lock = join(runtimeDir("cache", "a lock for each build cache push"), `${new Bun.CryptoHasher("sha256").update(imageReference(ref)).digest("hex")}.lock`);
   const fd = flock(lock, "exclusive", "nonblock");
-  if (fd === null) return `another run on this Docker daemon is pushing ${ref}`;
+  if (fd === null) return `another run is pushing ${ref}`;
   try {
     const tagged = await capture(["docker", "tag", image, ref], { env });
     if (tagged.code !== 0) return `docker tag ${image} ${ref} exited with ${tagged.code}: ${tagged.stderr.trim()}`;

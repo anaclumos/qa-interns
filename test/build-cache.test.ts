@@ -35,8 +35,7 @@ afterAll(async () => {
 });
 
 function pushLock(ref: string): string {
-  const daemon = JSON.stringify([process.env.DOCKER_HOST ?? null, process.env.DOCKER_CONTEXT ?? null, ref]);
-  return join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "cache", `${new Bun.CryptoHasher("sha256").update(daemon).digest("hex")}.lock`);
+  return join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "cache", `${new Bun.CryptoHasher("sha256").update(ref).digest("hex")}.lock`);
 }
 
 async function build(name: string, cache: string | null): Promise<{ calls: string[]; tags: string; log: string }> {
@@ -88,15 +87,15 @@ test("read each service's cache from its image tag for its platform, then push t
   expect(log).not.toContain(refs.web);
 });
 
-test("leave a cache reference alone, with its tag and push, while another run on the same Docker daemon pushes it", async () => {
-  const ref = "ghcr.io/owner/held-qa-cache:qa-web-linux-amd64";
+test("leave a cache reference alone, with its tag and push, while another run pushes it under any name for the same reference", async () => {
+  const ref = "docker.io/owner/held-qa-cache:qa-web-linux-amd64";
   await mkdir(dirname(pushLock(ref)), { recursive: true });
   const fd = flock(pushLock(ref), "exclusive", "block");
   try {
-    const { calls, log } = await build("held", "ghcr.io/owner/held-qa-cache");
-    expect(calls.filter((call) => call.endsWith(` ${ref}`))).toEqual([]);
-    expect(calls).toContain("push --quiet ghcr.io/owner/held-qa-cache:qa-api-linux-arm64-v8");
-    expect(log).toContain(`The build cache was not written, so the next build does not read this one: another run on this Docker daemon is pushing ${ref}`);
+    const { calls, log } = await build("held", "owner/held-qa-cache");
+    expect(calls.filter((call) => call.endsWith(" owner/held-qa-cache:qa-web-linux-amd64"))).toEqual([]);
+    expect(calls).toContain("push --quiet owner/held-qa-cache:qa-api-linux-arm64-v8");
+    expect(log).toContain("The build cache was not written, so the next build does not read this one: another run is pushing owner/held-qa-cache:qa-web-linux-amd64");
   } finally {
     closeSync(fd);
   }
