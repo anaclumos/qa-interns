@@ -103,6 +103,7 @@ type Context = {
   waiting: Set<() => void>;
   until: number;
   margin: number;
+  limit: string;
   stopping: boolean;
   tearingDown: boolean;
   update(id: string, patch: Partial<InternState>): Promise<void>;
@@ -123,7 +124,7 @@ const waitMs = 30_000;
 const rateLimitBaseMs = 5_000;
 const rateLimitCapMs = 60_000;
 const noLogin = "no login has spare capacity";
-const timeUp = "the run's time ended before its session began";
+const runTime = "the run's time";
 const copyName = "up";
 
 function now(): string {
@@ -178,23 +179,24 @@ function checkStopping(ctx: Context): void {
 }
 
 function checkBudget(ctx: Context, margin = 0): void {
-  if (Date.now() + margin >= ctx.until) throw new TimeUp(timeUp);
+  if (Date.now() + margin >= ctx.until) throw new TimeUp(`${ctx.limit} ended before its session began`);
 }
 
-async function byDeadline<T>(until: number, what: string, task: () => Promise<T>): Promise<T> {
+async function byDeadline<T>(until: number, limit: string, what: string, task: () => Promise<T>): Promise<T> {
   const controller = new AbortController();
   const timer = Number.isFinite(until) ? setTimeout(() => controller.abort(), Math.max(0, until - Date.now())) : undefined;
   try {
     return await abortable(controller.signal, task);
   } catch (error) {
-    throw controller.signal.aborted ? new TimeUp(`the run's time ended while ${what}`) : error;
+    throw controller.signal.aborted ? new TimeUp(`${limit} ended while ${what}`) : error;
   } finally {
     clearTimeout(timer);
   }
 }
 
-function timeBox(ctx: Context, until: number): void {
+function timeBox(ctx: Context, until: number, limit = runTime): void {
   ctx.until = until;
+  ctx.limit = limit;
   ctx.margin = Math.min(startMinMs, (until - Date.now()) / 2);
 }
 
@@ -213,6 +215,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     waiting: new Set(),
     until: Infinity,
     margin: startMinMs,
+    limit: runTime,
     stopping: false,
     tearingDown: false,
     update,
@@ -365,7 +368,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
       started = true;
       removed = false;
       unread = environment;
-      const env = await byDeadline(ctx.until, "its environment started", () =>
+      const env = await byDeadline(ctx.until, ctx.limit, "its environment started", () =>
         startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease), () => {
           environment.readyAt = now();
         }),
@@ -1027,7 +1030,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await phase("building");
     let built: Awaited<ReturnType<typeof buildImages>>;
     try {
-      built = await byDeadline(testingEnd - startMinMs, "its images built", () => buildImages(runId, target, source, join(runDir, "build.log")));
+      built = await byDeadline(testingEnd - startMinMs, runTime, "its images built", () => buildImages(runId, target, source, join(runDir, "build.log")));
     } catch (error) {
       if (!(error instanceof TimeUp)) throw error;
       for (const intern of state.interns) await ctx.update(intern.id, { status: "skipped", detail: error.message, endedAt: now() });
@@ -1090,7 +1093,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     state.options.confirmConcurrency = Math.min(groups.length, width);
     await phase("confirming");
-    timeBox(ctx, Math.min(finishBy, opts.confirmBudget === undefined ? Infinity : Date.now() + opts.confirmBudget * minute));
+    const budgetEnd = opts.confirmBudget === undefined ? Infinity : Date.now() + opts.confirmBudget * minute;
+    timeBox(ctx, Math.min(finishBy, budgetEnd), budgetEnd < finishBy ? "the confirmation budget" : runTime);
     reproduced = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id), ran: false }));
     state.interns.push(...reproduced.map((entry) => entry.intern));
     await save();

@@ -32,6 +32,35 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   }
 
   test(
+    "a replay whose confirmation budget ends before its confirmations begin skips them and ends done with the groups unchecked",
+    async () => {
+      const replay = await readReplay(sourceDir, ["g1"]);
+      const runDir = await runQa({
+        dir: join(replay.target.repo, replay.target.path),
+        rev: next,
+        dirty: false,
+        interns: 0,
+        minutes: 0,
+        confirmMinutes: 0.5,
+        confirmBudget: 0.0001,
+        loginsFile,
+        replay,
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null });
+      expect(state.interns.map((entry) => [entry.id, entry.status, entry.detail])).toEqual([["c1", "skipped", "the confirmation budget ended before its session began"]]);
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.run).toMatchObject({ reproducedGroups: 0, notReproducedGroups: 0, uncheckedGroups: 1 });
+      await clean(runDir, state);
+    },
+    timeout,
+  );
+
+  test(
     "a replay hands the confirmed group of an earlier run to a confirming intern at a new commit and reports that it reproduced",
     async () => {
       await expect(readReplay(sourceDir, ["g1", "g2"])).rejects.toThrow(`Run ${source.runId} has no confirmed group g2. Its confirmed groups are g1.`);

@@ -243,7 +243,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const [first, second] = ["c1", "c2"].map((internId) => intern(state, internId));
       expect([first?.status, first?.detail]).toEqual(["done", "reproduced"]);
       expect(Date.parse(first?.endedAt ?? "") - Date.parse(first?.startedAt ?? "")).toBeLessThan(4.5 * 60_000);
-      expect([second?.status, second?.detail]).toEqual(["skipped", "the run's time ended before its session began"]);
+      expect([second?.status, second?.detail]).toEqual(["skipped", "the confirmation budget ended before its session began"]);
       expect(second?.model).toBeNull();
       expect(await firstPrompt(runDir, "c1")).toMatch(/Time box: [12] minutes\./);
 
@@ -252,8 +252,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         ["g1", true],
         ["g2", false],
       ]);
-      expect(report.groups[1].confirmation).toEqual({ intern: "c2", result: null, error: "the run's time ended before its session began" });
-      expect(await Bun.file(join(runDir, "report.md")).text()).toContain("Confirmation: c2 failed: the run's time ended before its session began");
+      expect(report.groups[1].confirmation).toEqual({ intern: "c2", result: null, error: "the confirmation budget ended before its session began" });
+      expect(await Bun.file(join(runDir, "report.md")).text()).toContain("Confirmation: c2 failed: the confirmation budget ended before its session began");
       expect(await leftovers(state.runId)).toEqual([]);
     },
     timeout,
