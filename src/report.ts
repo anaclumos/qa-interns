@@ -21,6 +21,16 @@ export function reproductions(group: Group): string[] {
   return [...interns];
 }
 
+export function outOfTime(group: Group): boolean {
+  const outcome = group.confirmation;
+  return outcome !== null && outcome.result === null && outcome.outOfTime;
+}
+
+function late(groups: Group[]) {
+  const ids = groups.filter(outOfTime).map((group) => group.id);
+  return { count: ids.length, line: ids.length === 0 ? "0" : `${ids.length} (${ids.join(", ")})` };
+}
+
 function egressRows({ hosts, relays }: Egress): EgressRow[] {
   const rows = new Map<string, EgressRow>();
   const add = (intern: string, host: string | null, outcome: EgressRow["outcome"], error: string | null, connections: number) => {
@@ -114,6 +124,7 @@ function verdict(result: Confirmation) {
 function confirmation(group: Group, root: string) {
   const outcome = group.confirmation;
   if (outcome === null) return ["Confirmation: not attempted."];
+  if (outcome.result === null && outcome.outOfTime) return [`Confirmation: ${outcome.intern} ran out of time before it confirmed or refuted the finding: ${inline(outcome.error)}.`];
   if (outcome.result === null) return [`Confirmation: ${outcome.intern} failed: ${inline(outcome.error)}`];
   return [
     `Confirmation: ${outcome.intern} ${verdict(outcome.result)}.`,
@@ -208,6 +219,7 @@ function ticket(state: RunState, browserVersion: string | null, group: Group, in
   lines.push("## Confirmation", "");
   const outcome = group.confirmation;
   if (outcome === null) lines.push("Not attempted.", "");
+  else if (outcome.result === null && outcome.outOfTime) lines.push(`${outcome.intern} ran out of time before it confirmed or refuted the finding:`, "", ...block(outcome.error), "");
   else if (outcome.result === null) lines.push(`${outcome.intern} failed:`, "", ...block(outcome.error), "");
   else {
     lines.push(`${outcome.intern} ${verdict(outcome.result)}.`, "", ...block(outcome.result.observed), "");
@@ -301,6 +313,7 @@ export function renderReport(
   const connections = egressRows(egress);
   const confirmed = rows.filter((row) => row.interns.length >= 2 && !wrongSteps(row.group));
   const notConfirmed = rows.filter((row) => !confirmed.includes(row));
+  const unconfirmed = late(notConfirmed.map((row) => row.group));
   const summary = {
     runId: state.runId,
     target: state.target,
@@ -312,6 +325,7 @@ export function renderReport(
     interns: { testing: role(state, "intern"), confirming: role(state, "confirm"), judging: role(state, "judge") },
     confirmedGroups: confirmed.length,
     notConfirmedGroups: notConfirmed.length,
+    outOfTimeGroups: unconfirmed.count,
     rejectedFiles: rejected.length,
   };
 
@@ -322,6 +336,7 @@ export function renderReport(
     `- Interns: ${summary.interns.testing} testing, ${summary.interns.confirming} confirming, ${summary.interns.judging} judging`,
     `- Confirmed groups: ${summary.confirmedGroups}`,
     `- Groups not confirmed: ${summary.notConfirmedGroups}`,
+    `- Groups not confirmed in time: ${unconfirmed.line}`,
     `- Rejected finding files: ${summary.rejectedFiles}`,
   ];
   if (state.error !== null) lines.push(`- Error: ${inline(state.error)}`);
@@ -368,6 +383,7 @@ export function renderReplay(runDir: string, state: RunState, browser: string | 
   const reproduced = replay.groups.filter((group) => outcome(group) === true);
   const notReproduced = replay.groups.filter((group) => outcome(group) === false);
   const unchecked = replay.groups.filter((group) => outcome(group) === null);
+  const unconfirmed = late(unchecked);
   const summary = {
     runId: state.runId,
     replay: { runId: replay.runId, commit: replay.target.commit, dirty: replay.target.dirty },
@@ -381,6 +397,7 @@ export function renderReplay(runDir: string, state: RunState, browser: string | 
     reproducedGroups: reproduced.length,
     notReproducedGroups: notReproduced.length,
     uncheckedGroups: unchecked.length,
+    outOfTimeGroups: unconfirmed.count,
   };
 
   const lines = [
@@ -392,6 +409,7 @@ export function renderReplay(runDir: string, state: RunState, browser: string | 
     `- Groups reproduced: ${summary.reproducedGroups}`,
     `- Groups not reproduced: ${summary.notReproducedGroups}`,
     `- Groups not checked: ${summary.uncheckedGroups}`,
+    `- Groups not checked in time: ${unconfirmed.line}`,
   ];
   if (state.error !== null) lines.push(`- Error: ${inline(state.error)}`);
   for (const warning of state.warnings ?? []) lines.push(`- Warning: ${inline(warning)}`);

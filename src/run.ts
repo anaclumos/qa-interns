@@ -631,7 +631,7 @@ async function check(ctx: Context, id: string): Promise<Answer> {
     return { result: await readConfirmation(ctx.runDir, id), error: null };
   } catch (error) {
     if (!(error instanceof Invalid)) throw error;
-    return { result: null, error: message(error) };
+    return { result: null, error: message(error), outOfTime: false };
   }
 }
 
@@ -650,7 +650,7 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
     const file = join(ctx.runDir, out, "confirmation.json");
     const closes = Math.min(Date.now() + minutes * minute, ctx.until);
     const deadline = closes - Math.min(writeUpMs, (closes - Date.now()) / 4);
-    let answer: Answer = { result: null, error: "no confirmation.json written" };
+    let answer: Answer = { result: null, error: "no confirmation.json written", outOfTime: false };
     let corrected = false;
     const end = await converse(ctx, note, session, confirmPrompt(finding, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
       await copyOut(ctx, env);
@@ -665,13 +665,21 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
       await turnUntil(ctx, note, session, timeUpPrompt(), closes);
       await copyOut(ctx, env);
     }
-    if (answer.result === null && (await Bun.file(file).exists())) answer = await check(ctx, intern.id);
-    await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
+    const written = await Bun.file(file).exists();
+    if (answer.result === null && written) answer = await check(ctx, intern.id);
+    if (answer.result === null && end !== "done") {
+      const limit = closes === ctx.until ? ctx.limit : "its time box";
+      answer = { result: null, error: written ? `${limit} ended before it wrote a valid /qa/out/confirmation.json: ${answer.error}` : `${limit} ended before it wrote /qa/out/confirmation.json`, outOfTime: true };
+    }
+    await note(answer.result === null ? `${answer.outOfTime ? "not confirmed in time" : "confirmation failed"}: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
   });
-  const answer: Answer = outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error) };
+  const answer: Answer =
+    outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error), outOfTime: outcome.status === "skipped" };
   const confirmation = await recover(ctx, reproduced, answer);
   if (answer.error === null && confirmation.result === null) await ctx.update(intern.id, { detail: stripControl(`${intern.detail}; confirmation failed after teardown: ${confirmation.error}`) });
+  if (answer.result === null && confirmation.result !== null) await ctx.update(intern.id, { detail: stripControl(`${intern.detail}; read its confirmation.json after teardown: ${confirms(confirmation.result) ? "reproduced" : "did not reproduce"}`) });
+  if (confirmation.result === null && confirmation.outOfTime && intern.status === "done") await ctx.update(intern.id, { status: "unfinished" });
   if (!ctx.stopping) group.confirmation = confirmation;
 }
 
@@ -1003,7 +1011,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
         for (const intern of state.interns) {
           if (intern.startedAt !== null && intern.endedAt === null) await ctx.update(intern.id, { status: "failed", detail: intern.detail === null ? "interrupted" : `${intern.detail}; interrupted`, endedAt: now() });
         }
-        for (const entry of reproduced) entry.group.confirmation ??= await recover(ctx, entry, { result: null, error: "interrupted" });
+        for (const entry of reproduced) entry.group.confirmation ??= await recover(ctx, entry, { result: null, error: "interrupted", outOfTime: false });
       }
       if (groups === null) {
         const results = await Promise.all(explored.map(async (entry) => count(ctx, entry, await collect(ctx, entry))));
@@ -1155,7 +1163,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await save();
     const confirming = limit(state.options.confirmConcurrency);
     await settle(reproduced.map((entry) => confirming((free) => reproduce(ctx, entry, target, opts.confirmMinutes, free))));
-    if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null) && reproduced.some(({ intern }) => intern.status !== "skipped")) {
+    const unanswered = groups.every((group) => (group.confirmation?.result ?? null) === null);
+    if (opts.replay !== null && unanswered && groups.some((group) => group.confirmation?.result === null && !group.confirmation.outOfTime)) {
       throw new Error(`No confirming intern recorded a result: ${reproduced.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
     }
 

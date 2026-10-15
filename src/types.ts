@@ -9,7 +9,7 @@ export type Login = z.infer<typeof loginSchema>;
 
 export type RunnerFile = { source: string; target: string };
 
-export const internStatuses = ["queued", "starting", "testing", "done", "failed", "limited", "skipped"] as const;
+export const internStatuses = ["queued", "starting", "testing", "done", "failed", "limited", "skipped", "unfinished"] as const;
 
 export const roles = ["intern", "judge", "confirm"] as const;
 
@@ -39,7 +39,7 @@ export const relayOutcomes = ["connected", "failed", "denied", "refused", "incom
 
 export type RelayRecord = z.infer<typeof relaySchema>;
 
-export type Answer = { result: Confirmation; error: null } | { result: null; error: string };
+export type Answer = { result: Confirmation; error: null } | { result: null; error: string; outOfTime: boolean };
 
 export type Group = {
   id: string;
