@@ -186,7 +186,9 @@ function checkBudget(ctx: Context, margin = 0): void {
 
 async function byDeadline<T>(until: number, limit: string, what: string, task: () => Promise<T>): Promise<T> {
   const controller = new AbortController();
-  const timer = Number.isFinite(until) ? setTimeout(() => controller.abort(), Math.max(0, until - killAfterMs - Date.now())) : undefined;
+  const cutoff = until - killAfterMs - Date.now();
+  if (cutoff <= 0) controller.abort();
+  const timer = Number.isFinite(until) && cutoff > 0 ? setTimeout(() => controller.abort(), cutoff) : undefined;
   try {
     return await abortable(controller.signal, task);
   } catch (error) {
@@ -330,6 +332,12 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     if (session !== undefined) {
       ctx.sessions.delete(session);
       await session.close();
+      try {
+        await byDeadline(ctx.end, runTime, "it copied its output", () => pullDisk(env.out));
+      } catch (error) {
+        if (error instanceof TimeUp) ctx.deferred.push(`${id}: ${error.message} after its session closed`);
+        else await note(`copying its output after its session closed failed: ${message(error)}`);
+      }
     }
   }
 }

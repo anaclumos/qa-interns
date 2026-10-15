@@ -375,14 +375,22 @@ export async function exportTree(ref: TargetRef, dest: string): Promise<void> {
     ? ["tar", "-c", "-C", dir, "--no-recursion", "--null", "--verbatim-files-from", "-T", "-"]
     : ["git", "-C", ref.repo, "archive", "--format=tar", `${ref.commit}:${ref.path}`];
   const extractCmd = ["tar", "-x", "-C", dest];
+  const signal = scope.getStore();
+  signal?.throwIfAborted();
   const archive = track(Bun.spawn(archiveCmd, { stdin: ref.dirty ? await workingTreeFiles(dir) : "ignore", stdout: "pipe", stderr: "pipe" }));
   const extract = track(Bun.spawn(extractCmd, { stdin: archive.stdout, stdout: "ignore", stderr: "pipe" }));
+  const kill = () => {
+    archive.kill("SIGKILL");
+    extract.kill("SIGKILL");
+  };
+  signal?.addEventListener("abort", kill);
   const [archiveCode, archiveErr, extractCode, extractErr] = await Promise.all([
     archive.exited,
     new Response(archive.stderr).text(),
     extract.exited,
     new Response(extract.stderr).text(),
-  ]);
+  ]).finally(() => signal?.removeEventListener("abort", kill));
+  signal?.throwIfAborted();
   if (archiveCode !== 0) throw failure(archiveCmd, archiveCode, archiveErr);
   if (extractCode !== 0) throw failure(extractCmd, extractCode, extractErr);
 }
