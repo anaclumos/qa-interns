@@ -403,16 +403,24 @@ async function cacheRefs(cache: string, builds: { name: string; platform: string
 }
 
 async function pushCache(image: string, ref: string, env: Record<string, string | undefined>): Promise<string | null> {
-  const tagged = await capture(["docker", "tag", image, ref], { env });
-  if (tagged.code !== 0) return `docker tag ${image} ${ref} exited with ${tagged.code}: ${tagged.stderr.trim()}`;
+  const daemon = JSON.stringify([env.DOCKER_HOST ?? null, env.DOCKER_CONTEXT ?? null, ref]);
+  const lock = join(runtimeDir("cache", "a lock for each build cache push"), `${new Bun.CryptoHasher("sha256").update(daemon).digest("hex")}.lock`);
+  const fd = flock(lock, "exclusive", "nonblock");
+  if (fd === null) return `another run on this Docker daemon is pushing ${ref}`;
   try {
+    const tagged = await capture(["docker", "tag", image, ref], { env });
+    if (tagged.code !== 0) return `docker tag ${image} ${ref} exited with ${tagged.code}: ${tagged.stderr.trim()}`;
     const pushed = await capture(["docker", "push", "--quiet", ref], { env, timeout: 10 * minute }).catch((error: unknown) => {
       if (error instanceof CommandTimeout) return { code: 124, stdout: error.stdout, stderr: error.message };
       throw error;
     });
     return pushed.code === 0 ? null : `docker push ${ref} exited with ${pushed.code}: ${pushed.stderr.trim()}`;
   } finally {
-    await cleanupScope(() => capture(["docker", "image", "rm", ref], { env }));
+    try {
+      await cleanupScope(() => capture(["docker", "image", "rm", ref], { env }));
+    } finally {
+      closeSync(fd);
+    }
   }
 }
 

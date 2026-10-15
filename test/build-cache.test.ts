@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { closeSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { flock } from "../src/logins.ts";
 
 let root = "";
 const environment = join(import.meta.dir, "..", "src", "environment.ts");
@@ -31,6 +33,11 @@ beforeAll(async () => {
 afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
+
+function pushLock(ref: string): string {
+  const daemon = JSON.stringify([process.env.DOCKER_HOST ?? null, process.env.DOCKER_CONTEXT ?? null, ref]);
+  return join(process.env.XDG_RUNTIME_DIR ?? "", "qa-interns", "cache", `${new Bun.CryptoHasher("sha256").update(daemon).digest("hex")}.lock`);
+}
 
 async function build(name: string, cache: string | null): Promise<{ calls: string[]; tags: string; log: string }> {
   const dir = join(root, name);
@@ -79,4 +86,18 @@ test("read each service's cache from its image tag for its platform, then push t
   );
   expect(log).toContain(`The build cache was not written, so the next build does not read this one: docker push ${refs.api} exited with 1: denied: permission_denied: write_package`);
   expect(log).not.toContain(refs.web);
+});
+
+test("leave a cache reference alone, with its tag and push, while another run on the same Docker daemon pushes it", async () => {
+  const ref = "ghcr.io/owner/held-qa-cache:qa-web-linux-amd64";
+  await mkdir(dirname(pushLock(ref)), { recursive: true });
+  const fd = flock(pushLock(ref), "exclusive", "block");
+  try {
+    const { calls, log } = await build("held", "ghcr.io/owner/held-qa-cache");
+    expect(calls.filter((call) => call.endsWith(` ${ref}`))).toEqual([]);
+    expect(calls).toContain("push --quiet ghcr.io/owner/held-qa-cache:qa-api-linux-arm64-v8");
+    expect(log).toContain(`The build cache was not written, so the next build does not read this one: another run on this Docker daemon is pushing ${ref}`);
+  } finally {
+    closeSync(fd);
+  }
 });
