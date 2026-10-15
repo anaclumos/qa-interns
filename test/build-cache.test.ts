@@ -9,11 +9,10 @@ const long = `web${"a".repeat(117)}`;
 const config = { services: { web: { build: { context: ".." } }, api: { build: { context: ".." }, platform: "linux/arm64/v8" }, [long]: { build: { context: ".." } } } };
 
 const recordingDocker = (dir: string) => `#!/bin/sh
-echo "$* BUILDX_BUILDER=\${BUILDX_BUILDER-}" >> ${dir}/calls
+echo "$*" >> ${dir}/calls
 case "$1 $2" in
-  "buildx inspect") [ -e ${dir}/builder ] && exit 0; exit 1 ;;
-  "buildx create") touch ${dir}/builder; exit 0 ;;
   "version --format") echo linux/amd64; exit 0 ;;
+  "push --quiet") case "$3" in *:qa-api-*) echo "denied: permission_denied: write_package" >&2; exit 1 ;; esac; exit 0 ;;
 esac
 case " $* " in
   *" config "*) echo '${JSON.stringify(config)}' ;;
@@ -33,7 +32,7 @@ afterAll(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-async function build(name: string, cache: string | null): Promise<{ calls: string[]; tags: string }> {
+async function build(name: string, cache: string | null): Promise<{ calls: string[]; tags: string; log: string }> {
   const dir = join(root, name);
   await mkdir(join(dir, "bin"), { recursive: true });
   await mkdir(join(dir, "source", ".devcontainer"), { recursive: true });
@@ -55,29 +54,29 @@ async function build(name: string, cache: string | null): Promise<{ calls: strin
   `;
   const child = Bun.spawn([process.execPath, "-e", body], { env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}` }, stdout: "inherit", stderr: "inherit" });
   expect(await child.exited).toBe(0);
-  return { calls: (await readFile(join(dir, "calls"), "utf8")).trim().split("\n"), tags: await readFile(join(dir, "tags.yml"), "utf8") };
+  const read = (file: string) => readFile(join(dir, file), "utf8");
+  return { calls: (await read("calls")).trim().split("\n"), tags: await read("tags.yml"), log: await read("build.log") };
 }
 
-test("build with no registry cache, on the default builder, when no cache repository is given", async () => {
+test("build with no registry cache, and push nothing, when no cache repository is given", async () => {
   const { calls, tags } = await build("nocache", null);
-  expect(calls.filter((call) => call.startsWith("buildx") || call.startsWith("version"))).toEqual([]);
-  expect(calls.at(-1)).toEndWith(` build web api ${long} BUILDX_BUILDER=`);
+  expect(calls.at(-1)).toEndWith(` build web api ${long}`);
+  expect(calls.filter((call) => /^(version|tag|push|buildx) /.test(call))).toEqual([]);
   expect(tags).not.toContain("cache_");
 });
 
-test("read and write each service's registry cache under a tag for its platform, on the cache builder that a build creates when it is missing", async () => {
-  const { calls, tags } = await build("cache", "ghcr.io/owner/app-qa-cache");
-  expect(calls.filter((call) => call.startsWith("buildx"))).toEqual([
-    "buildx inspect qa-interns-cache BUILDX_BUILDER=",
-    "buildx create --name qa-interns-cache --driver docker-container BUILDX_BUILDER=",
-  ]);
-  expect(calls.at(-1)).toEndWith(` build web api ${long} BUILDX_BUILDER=qa-interns-cache`);
-  expect(tags).toContain('      cache_from: ["type=registry,ref=ghcr.io/owner/app-qa-cache:qa-web-linux-amd64"]\n');
-  expect(tags).toContain('      cache_to: ["type=registry,ref=ghcr.io/owner/app-qa-cache:qa-web-linux-amd64,mode=max,ignore-error=true"]\n');
-  expect(tags).toContain('      cache_from: ["type=registry,ref=ghcr.io/owner/app-qa-cache:qa-api-linux-arm64-v8"]\n');
-  expect(tags).toContain('      cache_to: ["type=registry,ref=ghcr.io/owner/app-qa-cache:qa-api-linux-arm64-v8,mode=max,ignore-error=true"]\n');
+test("read each service's cache from its image tag for its platform, then push the built image with its inline cache to that tag, and only log a refused push", async () => {
+  const { calls, tags, log } = await build("cache", "ghcr.io/owner/app-qa-cache");
   const full = `qa-${long}-linux-amd64`;
   const bounded = `${full.slice(0, 115)}-${new Bun.CryptoHasher("sha256").update(full).digest("hex").slice(0, 12)}`;
   expect(bounded).toHaveLength(128);
-  expect(tags).toContain(`      cache_from: ["type=registry,ref=ghcr.io/owner/app-qa-cache:${bounded}"]\n`);
+  const refs = { web: "ghcr.io/owner/app-qa-cache:qa-web-linux-amd64", api: "ghcr.io/owner/app-qa-cache:qa-api-linux-arm64-v8", [long]: `ghcr.io/owner/app-qa-cache:${bounded}` };
+  for (const ref of Object.values(refs)) expect(tags).toContain(`      cache_from: ${JSON.stringify([ref])}\n      cache_to: ["type=inline"]\n`);
+  const built = calls.findIndex((call) => call.endsWith(` build web api ${long}`));
+  expect(built).toBeGreaterThan(-1);
+  expect(calls.slice(built + 1)).toEqual(
+    Object.entries(refs).flatMap(([service, ref]) => [`tag qa-cache-${service.toLowerCase()}:latest ${ref}`, `push --quiet ${ref}`, `image rm ${ref}`]),
+  );
+  expect(log).toContain(`The build cache was not written, so the next build does not read this one: docker push ${refs.api} exited with 1: denied: permission_denied: write_package`);
+  expect(log).not.toContain(refs.web);
 });

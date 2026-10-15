@@ -1,5 +1,5 @@
 import { closeSync, existsSync, fstatSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtempDisposable, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, mkdtempDisposable, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,7 +48,6 @@ const rollbackTimeout = 5_000;
 const buildProject = "qa-build";
 const imagePrefix = `${buildProject}-`;
 const keyLength = 12;
-const cacheBuilder = "qa-interns-cache";
 const maxTag = 128;
 const keepImages = 30 * minute;
 
@@ -393,24 +392,28 @@ async function tagShared(pairs: [string, string][]): Promise<boolean> {
   return true;
 }
 
-async function useCacheBuilder(env: Record<string, string | undefined>): Promise<void> {
-  const inspect = ["docker", "buildx", "inspect", cacheBuilder];
-  if ((await capture(inspect, { env })).code === 0) return;
-  const create = ["docker", "buildx", "create", "--name", cacheBuilder, "--driver", "docker-container"];
-  const result = await capture(create, { env });
-  if (result.code !== 0 && (await capture(inspect, { env })).code !== 0) throw failure(create, result.code, result.stderr);
-}
-
-async function cacheLines(cache: string, builds: { name: string; platform: string | null }[], env: Record<string, string | undefined>): Promise<Map<string, string[]>> {
-  await useCacheBuilder(env);
+async function cacheRefs(cache: string, builds: { name: string; platform: string | null }[], env: Record<string, string | undefined>): Promise<Map<string, string>> {
   const server = builds.every(({ platform }) => platform !== null) ? "" : (await execute(["docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"], { env })).trim();
   return new Map(
     builds.map(({ name, platform }) => {
       const tag = `qa-${name}-${platform ?? server}`.replaceAll(/[^\w.-]/g, "-");
-      const ref = `${cache}:${tag.length <= maxTag ? tag : `${tag.slice(0, maxTag - 13)}-${new Bun.CryptoHasher("sha256").update(tag).digest("hex").slice(0, 12)}`}`;
-      return [name, [`      cache_from: ${JSON.stringify([`type=registry,ref=${ref}`])}`, `      cache_to: ${JSON.stringify([`type=registry,ref=${ref},mode=max,ignore-error=true`])}`]];
+      return [name, `${cache}:${tag.length <= maxTag ? tag : `${tag.slice(0, maxTag - 13)}-${new Bun.CryptoHasher("sha256").update(tag).digest("hex").slice(0, 12)}`}`];
     }),
   );
+}
+
+async function pushCache(image: string, ref: string, env: Record<string, string | undefined>): Promise<string | null> {
+  const tagged = await capture(["docker", "tag", image, ref], { env });
+  if (tagged.code !== 0) return `docker tag ${image} ${ref} exited with ${tagged.code}: ${tagged.stderr.trim()}`;
+  try {
+    const pushed = await capture(["docker", "push", "--quiet", ref], { env, timeout: 10 * minute }).catch((error: unknown) => {
+      if (error instanceof CommandTimeout) return { code: 124, stdout: error.stdout, stderr: error.message };
+      throw error;
+    });
+    return pushed.code === 0 ? null : `docker push ${ref} exited with ${pushed.code}: ${pushed.stderr.trim()}`;
+  } finally {
+    await cleanupScope(() => capture(["docker", "image", "rm", ref], { env }));
+  }
 }
 
 export async function buildImages(runId: string, target: Target, sourceDir: string, log: string, cache: string | null = null): Promise<BuiltImages> {
@@ -442,17 +445,20 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   const fresh = builds.some(({ build }) => build.pull === true || build.no_cache === true);
   if (!fresh && (await tagShared(services.map((name) => [shared(name), own(name)])))) return { images, release };
   const tags = join(dir.path, "tags.yml");
-  const caches = cache === null ? new Map<string, string[]>() : await cacheLines(cache, builds, env);
-  const lines = services.flatMap((name) => [
-    `  ${JSON.stringify(name)}:`,
-    `    image: ${JSON.stringify(own(name))}`,
-    "    build:",
-    `      tags: !override ${JSON.stringify([shared(name)])}`,
-    ...(caches.get(name) ?? []),
-  ]);
+  const refs = cache === null ? new Map<string, string>() : await cacheRefs(cache, builds, env);
+  const lines = services.flatMap((name) => {
+    const ref = refs.get(name);
+    return [
+      `  ${JSON.stringify(name)}:`,
+      `    image: ${JSON.stringify(own(name))}`,
+      "    build:",
+      `      tags: !override ${JSON.stringify([shared(name)])}`,
+      ...(ref === undefined ? [] : [`      cache_from: ${JSON.stringify([ref])}`, `      cache_to: ${JSON.stringify(["type=inline"])}`]),
+    ];
+  });
   await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
   const cmd = [...compose, "-f", tags, "build", ...services];
-  const result = await capture(cmd, { env: cache === null ? env : { ...env, BUILDX_BUILDER: cacheBuilder }, timeout: 30 * minute }).catch(async (error: unknown) => {
+  const result = await capture(cmd, { env, timeout: 30 * minute }).catch(async (error: unknown) => {
     if (!(error instanceof CommandTimeout)) throw error;
     await Bun.write(log, redact(`${error.stdout}\n${error.stderr}`));
     throw new Error(`${error.message} (log: ${log})`);
@@ -460,6 +466,10 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   const output = `${result.stdout}\n${result.stderr}`;
   await Bun.write(log, redact(output));
   if (result.code !== 0) throw new Error(`${failure(cmd, result.code, output).message} (log: ${log})`);
+  for (const [name, ref] of refs) {
+    const problem = await pushCache(own(name), ref, env);
+    if (problem !== null) await appendFile(log, redact(`\nThe build cache was not written, so the next build does not read this one: ${problem}\n`));
+  }
   return { images, release };
 }
 

@@ -52,17 +52,17 @@ Commands:
       given 1-based positions, in the order given, then the built-in charters.
       With --on-end, run the shell command when the run ends, done, failed, or
       interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
-      With --build-cache, build the target's images with a BuildKit registry
-      cache in the repository, such as ghcr.io/<owner>/<name>-qa-cache: each
-      build reads the cache, and writes every layer of every stage back to it,
-      under the tag qa-<service>-<os>-<arch>. A step whose inputs are unchanged,
-      such as a dependency install on an unchanged lockfile, then pulls its
-      layer instead of running. The builds run on the docker-container builder
-      qa-interns-cache, which QA Interns creates when it is missing, so they
-      work without the containerd image store. Log in to the registry first. A
-      cache write that the registry refuses, as for a pull request from a fork,
-      only logs an error. The cache holds every layer, so keep the repository
-      private when a build copies a secret into a layer.
+      With --build-cache, each image build reads a BuildKit cache from the
+      repository, such as ghcr.io/<owner>/<name>-qa-cache, under the tag
+      qa-<service>-<os>-<arch>, then pushes the built image there with its
+      inline cache. A step of the image's final stage, or of a stage it
+      starts FROM, whose inputs are unchanged, such as a dependency install
+      on an unchanged lockfile, then pulls its layer instead of running.
+      Steps of a stage that the final stage only copies from are not cached.
+      Log in to the registry first. A push the registry refuses, as for a
+      pull request from a fork, is only written to the build log. The pushed
+      image holds every layer of the build, so keep the repository private
+      when a build copies a secret into a layer.
   replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--confirm-budget <n>] [--build-cache <repository>] [--logins <file>]
       Hand each confirmed group of the earlier run, or each group --group names,
       to a confirming intern against the run's target at the commit. Defaults:
