@@ -1,12 +1,13 @@
 import { closeSync, existsSync, fstatSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
 import { lstat, mkdir, mkdtempDisposable, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
-import { tmpdir, userInfo } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { errorCode, message } from "./findings.ts";
 import { flock } from "./logins.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
+import { qaUser } from "./runner.ts";
 import { writeAtomic } from "./state.ts";
 import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, targetEnv, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type RelayRecord, type RunnerFile } from "./types.ts";
@@ -464,7 +465,7 @@ function composeArgs(spec: EnvironmentSpec): string[] {
 
 async function writeFiles(spec: EnvironmentSpec): Promise<void> {
   await mkdir(spec.runner.out, { recursive: true });
-  const { uid, gid } = userInfo();
+  const { uid, gid } = qaUser;
   await Bun.write(join(envDir(spec), "compose.qa.yml"), renderOverride(spec, uid, gid));
 }
 
@@ -591,7 +592,7 @@ async function disableRestarts(project: string): Promise<void> {
 type Holder = { name: string; out: string; running: boolean };
 
 export async function createDisk(out: string, image: string, owner: string): Promise<void> {
-  const { uid, gid } = userInfo();
+  const { uid, gid } = qaUser;
   const name = outVolume(owner, out);
   if ((await capture(["docker", "volume", "inspect", name])).code === 0) throw new Error(`${out} already has an output disk`);
   const options = `size=${outLimit},nr_inodes=${outInodes},uid=${uid},gid=${gid},mode=0700,nosuid,nodev`;
@@ -661,7 +662,7 @@ export async function pullDisk(out: string): Promise<void> {
 }
 
 export async function execOut(out: string, command: string[]): Promise<string> {
-  const { uid, gid } = userInfo();
+  const { uid, gid } = qaUser;
   return execute(["docker", "exec", "--user", `${uid}:${gid}`, (await holderOf(out)).name, ...command]);
 }
 

@@ -1,22 +1,20 @@
-import { userInfo } from "node:os";
 import { join } from "node:path";
 import { capture, execute, track } from "./target.ts";
 
 const runnerDir = join(import.meta.dir, "..", "runner");
 
+export const qaUser = { uid: 1000, gid: 1000 };
+
 export async function runnerImage(): Promise<string> {
-  const { uid, gid } = userInfo();
   const files = await Promise.all(["Dockerfile", "package.json", "package-lock.json", "proxy.mjs", "relay.mjs", "agent-browser"].map((name) => Bun.file(join(runnerDir, name)).text()));
-  const hash = new Bun.CryptoHasher("sha256").update(JSON.stringify([...files, uid, gid])).digest("hex");
+  const hash = new Bun.CryptoHasher("sha256").update(JSON.stringify(files)).digest("hex");
   return `qa-interns-runner:${hash.slice(0, 12)}`;
 }
 
 export async function ensureRunnerImage(): Promise<string> {
-  const { uid, gid } = userInfo();
-  if (uid === 0) throw new Error("QA Interns runs as a regular user, so the runner does not run as root. Run it as a user other than root (uid 0).");
   const image = await runnerImage();
   if ((await capture(["docker", "image", "inspect", image])).code === 0) return image;
-  const cmd = ["docker", "build", "--build-arg", `QA_UID=${uid}`, "--build-arg", `QA_GID=${gid}`, "-t", image, runnerDir];
+  const cmd = ["docker", "build", "-t", image, runnerDir];
   const build = track(Bun.spawn(cmd, { stdin: "ignore", stdout: 2, stderr: "pipe" }));
   let tail = "";
   const decoder = new TextDecoder();
