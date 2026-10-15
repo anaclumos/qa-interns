@@ -40,19 +40,20 @@ type CommandOptions = { env?: Record<string, string | undefined>; log?: string; 
 const running = new Set<Subprocess>();
 const groups = new Set<Subprocess>();
 export const runLocks = new Set<number>();
-const scope = new AsyncLocalStorage<AbortSignal>();
+const scope = new AsyncLocalStorage<{ signal: AbortSignal; cleanup: AbortSignal | null }>();
 export const killAfterMs = 10_000;
 
-export function abortable<T>(signal: AbortSignal, task: () => Promise<T>): Promise<T> {
-  return scope.run(signal, task);
+export function abortable<T>(signal: AbortSignal, task: () => Promise<T>, cleanup: AbortSignal | null = null): Promise<T> {
+  return scope.run({ signal, cleanup }, task);
 }
 
 export function scopeSignal(): AbortSignal | undefined {
-  return scope.getStore();
+  return scope.getStore()?.signal;
 }
 
-export function unscoped<T>(task: () => Promise<T>): Promise<T> {
-  return scope.exit(task);
+export function cleanupScope<T>(task: () => Promise<T>): Promise<T> {
+  const cleanup = scope.getStore()?.cleanup ?? null;
+  return cleanup === null ? scope.exit(task) : scope.run({ signal: cleanup, cleanup }, task);
 }
 
 export function signalGroup(proc: Subprocess, name: NodeJS.Signals): void {
@@ -64,8 +65,19 @@ export function signalGroup(proc: Subprocess, name: NodeJS.Signals): void {
 }
 
 export function killCommands(): void {
-  for (const proc of running) proc.kill();
-  for (const proc of groups) signalGroup(proc, "SIGTERM");
+  const singles = [...running];
+  const leaders = [...groups];
+  for (const proc of singles) proc.kill();
+  for (const proc of leaders) signalGroup(proc, "SIGTERM");
+  setTimeout(() => {
+    for (const proc of singles) if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
+    for (const proc of leaders) if (groups.has(proc)) signalGroup(proc, "SIGKILL");
+  }, killAfterMs).unref();
+}
+
+export function killLeftCommands(): void {
+  for (const proc of running) proc.kill("SIGKILL");
+  for (const proc of groups) signalGroup(proc, "SIGKILL");
 }
 
 export function track<T extends Subprocess>(proc: T): T {
@@ -80,23 +92,31 @@ export function trackGroup<T extends Subprocess>(proc: T): T {
   return proc;
 }
 
-export async function capture(cmd: string[], options: CommandOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
-  const argv = options.timeout === undefined ? cmd : ["timeout", "--kill-after=10s", `${options.timeout / 1000}s`, ...cmd];
-  const started = performance.now();
-  const signal = scope.getStore();
+export function startScoped<T extends Subprocess>(spawn: (detached: boolean) => T): { proc: T; signal: AbortSignal | undefined; release: () => void } {
+  const signal = scopeSignal();
   signal?.throwIfAborted();
-  const spawned = Bun.spawn(argv, { env: options.env, stdio: [options.stdin ?? "ignore", "pipe", "pipe", ...runLocks], detached: signal !== undefined });
-  const proc = signal === undefined ? track(spawned) : trackGroup(spawned);
+  const proc = signal === undefined ? track(spawn(false)) : trackGroup(spawn(true));
   let forced: ReturnType<typeof setTimeout> | undefined;
   const kill = () => {
     signalGroup(proc, "SIGTERM");
     forced = setTimeout(() => signalGroup(proc, "SIGKILL"), killAfterMs);
   };
   signal?.addEventListener("abort", kill);
-  const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]).finally(() => {
-    signal?.removeEventListener("abort", kill);
-    clearTimeout(forced);
-  });
+  return {
+    proc,
+    signal,
+    release: () => {
+      signal?.removeEventListener("abort", kill);
+      clearTimeout(forced);
+    },
+  };
+}
+
+export async function capture(cmd: string[], options: CommandOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  const argv = options.timeout === undefined ? cmd : ["timeout", "--kill-after=10s", `${options.timeout / 1000}s`, ...cmd];
+  const started = performance.now();
+  const { proc, signal, release } = startScoped((detached) => Bun.spawn(argv, { env: options.env, stdio: [options.stdin ?? "ignore", "pipe", "pipe", ...runLocks], detached }));
+  const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]).finally(release);
   signal?.throwIfAborted();
   if (options.log !== undefined) await appendFile(options.log, stderr);
   if (options.timeout !== undefined && (code === 124 || code === 137) && performance.now() - started >= options.timeout) {
@@ -375,7 +395,7 @@ export async function exportTree(ref: TargetRef, dest: string): Promise<void> {
     ? ["tar", "-c", "-C", dir, "--no-recursion", "--null", "--verbatim-files-from", "-T", "-"]
     : ["git", "-C", ref.repo, "archive", "--format=tar", `${ref.commit}:${ref.path}`];
   const extractCmd = ["tar", "-x", "-C", dest];
-  const signal = scope.getStore();
+  const signal = scopeSignal();
   signal?.throwIfAborted();
   const archive = track(Bun.spawn(archiveCmd, { stdin: ref.dirty ? await workingTreeFiles(dir) : "ignore", stdout: "pipe", stderr: "pipe" }));
   const extract = track(Bun.spawn(extractCmd, { stdin: archive.stdout, stdout: "ignore", stderr: "pipe" }));

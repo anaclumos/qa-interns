@@ -9,7 +9,7 @@ import { flock } from "./logins.ts";
 import { qaUser } from "./runner.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { writeAtomic } from "./state.ts";
-import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, scopeSignal, targetEnv, unscoped, type Target } from "./target.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, scopeSignal, targetEnv, cleanupScope, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type RelayRecord, type RunnerFile } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; files: RunnerFile[]; tmpfs: string[] };
@@ -599,14 +599,15 @@ export async function createDisk(out: string, image: string, owner: string): Pro
   const name = outVolume(owner, out);
   if ((await capture(["docker", "volume", "inspect", name])).code === 0) throw new Error(`${out} already has an output disk`);
   const options = `size=${outLimit},nr_inodes=${outInodes},uid=${uid},gid=${gid},mode=0700,nosuid,nodev`;
+  const label = `${outLabel}=${await realpath(out)}`;
   try {
-    await execute(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=${options}`, name]);
+    await execute(["docker", "volume", "create", "--driver", "local", "--label", label, "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=${options}`, name]);
     await execute([
-      ...["docker", "run", "-d", "--init", "--name", name, "--label", `${outLabel}=${await realpath(out)}`, "--network", "none", "--user", "0:0"],
+      ...["docker", "run", "-d", "--init", "--name", name, "--label", label, "--network", "none", "--user", "0:0"],
       ...["--read-only", "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--security-opt", "no-new-privileges:true", "-v", `${name}:/out`, image, "sleep", "infinity"],
     ]);
   } catch (error) {
-    await unscoped(async () => {
+    await cleanupScope(async () => {
       await capture(["docker", "rm", "-f", name], { timeout: rollbackTimeout });
       await execute(["docker", "volume", "rm", "--force", name], { timeout: rollbackTimeout });
     });
@@ -614,8 +615,13 @@ export async function createDisk(out: string, image: string, owner: string): Pro
   }
 }
 
-async function holders(dir: string): Promise<Holder[]> {
+async function under(dir: string): Promise<(out: string) => boolean> {
   const real = existsSync(dir) ? await realpath(dir) : dir;
+  return (out) => out === real || out.startsWith(`${real}/`);
+}
+
+async function holders(dir: string): Promise<Holder[]> {
+  const inside = await under(dir);
   const listed = await execute(["docker", "ps", "-a", "--filter", `label=${outLabel}`, "--format", `{{.Names}}\t{{.State}}\t{{.Label "${outLabel}"}}`]);
   return listed
     .split("\n")
@@ -624,7 +630,16 @@ async function holders(dir: string): Promise<Holder[]> {
       const [name, state, out] = z.tuple([z.string(), z.string(), z.string()]).parse(line.split("\t"));
       return { name, running: state === "running", out };
     })
-    .filter((holder) => holder.out === real || holder.out.startsWith(`${real}/`));
+    .filter((holder) => inside(holder.out));
+}
+
+async function outVolumes(dir: string): Promise<string[]> {
+  const inside = await under(dir);
+  const listed = await execute(["docker", "volume", "ls", "--filter", `label=${outLabel}`, "--format", `{{.Name}}\t{{.Label "${outLabel}"}}`]);
+  return listed.split("\n").flatMap((line) => {
+    const [name, out] = line.split("\t");
+    return name !== undefined && name !== "" && out !== undefined && inside(out) ? [name] : [];
+  });
 }
 
 const archiveOut = '{ docker exec "$1" tar --sparse --warning=no-file-changed -C /out -cf - . || [ $? -eq 1 ]; } | tar -xf - -C "$2"; code=$?; chmod -R u+rwX "$2"; exit $code';
@@ -648,6 +663,8 @@ async function saveHolder(holder: Holder): Promise<void> {
 
 export async function saveDisk(out: string): Promise<void> {
   for (const holder of await holders(out)) await saveHolder(holder);
+  const orphans = await outVolumes(out);
+  if (orphans.length > 0) await execute(["docker", "volume", "rm", ...orphans]);
 }
 
 export async function removeDir(dir: string): Promise<void> {
@@ -666,13 +683,14 @@ const stopAgentScript = `
 const { readdirSync, readFileSync } = require("node:fs");
 const live = () => readdirSync("/proc").filter((name) => /^[0-9]+$/.test(name)).flatMap((name) => {
   try {
-    const [state, ppid] = readFileSync("/proc/" + name + "/stat", "utf8").split(") ")[1].split(" ");
-    return state === "Z" ? [] : [[Number(name), Number(ppid)]];
+    const stat = readFileSync("/proc/" + name + "/stat", "utf8");
+    const fields = stat.slice(stat.lastIndexOf(") ") + 2).split(" ");
+    return fields[0] === "Z" ? [] : [[Number(name), Number(fields[1]), BigInt(fields[19])]];
   } catch {
     return [];
   }
 });
-const keepalive = Math.min(...live().filter(([, ppid]) => ppid === 1).map(([pid]) => pid));
+const [keepalive] = live().filter(([, ppid]) => ppid === 1).reduce((first, entry) => (entry[2] < first[2] ? entry : first));
 const denied = new Set();
 const others = () => live().filter(([pid]) => pid !== 1 && pid !== keepalive && pid !== process.pid && !denied.has(pid));
 for (let pass = 0; pass < 200; pass += 1) {
@@ -889,7 +907,6 @@ export async function removeCopies(runDir: string, runId: string, image: string)
   const envs = join(runDir, "envs");
   const paths = await leftCopies(runDir, runId);
   const disks = await holders(join(runDir, "interns"));
-  if (paths.length === 0 && disks.length === 0) return;
   if (paths.length > 0) {
     if ((await capture(["docker", "image", "inspect", image])).code !== 0) {
       throw new Error(`${runDir} still holds ${paths.map((path) => join(envs, path)).join(", ")}, which only a container of the runner image can remove, and the runner image ${image} does not exist. Build it with qa-interns doctor, then run qa-interns down again.`);
@@ -904,6 +921,8 @@ export async function removeCopies(runDir: string, runId: string, image: string)
       errors.push(String(error));
     }
   }
+  const orphans = (await outVolumes(join(runDir, "interns"))).filter((name) => !disks.some((disk) => disk.name === name));
+  if (orphans.length > 0) await execute(["docker", "volume", "rm", ...orphans]).catch((error: unknown) => errors.push(String(error)));
   if (errors.length > 0) throw new Error(`Saving the output disks of ${runDir} failed:\n${errors.join("\n")}`);
 }
 
@@ -929,13 +948,14 @@ export async function stopRun(runDir: string, runId: string): Promise<void> {
 
 export async function hostObjects(docker: boolean): Promise<string[]> {
   if (!docker) return [];
-  const [projects, images, helpers, outs] = await Promise.all([
+  const [projects, images, helpers, outs, volumes] = await Promise.all([
     composeProjects(),
     execute(["docker", "image", "ls", "--format", "{{.Repository}}"]),
     execute(["docker", "ps", "-a", "--filter", `label=${diskLabel}`, "--format", `{{.Label "${diskLabel}"}}`]),
     execute(["docker", "ps", "-a", "--filter", `label=${outLabel}`, "--format", "{{.Names}}"]),
+    execute(["docker", "volume", "ls", "--filter", `label=${outLabel}`, "--format", "{{.Name}}"]),
   ]);
-  return [...projects, ...images.split("\n"), ...helpers.split("\n"), ...outs.split("\n")];
+  return [...projects, ...images.split("\n"), ...helpers.split("\n"), ...outs.split("\n"), ...volumes.split("\n")];
 }
 
 export async function leftBehind(names: string[], runDir: string, runId: string): Promise<boolean> {

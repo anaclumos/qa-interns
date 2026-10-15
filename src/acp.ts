@@ -12,6 +12,7 @@ import { z } from "zod";
 import { version } from "../package.json";
 import { message, oneLine, stripControl } from "./findings.ts";
 import { longestSecret, redact, redactAcross } from "./secrets.ts";
+import { track } from "./target.ts";
 
 const startupMs = 5 * 60_000;
 const logLimit = 64 * 1024 ** 2;
@@ -62,12 +63,12 @@ function appender(path: string): (data: string | Uint8Array) => void {
   };
 }
 
-export async function openSession(opts: { container: string; adapter: string[]; model: string; transcript: string; adapterLog: string; startupMs?: number }): Promise<Session> {
+export async function openSession(opts: { container: string; adapter: string[]; model: string; transcript: string; adapterLog: string; startupMs?: number; closeBy?: number }): Promise<Session> {
   const startup = Math.min(startupMs, opts.startupMs ?? startupMs);
   const argv = ["docker", "exec", "-i", "-w", "/qa/out", opts.container, ...opts.adapter];
   const log = appender(opts.adapterLog);
   const transcript = appender(opts.transcript);
-  const child = Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const child = track(Bun.spawn(argv, { stdin: "pipe", stdout: "pipe", stderr: "pipe" }));
 
   const line = (t: string, from: "client" | "agent", message: unknown) => transcript(`${JSON.stringify({ t, from, message })}\n`);
   const queue: { t: string; from: "client" | "agent"; message: unknown; content: { text: string } | null; bytes: number }[] = [];
@@ -180,7 +181,7 @@ export async function openSession(opts: { container: string; adapter: string[]; 
   })();
 
   let closing: Promise<void> | undefined;
-  const close = (graceMs = 10_000) =>
+  const close = (graceMs = Math.max(0, Math.min(10_000, (opts.closeBy ?? Infinity) - Date.now()))) =>
     (closing ??= (async () => {
       child.stdin.end();
       const kill = setTimeout(() => child.kill("SIGKILL"), graceMs);

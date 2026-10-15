@@ -14,7 +14,7 @@ import { readReplay, replayLock } from "./report.ts";
 import { runQa, startCopy } from "./run.ts";
 import { ensureRunnerImage, runnerImage } from "./runner.ts";
 import { formatStatus, readState, resolveRunDir, running, writeState } from "./state.ts";
-import { exportTree, loadTarget, resolveTarget } from "./target.ts";
+import { exportTree, killLeftCommands, loadTarget, resolveTarget } from "./target.ts";
 
 const usage = `Usage: qa-interns <command> [options]
 
@@ -311,4 +311,6 @@ try {
 } catch (error) {
   process.stderr.write(`qa-interns: ${stripControl(message(error))}\n`);
   process.exitCode = 1;
+} finally {
+  killLeftCommands();
 }
