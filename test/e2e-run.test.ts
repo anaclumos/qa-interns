@@ -59,8 +59,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(charterPrompt).toContain(`  - ${knownGap}`);
       expect(confirmationPrompt).toContain("/qa/out/confirmation.json");
       expect(confirmationPrompt).not.toContain(knownGap);
-      expect(charterPrompt).toContain(`  - ${intendedBehavior}`);
-      expect(confirmationPrompt).toContain(`  - ${intendedBehavior}`);
+      expect(charterPrompt).toContain(`  - ${intendedBehavior.id}: ${intendedBehavior.rule}`);
+      expect(confirmationPrompt).toContain(`  - ${intendedBehavior.id}: ${intendedBehavior.rule}`);
 
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.egress).toEqual([]);

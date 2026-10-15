@@ -10,6 +10,7 @@ import { keepHostSecrets, redact } from "./secrets.ts";
 import type { RunState } from "./types.ts";
 
 export type QaSettings = z.infer<typeof settingsSchema>;
+export type IntendedBehavior = QaSettings["intendedBehaviors"][number];
 export type TargetRef = RunState["target"];
 export type ComposeService = {
   build: boolean;
@@ -142,6 +143,13 @@ const connectionLimitsSchema = z
   .strictObject({ concurrent: z.int().positive().optional(), perMinute: z.int().positive().optional(), total: z.int().positive().optional() })
   .refine((limits) => Object.keys(limits).length > 0, "must set concurrent, perMinute, or total");
 
+const intendedBehaviorSchema = z.strictObject({
+  id: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "must be lowercase words joined by hyphens"),
+  rule: z.string().min(1),
+  owner: z.string().min(1),
+  examples: z.array(z.string().min(1)).default([]),
+});
+
 const settingsSchema = z
   .strictObject({
     urls: z
@@ -152,7 +160,7 @@ const settingsSchema = z
     focus: z.array(z.string().min(1)).default([]),
     offLimits: z.array(z.string().min(1)).default([]),
     knownGaps: z.array(z.string().min(1)).default([]),
-    intendedBehaviors: z.array(z.string().min(1)).default([]),
+    intendedBehaviors: z.array(intendedBehaviorSchema).default([]),
     hostEnv: z.array(z.string().min(1)).default([]),
     secrets: z
       .strictObject({ hostEnv: z.array(z.string().min(1)).default([]), seed: z.array(z.string().min(1)).default([]) })
@@ -167,6 +175,11 @@ const settingsSchema = z
     connectionLimits: z.record(z.string(), connectionLimitsSchema).default({}),
   })
   .superRefine((settings, ctx) => {
+    const ids = new Set<string>();
+    for (const [index, behavior] of settings.intendedBehaviors.entries()) {
+      if (ids.has(behavior.id)) ctx.addIssue({ code: "custom", path: ["intendedBehaviors", index, "id"], message: `repeats ${behavior.id}` });
+      ids.add(behavior.id);
+    }
     for (const name of settings.secrets.hostEnv) {
       if (!settings.hostEnv.includes(name)) ctx.addIssue({ code: "custom", path: ["secrets", "hostEnv"], message: `names ${name}, which hostEnv does not list` });
     }
