@@ -82,6 +82,7 @@ describe("internPrompt", () => {
 
   test("carries the charter as its own Charter line", () => {
     expect(prompt.split("\n")).toContain(`Charter: ${charter}`);
+    expect(prompt).toContain("Charter rules:\n- Test only the area your charter names.");
   });
 
   test("lists every known gap in the findings section", () => {
@@ -180,6 +181,7 @@ describe("confirmPrompt", () => {
   test("names the confirmation file and no other file an agent keys on", () => {
     expect(prompt).toContain("/qa/out/confirmation.json");
     expect(prompt).not.toContain("Charter:");
+    expect(prompt).not.toContain("Charter rules:");
     expect(prompt).not.toContain("/qa/out/groups.json");
   });
 
