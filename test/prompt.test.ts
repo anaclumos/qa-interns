@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { charters, confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "../src/prompt.ts";
 import type { Finding } from "../src/types.ts";
+import type { IntendedBehavior } from "../src/target.ts";
 
 const accounts = [
   { email: "owner@acme.test", password: "acme-owner-pass", displayName: "Avery Stone", team: "Acme", role: "owner" },
@@ -20,7 +21,16 @@ const env: PromptEnvironment = {
 };
 
 const knownGaps = ["The environment has no media support.", "The environment has no video model."];
-const intendedBehaviors = ["The invoice table scrolls sideways at narrow viewports instead of clipping its columns.", "A Paid invoice cannot be edited."];
+const intendedBehaviors: IntendedBehavior[] = [
+  {
+    id: "invoice-table-scrolls",
+    rule: "The invoice table scrolls sideways at narrow viewports instead of clipping its columns.",
+    owner: "src/html.ts#invoiceTable",
+    examples: ["At 320 pixels the Total column is past the right edge until the table scrolls."],
+  },
+  { id: "paid-invoice-locked", rule: "A Paid invoice cannot be edited.", owner: "src/db.ts#payInvoice", examples: [] },
+];
+const intendedLines = ["  - invoice-table-scrolls: The invoice table scrolls sideways at narrow viewports instead of clipping its columns.", "    - Example: At 320 pixels the Total column is past the right edge until the table scrolls.", "  - paid-invoice-locked: A Paid invoice cannot be edited."];
 
 function finding(id: string, title: string, evidence: string[]): Finding {
   const intern = id.slice(0, id.indexOf("/"));
@@ -80,10 +90,12 @@ describe("internPrompt", () => {
     for (const entry of knownGaps) expect(findings).toContain(`  - ${entry}`);
   });
 
-  test("lists every intended behavior in the findings section", () => {
+  test("lists every intended behavior in the findings section by id, with its examples under it and no owner", () => {
     const lines = prompt.split("\n");
     const findings = lines.slice(lines.indexOf("Findings:"));
-    for (const entry of intendedBehaviors) expect(findings).toContain(`  - ${entry}`);
+    const start = findings.indexOf(intendedLines[0] as string);
+    expect(findings.slice(start, start + intendedLines.length)).toEqual(intendedLines);
+    expect(prompt).not.toContain("src/db.ts#payInvoice");
   });
 
   test("carries no intended behavior section when the target sets none", () => {
@@ -187,9 +199,10 @@ describe("confirmPrompt", () => {
     expect(prompt.split("\n")).toContain("- The session ends when the time box ends. Write the file before then.");
   });
 
-  test("lists every intended behavior", () => {
+  test("lists every intended behavior by id, with its examples under it", () => {
     const lines = prompt.split("\n");
-    for (const entry of intendedBehaviors) expect(lines).toContain(`  - ${entry}`);
+    const start = lines.indexOf(intendedLines[0] as string);
+    expect(lines.slice(start, start + intendedLines.length)).toEqual(intendedLines);
   });
 
   test("carries no intended behavior section when the target sets none", () => {

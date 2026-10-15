@@ -818,6 +818,15 @@ services:
     ]);
   });
 
+  test("accept intended behaviors as rules with an owner, and default their examples to none", async () => {
+    const intendedBehaviors = [
+      { id: "invoice-table-scrolls", rule: "The invoices table scrolls sideways at narrow viewports.", owner: "src/html.ts#invoiceTable", examples: ["At 320 pixels the Total column is past the right edge until the table scrolls."] },
+      { id: "paid-invoice-locked", rule: "A Paid invoice cannot be edited.", owner: "src/db.ts#payInvoice" },
+    ];
+    const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n", devcontainer({}, { ...settings, intendedBehaviors })));
+    expect(target.settings.intendedBehaviors).toEqual([intendedBehaviors[0], { ...intendedBehaviors[1], examples: [] }]);
+  });
+
   test("accept egress host names", async () => {
     const qa = { ...settings, egress: ["api.pwnedpasswords.com", "ai-gateway.vercel.sh", "xn--bcher-kva.example"] };
     const target = await load(await fixture("services:\n  web:\n    image: nginx:1.29-alpine\n", devcontainer({}, qa)));
@@ -856,6 +865,20 @@ services:
     ["a connection limit of zero", { ...settings, egress: ["api.openai.com"], connectionLimits: { "api.openai.com": { concurrent: 0 } } }, "concurrent"],
     ["a fractional connection limit", { ...settings, egress: ["api.openai.com"], connectionLimits: { "api.openai.com": { perMinute: 1.5 } } }, "perMinute"],
     ["a misspelled connection limit", { ...settings, egress: ["api.openai.com"], connectionLimits: { "api.openai.com": { requests: 100 } } }, "requests"],
+    ["an intended behavior as plain text", { ...settings, intendedBehaviors: ["A Paid invoice cannot be edited."] }, "intendedBehaviors"],
+    ["an intended behavior without an owner", { ...settings, intendedBehaviors: [{ id: "paid-invoice-locked", rule: "A Paid invoice cannot be edited." }] }, "owner"],
+    ["an intended behavior id that is not lowercase words joined by hyphens", { ...settings, intendedBehaviors: [{ id: "Paid invoice", rule: "A Paid invoice cannot be edited.", owner: "src/db.ts#payInvoice" }] }, "must be lowercase words joined by hyphens"],
+    [
+      "two intended behaviors with one id",
+      {
+        ...settings,
+        intendedBehaviors: [
+          { id: "paid-invoice-locked", rule: "A Paid invoice cannot be edited.", owner: "src/db.ts#payInvoice" },
+          { id: "paid-invoice-locked", rule: "A Paid invoice cannot be deleted.", owner: "src/db.ts#deleteInvoice" },
+        ],
+      },
+      "repeats paid-invoice-locked",
+    ],
   ];
 
   test.each(invalid)("reject settings with %s", async (_, qa, message) => {

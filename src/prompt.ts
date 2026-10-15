@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { IntendedBehavior } from "./target.ts";
 import { kinds, type Finding, type Rejected } from "./types.ts";
 
 export const charters: readonly string[] = [
@@ -113,11 +114,17 @@ const findingExample = {
   evidence: ["/qa/out/evidence/task-status-board.png", "/qa/out/evidence/task-status-detail.png", "/qa/out/evidence/task-status.har"],
 };
 
-export function internPrompt(charter: string, env: PromptEnvironment, knownGaps: string[], intendedBehaviors: string[]): string {
+function intendedList(intendedBehaviors: IntendedBehavior[]): string {
+  return intendedBehaviors
+    .map((behavior) => [`  - ${behavior.id}: ${behavior.rule}`, ...behavior.examples.map((example) => `    - Example: ${example}`)].join("\n"))
+    .join("\n");
+}
+
+export function internPrompt(charter: string, env: PromptEnvironment, knownGaps: string[], intendedBehaviors: IntendedBehavior[]): string {
   const gaps = knownGaps.length > 0 ? `\n- Do not write a finding about these known gaps of the test environment:\n${knownGaps.map((entry) => `  - ${entry}`).join("\n")}` : "";
   const intended =
     intendedBehaviors.length > 0
-      ? `\n- Do not write a finding whose observed result is one of these intended behaviors of the application, as the list states it:\n${intendedBehaviors.map((entry) => `  - ${entry}`).join("\n")}\n- A page that differs from an intended behavior is still a finding.`
+      ? `\n- Do not write a finding whose observed result one of these intended behaviors of the application states. Each is a rule with its id, and its examples show results the rule covers:\n${intendedList(intendedBehaviors)}\n- A page that differs from what a rule states is still a finding.`
       : "";
   return `You are a QA intern. You test one web application the way a person uses it, and you report what breaks.
 
@@ -191,10 +198,10 @@ Write /qa/out/groups.json with this shape:
 - Write only that file.`;
 }
 
-export function confirmPrompt(finding: Finding, env: PromptEnvironment, intendedBehaviors: string[]): string {
+export function confirmPrompt(finding: Finding, env: PromptEnvironment, intendedBehaviors: IntendedBehavior[]): string {
   const intended =
     intendedBehaviors.length > 0
-      ? `\n- A finding whose observed result is one of these intended behaviors of the application, as the list states it, is not a failure:\n${intendedBehaviors.map((entry) => `  - ${entry}`).join("\n")}\n- For such a finding, \`steps\` and \`task\` are false, and \`observed\` names the intended behavior it matches. The list does not cover a result that differs from these behaviors.`
+      ? `\n- A finding whose observed result one of these intended behaviors of the application states is not a failure. Each is a rule with its id, and its examples show results the rule covers:\n${intendedList(intendedBehaviors)}\n- For such a finding, \`steps\` and \`task\` are false, and \`observed\` names the id of the rule it matches. The list does not cover a result that differs from what its rules state.`
       : "";
   const reported = {
     title: finding.title,

@@ -89,7 +89,9 @@ A target describes its environment in a Compose-based
 .devcontainer/devcontainer.json, with QA Interns settings under
 customizations["qa-interns"]: urls, ready, seed, and optionally focus,
 offLimits, knownGaps, intendedBehaviors, hostEnv, secrets, egress, and
-connectionLimits.
+connectionLimits. Each intendedBehaviors entry is a rule:
+{"id": "<lowercase-words>", "rule": "<the behavior>", "owner": "<the code that
+decides it>", "examples": ["<an observed result the rule covers>"]}.
 QA Interns runs the target's lifecycle commands, and initializeCommand runs on
 the host, so run it only against repositories you trust.
 Screenshots keep every value the page showed, secrets included, so check each
