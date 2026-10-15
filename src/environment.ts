@@ -598,8 +598,8 @@ export async function createDisk(out: string, image: string, owner: string): Pro
   const name = outVolume(owner, out);
   if ((await capture(["docker", "volume", "inspect", name])).code === 0) throw new Error(`${out} already has an output disk`);
   const options = `size=${outLimit},nr_inodes=${outInodes},uid=${uid},gid=${gid},mode=0700,nosuid,nodev`;
-  await execute(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=${options}`, name]);
   try {
+    await execute(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=${options}`, name]);
     await execute([
       ...["docker", "run", "-d", "--init", "--name", name, "--label", `${outLabel}=${await realpath(out)}`, "--network", "none", "--user", "0:0"],
       ...["--read-only", "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--security-opt", "no-new-privileges:true", "-v", `${name}:/out`, image, "sleep", "infinity"],
@@ -607,7 +607,7 @@ export async function createDisk(out: string, image: string, owner: string): Pro
   } catch (error) {
     await unscoped(async () => {
       await capture(["docker", "rm", "-f", name]);
-      await execute(["docker", "volume", "rm", name]);
+      await execute(["docker", "volume", "rm", "--force", name]);
     });
     throw error;
   }

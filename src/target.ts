@@ -51,9 +51,17 @@ export function unscoped<T>(task: () => Promise<T>): Promise<T> {
   return scope.exit(task);
 }
 
+function signalGroup(proc: Subprocess, name: NodeJS.Signals): void {
+  try {
+    process.kill(-proc.pid, name);
+  } catch (error) {
+    if (errorCode(error) !== "ESRCH") throw error;
+  }
+}
+
 export function killCommands(): void {
   for (const proc of running) proc.kill();
-  for (const proc of groups) process.kill(-proc.pid, "SIGTERM");
+  for (const proc of groups) signalGroup(proc, "SIGTERM");
 }
 
 export function track<T extends Subprocess>(proc: T): T {
@@ -76,16 +84,9 @@ export async function capture(cmd: string[], options: CommandOptions = {}): Prom
   const spawned = Bun.spawn(argv, { env: options.env, stdio: [options.stdin ?? "ignore", "pipe", "pipe", ...runLocks], detached: signal !== undefined });
   const proc = signal === undefined ? track(spawned) : trackGroup(spawned);
   let forced: ReturnType<typeof setTimeout> | undefined;
-  const group = (name: NodeJS.Signals) => {
-    try {
-      process.kill(-proc.pid, name);
-    } catch (error) {
-      if (errorCode(error) !== "ESRCH") throw error;
-    }
-  };
   const kill = () => {
-    group("SIGTERM");
-    forced = setTimeout(() => group("SIGKILL"), killAfterMs);
+    signalGroup(proc, "SIGTERM");
+    forced = setTimeout(() => signalGroup(proc, "SIGKILL"), killAfterMs);
   };
   signal?.addEventListener("abort", kill);
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]).finally(() => {

@@ -364,7 +364,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     for (;;) {
       checkStopping(ctx);
       checkBudget(ctx, ctx.margin);
-      slot = await freeSlot();
+      slot = await byDeadline(ctx.until, ctx.limit, "it waited for a network slot", freeSlot);
       const environment: EnvironmentStats = { intern: id, startedAt: now(), readyAt: null, containers: null };
       ctx.environments.push(environment);
       started = true;
@@ -1015,7 +1015,12 @@ export async function runQa(opts: RunOptions): Promise<string> {
     egress = target.settings.egress;
     const cards = deck(target.settings.focus, opts.focus);
     ctx.runnerImage = await opts.runnerImage();
-    for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
+    try {
+      for (const error of await byDeadline(testingEnd - startMinMs, runTime, "it removed the leftovers of earlier runs", () => sweepRuns(ctx.runnerImage))) process.stderr.write(`${redact(error)}\n`);
+    } catch (error) {
+      if (!(error instanceof TimeUp)) throw error;
+      process.stderr.write(`${error.message}\n`);
+    }
     browser = await browserVersion(ctx.runnerImage);
     const slots = await freeSlots();
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
