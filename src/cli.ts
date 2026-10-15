@@ -54,13 +54,14 @@ Commands:
       interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
       With --build-cache, each image build reads a BuildKit cache from the
       repository, such as ghcr.io/<owner>/<name>-qa-cache, under the tag
-      qa-<service>-<os>-<arch>, then pushes the built image there with its
-      inline cache. A step of the image's final stage, or of a stage it
+      qa-<service>-<os>-<arch>. Once the images are built, the run goes on
+      while it pushes each image there with its inline cache, until the end
+      of --minutes at most, and its teardown waits for the push. A step of the image's final stage, or of a stage it
       starts FROM, whose inputs are unchanged, such as a dependency install
       on an unchanged lockfile, then pulls its layer instead of running.
       Steps of a stage that the final stage only copies from are not cached.
-      Log in to the registry first. A push the registry refuses, as for a
-      pull request from a fork, is only written to the build log. The pushed
+      Log in to the registry first. A push that fails, as for a pull request
+      from a fork, or that runs out of time is only written to the build log. The pushed
       image holds every layer of the build, so keep the repository private
       when a build copies a secret into a layer.
   replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--confirm-budget <n>] [--build-cache <repository>] [--logins <file>]

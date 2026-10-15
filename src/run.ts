@@ -898,6 +898,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
     ctx,
     async () => {
       let slot: HeldSlot | undefined;
+      let pushing = Promise.resolve();
       try {
         ctx.runnerImage = await opts.runnerImage();
         for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
@@ -906,7 +907,8 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
         await phase("building");
-        const { images } = await buildImages(runId, target, source, join(runDir, "build.log"), opts.buildCache ?? null);
+        const { images, push } = await buildImages(runId, target, source, join(runDir, "build.log"), opts.buildCache ?? null);
+        pushing = push().catch((reason: unknown) => opts.print(redact(message(reason))));
         await phase("starting");
         slot = await freeSlot();
         const env = await startEnvironment({
@@ -933,6 +935,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         throw new Error(redact(message(error)));
       } finally {
         slot?.release();
+        await pushing;
       }
       return runDir;
     },
@@ -973,6 +976,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let egress: string[] = [];
   let browser: string | null = null;
   let releaseImages = async () => {};
+  let pushing = Promise.resolve();
 
   let recorded: { error: string | null; teardowns: string[]; stopping: boolean } | undefined;
 
@@ -1045,6 +1049,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     }
     ctx.tearingDown = false;
     try {
+      await pushing;
       await releaseImages();
       if (!ctx.stopping) await byDeadline(ctx, ctx.end, runTime, "it swept unused images", sweepImages);
     } catch (reason) {
@@ -1111,6 +1116,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
       return;
     }
     releaseImages = built.release;
+    pushing = byDeadline(ctx, ctx.end, runTime, "it pushed the build cache", built.push).catch((reason: unknown) => opts.print(redact(message(reason))));
     ctx.images = built.images;
 
     if (groups === null) {

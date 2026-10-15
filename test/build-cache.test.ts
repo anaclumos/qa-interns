@@ -55,8 +55,11 @@ async function build(name: string, cache: string | null): Promise<{ calls: strin
     services: { web: service, api: service, [long]: service },
   };
   const body = `
+    const { appendFile } = await import("node:fs/promises");
     const { buildImages } = await import(${JSON.stringify(environment)});
-    await buildImages(${JSON.stringify(name)}, ${JSON.stringify(target)}, ${JSON.stringify(join(dir, "source"))}, ${JSON.stringify(join(dir, "build.log"))}, ${JSON.stringify(cache)});
+    const built = await buildImages(${JSON.stringify(name)}, ${JSON.stringify(target)}, ${JSON.stringify(join(dir, "source"))}, ${JSON.stringify(join(dir, "build.log"))}, ${JSON.stringify(cache)});
+    await appendFile(${JSON.stringify(join(dir, "calls"))}, "built\\n");
+    await built.push();
   `;
   const child = Bun.spawn([process.execPath, "-e", body], { env: { ...process.env, PATH: `${join(dir, "bin")}:${process.env.PATH}` }, stdout: "inherit", stderr: "inherit" });
   expect(await child.exited).toBe(0);
@@ -66,12 +69,12 @@ async function build(name: string, cache: string | null): Promise<{ calls: strin
 
 test("build with no registry cache, and push nothing, when no cache repository is given", async () => {
   const { calls, tags } = await build("nocache", null);
-  expect(calls.at(-1)).toEndWith(` build web api ${long}`);
+  expect(calls.slice(-2)).toEqual([expect.stringMatching(new RegExp(` build web api ${long}$`)), "built"]);
   expect(calls.filter((call) => /^(version|tag|push|buildx) /.test(call))).toEqual([]);
   expect(tags).not.toContain("cache_");
 });
 
-test("read each service's cache from its image tag for its platform, then push the built image with its inline cache to that tag, and only log a refused push", async () => {
+test("read each service's cache from its image tag for its platform, push the built image with its inline cache to that tag only when the caller pushes, and only log a refused push", async () => {
   const { calls, tags, log } = await build("cache", "ghcr.io/owner/app-qa-cache");
   const full = `qa-${long}-linux-amd64`;
   const bounded = `${full.slice(0, 115)}-${new Bun.CryptoHasher("sha256").update(full).digest("hex").slice(0, 12)}`;
@@ -80,9 +83,10 @@ test("read each service's cache from its image tag for its platform, then push t
   for (const ref of Object.values(refs)) expect(tags).toContain(`      cache_from: ${JSON.stringify([ref])}\n      cache_to: ["type=inline"]\n`);
   const built = calls.findIndex((call) => call.endsWith(` build web api ${long}`));
   expect(built).toBeGreaterThan(-1);
-  expect(calls.slice(built + 1)).toEqual(
-    Object.entries(refs).flatMap(([service, ref]) => [`tag qa-cache-${service.toLowerCase()}:latest ${ref}`, `push --quiet ${ref}`, `image rm ${ref}`]),
-  );
+  expect(calls.slice(built + 1)).toEqual([
+    "built",
+    ...Object.entries(refs).flatMap(([service, ref]) => [`tag qa-cache-${service.toLowerCase()}:latest ${ref}`, `push --quiet ${ref}`, `image rm ${ref}`]),
+  ]);
   expect(log).toContain(`The build cache was not written, so the next build does not read this one: docker push ${refs.api} exited with 1: denied: permission_denied: write_package`);
   expect(log).not.toContain(refs.web);
 });

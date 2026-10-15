@@ -354,7 +354,7 @@ export function imageBuilders(target: Target): Record<string, string> {
   return sources;
 }
 
-export type BuiltImages = { images: Record<string, string>; release: () => Promise<void> };
+export type BuiltImages = { images: Record<string, string>; release: () => Promise<void>; push: () => Promise<void> };
 
 const buildConfigSchema = z.object({
   services: z.record(z.string(), z.object({ build: z.looseObject({ pull: z.boolean().optional(), no_cache: z.boolean().optional() }).optional(), platform: z.string().optional() })),
@@ -409,11 +409,10 @@ async function pushCache(image: string, ref: string, env: Record<string, string 
   try {
     const tagged = await capture(["docker", "tag", image, ref], { env });
     if (tagged.code !== 0) return `docker tag ${image} ${ref} exited with ${tagged.code}: ${tagged.stderr.trim()}`;
-    const pushed = await capture(["docker", "push", "--quiet", ref], { env, timeout: 10 * minute }).catch((error: unknown) => {
-      if (error instanceof CommandTimeout) return { code: 124, stdout: error.stdout, stderr: error.message };
-      throw error;
-    });
+    const pushed = await capture(["docker", "push", "--quiet", ref], { env, timeout: 10 * minute });
     return pushed.code === 0 ? null : `docker push ${ref} exited with ${pushed.code}: ${pushed.stderr.trim()}`;
+  } catch (error) {
+    return `pushing ${ref} stopped: ${message(error)}`;
   } finally {
     try {
       await cleanupScope(() => capture(["docker", "image", "rm", ref], { env }));
@@ -427,7 +426,7 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   const own = (builder: string) => `qa-${runId}-${builder.toLowerCase()}:latest`;
   const images = Object.fromEntries(Object.entries(imageBuilders(target)).map(([name, builder]) => [name, own(builder)]));
   const services = Object.entries(target.services).filter(([, service]) => service.build && service.active).map(([name]) => name);
-  if (services.length === 0) return { images, release: async () => {} };
+  if (services.length === 0) return { images, release: async () => {}, push: async () => {} };
   await using dir = await mkdtempDisposable(join(tmpdir(), "qa-interns-tags-"));
   const env = await targetEnv(target.settings.hostEnv, dir.path);
   const compose = ["docker", "compose", "-p", buildProject, ...sourceComposeArgs(target, sourceDir)];
@@ -450,7 +449,7 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   };
   await release();
   const fresh = builds.some(({ build }) => build.pull === true || build.no_cache === true);
-  if (!fresh && (await tagShared(services.map((name) => [shared(name), own(name)])))) return { images, release };
+  if (!fresh && (await tagShared(services.map((name) => [shared(name), own(name)])))) return { images, release, push: async () => {} };
   const tags = join(dir.path, "tags.yml");
   const refs = cache === null ? new Map<string, string>() : await cacheRefs(cache, builds, env);
   const lines = services.flatMap((name) => {
@@ -473,11 +472,16 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   const output = `${result.stdout}\n${result.stderr}`;
   await Bun.write(log, redact(output));
   if (result.code !== 0) throw new Error(`${failure(cmd, result.code, output).message} (log: ${log})`);
-  for (const [name, ref] of refs) {
-    const problem = await pushCache(own(name), ref, env);
-    if (problem !== null) await appendFile(log, redact(`\nThe build cache was not written, so the next build does not read this one: ${problem}\n`));
-  }
-  return { images, release };
+  const push = async () => {
+    if (refs.size === 0) return;
+    await using pushDir = await mkdtempDisposable(join(tmpdir(), "qa-interns-push-"));
+    const pushEnv = await targetEnv(target.settings.hostEnv, pushDir.path);
+    for (const [name, ref] of refs) {
+      const problem = await pushCache(own(name), ref, pushEnv);
+      if (problem !== null) await appendFile(log, redact(`\nThe build cache was not written, so the next build does not read this one: ${problem}\n`));
+    }
+  };
+  return { images, release, push };
 }
 
 export async function sweepImages(): Promise<void> {
