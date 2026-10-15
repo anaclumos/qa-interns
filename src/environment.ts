@@ -9,7 +9,7 @@ import { flock } from "./logins.ts";
 import { qaUser } from "./runner.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { writeAtomic } from "./state.ts";
-import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, targetEnv, type Target } from "./target.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, scopeSignal, targetEnv, unscoped, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type RelayRecord, type RunnerFile } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; files: RunnerFile[]; tmpfs: string[] };
@@ -598,15 +598,17 @@ export async function createDisk(out: string, image: string, owner: string): Pro
   const name = outVolume(owner, out);
   if ((await capture(["docker", "volume", "inspect", name])).code === 0) throw new Error(`${out} already has an output disk`);
   const options = `size=${outLimit},nr_inodes=${outInodes},uid=${uid},gid=${gid},mode=0700,nosuid,nodev`;
-  await execute(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=${options}`, name]);
   try {
+    await execute(["docker", "volume", "create", "--driver", "local", "--opt", "type=tmpfs", "--opt", "device=tmpfs", "--opt", `o=${options}`, name]);
     await execute([
       ...["docker", "run", "-d", "--init", "--name", name, "--label", `${outLabel}=${await realpath(out)}`, "--network", "none", "--user", "0:0"],
       ...["--read-only", "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--security-opt", "no-new-privileges:true", "-v", `${name}:/out`, image, "sleep", "infinity"],
     ]);
   } catch (error) {
-    await capture(["docker", "rm", "-f", name]);
-    await execute(["docker", "volume", "rm", name]);
+    await unscoped(async () => {
+      await capture(["docker", "rm", "-f", name]);
+      await execute(["docker", "volume", "rm", "--force", name]);
+    });
     throw error;
   }
 }
@@ -657,6 +659,40 @@ async function holderOf(out: string): Promise<Holder> {
   const [holder] = await holders(out);
   if (holder === undefined) throw new Error(`${out} has no output disk`);
   return holder;
+}
+
+const stopAgentScript = `
+const { readdirSync, readFileSync } = require("node:fs");
+const live = () => readdirSync("/proc").filter((name) => /^[0-9]+$/.test(name)).flatMap((name) => {
+  try {
+    const [state, ppid] = readFileSync("/proc/" + name + "/stat", "utf8").split(") ")[1].split(" ");
+    return state === "Z" ? [] : [[Number(name), Number(ppid)]];
+  } catch {
+    return [];
+  }
+});
+const keepalive = Math.min(...live().filter(([, ppid]) => ppid === 1).map(([pid]) => pid));
+const denied = new Set();
+const others = () => live().filter(([pid]) => pid !== 1 && pid !== keepalive && pid !== process.pid && !denied.has(pid));
+for (let pass = 0; pass < 200; pass += 1) {
+  const left = others();
+  if (left.length === 0) process.exit(0);
+  for (const [pid] of left) {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch (error) {
+      if (error.code === "EPERM") denied.add(pid);
+      else if (error.code !== "ESRCH") throw error;
+    }
+  }
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+}
+console.error("processes still running after 200 passes: " + others().map(([pid]) => pid).join(" "));
+process.exit(1);
+`;
+
+export async function stopAgent(runner: string): Promise<void> {
+  await execute(["docker", "exec", runner, "node", "-e", stopAgentScript]);
 }
 
 export async function pullDisk(out: string): Promise<void> {
@@ -835,6 +871,7 @@ async function settleDiskHelpers(runId: string): Promise<void> {
   if (created.length > 0) await execute(["docker", "rm", "-f", ...created]);
   const deadline = Date.now() + helperTimeout;
   for (let running = await diskHelpers(runId, "running"); running.length > 0; running = await diskHelpers(runId, "running")) {
+    scopeSignal()?.throwIfAborted();
     if (Date.now() >= deadline) throw new Error(`The helper containers ${running.join(", ")} of run ${runId} still run after ${helperTimeout / minute} minutes`);
     await Bun.sleep(1000);
   }

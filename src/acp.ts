@@ -33,7 +33,7 @@ export type Session = {
   prompt(text: string): Promise<{ stopReason: string; toolCalls: number; lastMessage: string }>;
   toolCalls(): number;
   cancel(): Promise<void>;
-  close(): Promise<void>;
+  close(graceMs?: number): Promise<void>;
 };
 
 const errorKindSchema = z.looseObject({ errorKind: z.string() });
@@ -62,7 +62,8 @@ function appender(path: string): (data: string | Uint8Array) => void {
   };
 }
 
-export async function openSession(opts: { container: string; adapter: string[]; model: string; transcript: string; adapterLog: string }): Promise<Session> {
+export async function openSession(opts: { container: string; adapter: string[]; model: string; transcript: string; adapterLog: string; startupMs?: number }): Promise<Session> {
+  const startup = Math.min(startupMs, opts.startupMs ?? startupMs);
   const argv = ["docker", "exec", "-i", "-w", "/qa/out", opts.container, ...opts.adapter];
   const log = appender(opts.adapterLog);
   const transcript = appender(opts.transcript);
@@ -179,10 +180,10 @@ export async function openSession(opts: { container: string; adapter: string[]; 
   })();
 
   let closing: Promise<void> | undefined;
-  const close = () =>
+  const close = (graceMs = 10_000) =>
     (closing ??= (async () => {
       child.stdin.end();
-      const kill = setTimeout(() => child.kill("SIGKILL"), 10_000);
+      const kill = setTimeout(() => child.kill("SIGKILL"), graceMs);
       await Promise.all([child.exited, logged]);
       clearTimeout(kill);
       connection.close();
@@ -208,11 +209,11 @@ export async function openSession(opts: { container: string; adapter: string[]; 
     return { started, model: modelOf(chosen) };
   };
 
-  const timedOut = new Error(`${argv.join(" ")} did not start a session within ${startupMs / 1000} seconds`);
+  const timedOut = new Error(`${argv.join(" ")} did not start a session within ${Math.round(startup / 1000)} seconds`);
   try {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(timedOut), startupMs);
+      timer = setTimeout(() => reject(timedOut), startup);
     });
     const { started: session, model } = await Promise.race([setup(), expired]).finally(() => clearTimeout(timer));
     let calls = 0;

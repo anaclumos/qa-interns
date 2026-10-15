@@ -19,7 +19,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
 
   beforeAll(async () => {
     loginsFile = await logins("replay");
-    sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
+    sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 6, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
     source = await readState(sourceDir);
     const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false"];
     next = (await execute([...git, "commit-tree", "-p", source.target.commit, "-m", "Next", `${source.target.commit}^{tree}`])).trim();
@@ -30,6 +30,36 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     expect(await workspaces(dir, run)).toEqual([]);
     expect(await disks(dir, run)).toEqual([]);
   }
+
+  test(
+    "a replay whose confirmation budget ends before its confirmations begin skips them and ends done with the groups unchecked",
+    async () => {
+      const replay = await readReplay(sourceDir, ["g1"]);
+      const runDir = await runQa({
+        dir: join(replay.target.repo, replay.target.path),
+        rev: next,
+        dirty: false,
+        interns: 0,
+        minutes: 0,
+        confirmMinutes: 0.5,
+        confirmBudget: 0.0001,
+        loginsFile,
+        replay,
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null });
+      expect(state.interns.map((entry) => [entry.id, entry.status])).toEqual([["c1", "skipped"]]);
+      expect(intern(state, "c1").detail).toMatch(/^the confirmation budget ended (before its session began|while it waited for a network slot)$/);
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.run).toMatchObject({ reproducedGroups: 0, notReproducedGroups: 0, uncheckedGroups: 1 });
+      expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
 
   test(
     "a replay hands the confirmed group of an earlier run to a confirming intern at a new commit and reports that it reproduced",

@@ -37,7 +37,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("relayed"),
         replay: null,
@@ -111,7 +111,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       process.env.QA_PROBE_DIR = probe;
       let error: unknown = null;
       try {
-        await runQa({ dir: hostile, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: (line) => lines.push(line) });
+        await runQa({ dir: hostile, rev: "HEAD", dirty: false, interns: 1, minutes: 6, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: (line) => lines.push(line) });
       } catch (reason) {
         error = reason;
       } finally {
@@ -157,7 +157,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 5,
+        minutes: 8,
         confirmMinutes: 0.5,
         loginsFile: await logins("flood", { flood: true }),
         replay: null,
@@ -216,7 +216,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: true,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("dirty"),
         replay: null,

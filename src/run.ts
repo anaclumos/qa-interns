@@ -16,6 +16,7 @@ import {
   runnerEnv,
   saveDisks,
   startEnvironment,
+  stopAgent,
   stopEnvironment,
   stopProject,
   stopRun,
@@ -35,7 +36,7 @@ import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeAtomic, writeState } from "./state.ts";
-import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
+import { abortable, execute, exportTree, killAfterMs, killCommands, loadTarget, resolveTarget, signalGroup, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Answer, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
@@ -80,12 +81,14 @@ type Turn = Awaited<ReturnType<Session["prompt"]>>;
 type Limit = <T>(task: (free: () => void) => Promise<T>) => Promise<T>;
 type Note = (text: string) => Promise<void>;
 type Work<T> = (session: Session, env: Environment, note: Note) => Promise<T>;
-type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "failed"; error: unknown };
+type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "skipped"; error: TimeUp } | { status: "failed"; error: unknown };
 type Explored = { intern: InternState; environment: FindingEnvironment | null };
 type Collected = { findings: Finding[]; rejected: Rejected[]; failures: unknown[] };
 type Reproduced = { intern: InternState; group: Group; ran: boolean };
 
 class Unanswered extends Error {}
+
+class TimeUp extends Error {}
 
 type Context = {
   runId: string;
@@ -100,6 +103,10 @@ type Context = {
   environments: EnvironmentStats[];
   waiting: Set<() => void>;
   until: number;
+  end: number;
+  deferred: string[];
+  margin: number;
+  limit: string;
   stopping: boolean;
   tearingDown: boolean;
   update(id: string, patch: Partial<InternState>): Promise<void>;
@@ -110,14 +117,17 @@ let guarded = 0;
 const minute = 60_000;
 const askMinutes = 10;
 const continueLimit = 5;
-const settleMs = 60_000;
+const settleMs = 15_000;
 const writeUpMs = 4 * minute;
+const startMinMs = minute;
+const tailMs = minute;
+const testingShare = 0.6;
 const stopWaitMs = 30_000;
 const waitMs = 30_000;
 const rateLimitBaseMs = 5_000;
 const rateLimitCapMs = 60_000;
 const noLogin = "no login has spare capacity";
-const budgetSpent = "the confirmation budget ended before its confirmation began";
+const runTime = "the run's time";
 const copyName = "up";
 
 function now(): string {
@@ -171,8 +181,32 @@ function checkStopping(ctx: Context): void {
   if (ctx.stopping) throw new Error("interrupted");
 }
 
-function checkBudget(ctx: Context): void {
-  if (Date.now() >= ctx.until) throw new Error(budgetSpent);
+function checkBudget(ctx: Context, margin = 0): void {
+  if (Date.now() + margin >= ctx.until) throw new TimeUp(`${ctx.limit} ended before its session began`);
+}
+
+async function byDeadline<T>(until: number, limit: string, what: string, task: () => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const cutoff = until - killAfterMs - Date.now();
+  if (cutoff <= 0) controller.abort();
+  const timer = Number.isFinite(until) && cutoff > 0 ? setTimeout(() => controller.abort(), cutoff) : undefined;
+  try {
+    return await abortable(controller.signal, task);
+  } catch (error) {
+    throw controller.signal.aborted ? new TimeUp(`${limit} ended while ${what}`) : error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function copyOut(ctx: Context, env: Environment): Promise<void> {
+  return byDeadline(ctx.end, runTime, "it copied its output", () => pullDisk(env.out));
+}
+
+function timeBox(ctx: Context, until: number, limit = runTime): void {
+  ctx.until = until;
+  ctx.limit = limit;
+  ctx.margin = Math.min(startMinMs, (until - Date.now()) / 2);
 }
 
 function context(runId: string, runDir: string, runnerImage: string, scheduler: Scheduler | null, admit: Admit, update: Context["update"]): Context {
@@ -189,6 +223,10 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     environments: [],
     waiting: new Set(),
     until: Infinity,
+    end: Infinity,
+    deferred: [],
+    margin: startMinMs,
+    limit: runTime,
     stopping: false,
     tearingDown: false,
     update,
@@ -198,7 +236,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
 async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null> {
   for (;;) {
     checkStopping(ctx);
-    checkBudget(ctx);
+    checkBudget(ctx, ctx.margin);
     const released = Promise.withResolvers<void>();
     const wake = () => released.resolve();
     const unwatch = watchReleases(wake);
@@ -212,7 +250,7 @@ async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null
         if (!leased) return null;
         continue;
       }
-      timer = setTimeout(wake, waitMs);
+      timer = setTimeout(wake, Math.min(waitMs, Math.max(0, ctx.until - ctx.margin - Date.now())));
       await released.promise;
     } finally {
       clearTimeout(timer);
@@ -225,12 +263,12 @@ async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null
 async function admitted(ctx: Context, memory: number): Promise<() => void> {
   for (;;) {
     checkStopping(ctx);
-    checkBudget(ctx);
+    checkBudget(ctx, ctx.margin);
     const released = Promise.withResolvers<void>();
     const wake = () => released.resolve();
     const unwatch = watchReleases(wake);
     ctx.waiting.add(wake);
-    const timer = setTimeout(wake, waitMs);
+    const timer = setTimeout(wake, Math.min(waitMs, Math.max(0, ctx.until - ctx.margin - Date.now())));
     try {
       const started = ctx.admit(memory);
       if (started !== null) return started;
@@ -267,6 +305,7 @@ function environmentSpec(ctx: Context, name: string, slot: number, target: Targe
 
 async function withSession<T>(ctx: Context, id: string, env: Environment, lease: Lease, work: Work<T>, note: Note): Promise<T> {
   let session: Session | undefined;
+  let runnerStopped = false;
   const done = new AbortController();
   try {
     session = await openSession({
@@ -275,6 +314,7 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
       model: pi.model,
       transcript: join(ctx.runDir, "interns", id, "transcript.jsonl"),
       adapterLog: join(ctx.runDir, "interns", id, "adapter.log"),
+      startupMs: Math.max(1000, ctx.until - Date.now()),
     });
     ctx.sessions.add(session);
     checkStopping(ctx);
@@ -286,9 +326,11 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     const result = await Promise.race([work(session, env, live).then((value) => ({ value })), watchOut(env.out, done.signal)]);
     if (typeof result !== "string") return result.value;
     stopped = true;
+    runnerStopped = true;
     await execute(["docker", "kill", env.runner]);
     throw new Error(`${result}, so its runner was stopped`);
   } catch (error) {
+    if (session === undefined && Date.now() >= ctx.until) throw new TimeUp(`${ctx.limit} ended while its session started: ${message(error)}`);
     const key = errorKind(error) === "auth_error" ? readKey(lease.credential) : null;
     const problem = key === null ? null : await keyProblem(key).catch(message);
     throw problem === null ? error : new Error(`${message(error)}; ${problem}`);
@@ -296,7 +338,16 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     done.abort();
     if (session !== undefined) {
       ctx.sessions.delete(session);
-      await session.close();
+      await session.close(Math.max(0, Math.min(killAfterMs, ctx.end - killAfterMs - Date.now())));
+      try {
+        await byDeadline(ctx.end, runTime, "it stopped its agent and copied its output", async () => {
+          if (!runnerStopped) await stopAgent(env.runner);
+          await pullDisk(env.out);
+        });
+      } catch (error) {
+        if (error instanceof TimeUp) ctx.deferred.push(`${id}: ${error.message} after its session closed`);
+        else await note(`copying its output after its session closed failed: ${message(error)}`);
+      }
     }
   }
 }
@@ -317,14 +368,16 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
   const teardown = async (handOff: () => void) => {
     const environment = unread;
     unread = null;
-    try {
-      if (environment !== null) environment.containers = await containerStats(project);
-    } finally {
-      await stopEnvironment(ctx.runDir, id, project, () => {
-        removed = true;
-        handOff();
-      });
-    }
+    await byDeadline(ctx.end, runTime, "its environment was torn down", async () => {
+      try {
+        if (environment !== null) environment.containers = await containerStats(project);
+      } finally {
+        await stopEnvironment(ctx.runDir, id, project, () => {
+          removed = true;
+          handOff();
+        });
+      }
+    });
   };
   try {
     if (ctx.scheduler === null) throw new Error(`Run ${ctx.runId} has no login`);
@@ -334,15 +387,20 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     await ctx.update(id, { status: "starting", login: lease.login.id, project, startedAt: now() });
     for (;;) {
       checkStopping(ctx);
-      slot = await freeSlot();
+      checkBudget(ctx, ctx.margin);
+      const held = await byDeadline(ctx.until, ctx.limit, "it waited for a network slot", freeSlot);
+      slot = held;
+      const spec = environmentSpec(ctx, id, held.slot, target, lease);
       const environment: EnvironmentStats = { intern: id, startedAt: now(), readyAt: null, containers: null };
       ctx.environments.push(environment);
       started = true;
       removed = false;
       unread = environment;
-      const env = await startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease), () => {
-        environment.readyAt = now();
-      }).finally(starting);
+      const env = await byDeadline(ctx.until, ctx.limit, "its environment started", () =>
+        startEnvironment(spec, () => {
+          environment.readyAt = now();
+        }),
+      ).finally(starting);
       try {
         return { value: await withSession(ctx, id, env, lease, work, note) };
       } catch (error) {
@@ -365,9 +423,14 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     try {
       if (started) await teardown(handOff);
     } catch (error) {
-      if (!removed) ctx.unremoved.add(id);
-      ctx.teardowns.push(`${id}: ${message(error)}`);
-      await note(`teardown failed: ${message(error)}`);
+      if (error instanceof TimeUp) {
+        ctx.deferred.push(`${id}: ${error.message}`);
+        await note(`teardown deferred to qa-interns down: ${error.message}`);
+      } else {
+        if (!removed) ctx.unremoved.add(id);
+        ctx.teardowns.push(`${id}: ${message(error)}`);
+        await note(`teardown failed: ${message(error)}`);
+      }
     } finally {
       handOff();
     }
@@ -392,7 +455,7 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, fre
     outcome = result === null ? { status: "limited" } : { status: "done", value: result.value };
     if (result === null) notes.push(noLogin);
   } catch (error) {
-    outcome = { status: "failed", error };
+    outcome = error instanceof TimeUp ? { status: "skipped", error } : { status: "failed", error };
   }
   await ctx.update(id, { status: outcome.status, detail: detail(), endedAt: now() });
   return outcome;
@@ -467,14 +530,17 @@ function promptEnvironment(target: Target, env: Environment, minutes: number): P
 }
 
 async function askWith<T>(ctx: Context, id: string, prompt: string, file: string, parse: (raw: string) => T): Promise<T> {
+  let minutes = askMinutes;
   let unanswered = false;
   const outcome = await agentTask(ctx, id, null, () => {}, async (session, env, note) => {
     const path = join(ctx.runDir, outDir(id), file);
     await rm(path, { force: true });
     let parsed = null as { value: T } | null;
     let corrected = false;
-    await converse(ctx, note, session, prompt, Date.now() + askMinutes * minute, async () => {
-      await pullDisk(env.out);
+    const deadline = Math.min(Date.now() + askMinutes * minute, ctx.until);
+    minutes = Math.round(((deadline - Date.now()) / minute) * 10) / 10;
+    await converse(ctx, note, session, prompt, deadline, async () => {
+      await copyOut(ctx, env);
       try {
         parsed = { value: parse(await readAgentFile(path)) };
         return null;
@@ -484,23 +550,25 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
         return correctionPrompt(`/qa/out/${file}`, message(error));
       }
     });
-    await pullDisk(env.out);
+    await copyOut(ctx, env);
     if (parsed === null && (await Bun.file(path).exists())) {
       try {
         parsed = { value: parse(await readAgentFile(path)) };
       } catch (error) {
-        throw new Error(`${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes: ${message(error)}`);
+        const reason = `${id} wrote no valid /qa/out/${file} within ${minutes} minutes: ${message(error)}`;
+        throw Date.now() >= ctx.until ? new TimeUp(reason) : new Error(reason);
       }
     }
     if (parsed === null) {
-      const reason = `${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes`;
+      const reason = `${id} wrote no valid /qa/out/${file} within ${minutes} minutes`;
+      if (Date.now() >= ctx.until) throw new TimeUp(reason);
       if (unanswered) throw new Error(reason);
       unanswered = true;
       throw new Unanswered(`${reason}; starting it again in a fresh environment`);
     }
     return parsed.value;
   });
-  if (outcome.status === "failed") throw outcome.error;
+  if (outcome.status === "failed" || outcome.status === "skipped") throw outcome.error;
   if (outcome.status === "limited") throw new Error(`No login has spare capacity for ${id}`);
   return outcome.value;
 }
@@ -520,22 +588,24 @@ async function count(ctx: Context, { intern }: Explored, collected: Collected): 
   return collected;
 }
 
-async function explore(ctx: Context, explored: Explored, target: Target, minutes: number, free: () => void): Promise<{ outcome: Outcome<void> } & Collected> {
+async function explore(ctx: Context, explored: Explored, target: Target, free: () => void): Promise<{ outcome: Outcome<void> } & Collected> {
   const { intern } = explored;
   const outcome = await agentTask(ctx, intern.id, target, free, async (session, env, note) => {
+    checkBudget(ctx, ctx.margin / 2);
     const found = { commit: target.commit, dirty: target.dirty, environment: env.project, model: session.model };
     explored.environment = found;
     const start = Date.now();
-    const deadline = start + minutes * minute;
+    const deadline = ctx.until;
+    const granted = deadline - start;
     let continued = 0;
-    await converse(ctx, note, session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
+    await converse(ctx, note, session, internPrompt(intern.charter, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
       const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
       if (idle) {
         if (session.toolCalls() === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
         await note(`${stopped}: "${turn.lastMessage}"`);
         return null;
       }
-      await pullDisk(env.out);
+      await copyOut(ctx, env);
       const { rejected } = await readFindings(ctx.runDir, intern.id, found);
       if (continued >= continueLimit && rejected.length === 0) {
         await note(`${stopped} after ${continueLimit} continue prompts: "${turn.lastMessage}"`);
@@ -544,7 +614,11 @@ async function explore(ctx: Context, explored: Explored, target: Target, minutes
       continued += 1;
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id));
     });
-    if (session.toolCalls() === 0) throw new Error(`made no tool call in its ${minutes} minutes`);
+    await copyOut(ctx, env);
+    if (session.toolCalls() === 0) {
+      const reason = "made no tool call before its time ended";
+      throw granted < startMinMs && Date.now() >= deadline ? new TimeUp(`${reason}, which left it under a minute`) : new Error(reason);
+    }
   });
   const collected = await collect(ctx, explored);
   if (collected.failures.length > 0) throw collected.failures[0];
@@ -570,25 +644,26 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
   const { intern, group } = reproduced;
   const finding = lead(group);
   const outcome = await agentTask(ctx, intern.id, target, free, async (session, env, note) => {
-    checkBudget(ctx);
+    checkBudget(ctx, ctx.margin / 2);
     reproduced.ran = true;
     const out = outDir(intern.id);
     const file = join(ctx.runDir, out, "confirmation.json");
-    const deadline = Math.min(Date.now() + minutes * minute, ctx.until);
+    const closes = Math.min(Date.now() + minutes * minute, ctx.until);
+    const deadline = closes - Math.min(writeUpMs, (closes - Date.now()) / 4);
     let answer: Answer = { result: null, error: "no confirmation.json written" };
     let corrected = false;
     const end = await converse(ctx, note, session, confirmPrompt(finding, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
-      await pullDisk(env.out);
+      await copyOut(ctx, env);
       if (!(await Bun.file(file).exists())) return idle ? null : confirmContinuePrompt(minutesLeft(deadline));
       answer = await check(ctx, intern.id);
       if (answer.error === null || corrected) return null;
       corrected = true;
       return correctionPrompt("/qa/out/confirmation.json", answer.error);
     });
-    await pullDisk(env.out);
+    await copyOut(ctx, env);
     if (end === "ended" && !(await Bun.file(file).exists())) {
-      await turnUntil(ctx, note, session, timeUpPrompt(), Date.now() + writeUpMs);
-      await pullDisk(env.out);
+      await turnUntil(ctx, note, session, timeUpPrompt(), closes);
+      await copyOut(ctx, env);
     }
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check(ctx, intern.id);
     await note(answer.result === null ? `confirmation failed: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
@@ -848,6 +923,9 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
 }
 
 export async function runQa(opts: RunOptions): Promise<string> {
+  const started = Date.now();
+  const finishBy = opts.minutes > 0 ? started + opts.minutes * minute - Math.min(tailMs, opts.minutes * minute * 0.1) : Infinity;
+  const testingEnd = started + (finishBy - started) * testingShare;
   const scheduler = new Scheduler(await loadLogin(opts.loginsFile));
   const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
   const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0, confirmConcurrency: 0 };
@@ -861,6 +939,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     if (changed) opts.print(progress(intern));
     await save();
   });
+  ctx.end = opts.minutes > 0 ? started + opts.minutes * minute : Infinity;
   const phase = async (next: RunPhase) => {
     checkStopping(ctx);
     state.phase = next;
@@ -912,9 +991,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const teardowns: string[] = [];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
-        await step();
+        await byDeadline(ctx.end, runTime, "it tore down the run", step);
       } catch (reason) {
-        teardowns.push(message(reason));
+        if (reason instanceof TimeUp) ctx.deferred.push(reason.message);
+        else teardowns.push(message(reason));
       }
     }
     let failures: unknown[] = [];
@@ -948,10 +1028,12 @@ export async function runQa(opts: RunOptions): Promise<string> {
     ctx.tearingDown = false;
     try {
       await releaseImages();
-      if (!ctx.stopping) await sweepImages();
+      if (!ctx.stopping) await byDeadline(ctx.end, runTime, "it swept unused images", sweepImages);
     } catch (reason) {
-      opts.print(redact(message(reason)));
+      if (reason instanceof TimeUp) ctx.deferred.push(reason.message);
+      else opts.print(redact(message(reason)));
     }
+    if (ctx.deferred.length > 0) state.warnings = [`teardown stopped at the run's deadline and is left to qa-interns down: ${ctx.deferred.join("; ")}`];
     const problem = [error,...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`)].filter((entry) => entry !== null).join("; ");
     try {
       record(problem === "" ? null : problem, teardowns);
@@ -968,14 +1050,27 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
   const phases = async () => {
     const source = join(runDir, "source");
-    await exportTree(ref, source);
-    const target = await loadTarget(ref, source);
+    let slots = 0;
+    const prepared = await byDeadline(testingEnd - startMinMs, runTime, "it prepared the run", async () => {
+      await exportTree(ref, source);
+      const loaded = await loadTarget(ref, source);
+      const dealt = deck(loaded.settings.focus, opts.focus);
+      ctx.runnerImage = await opts.runnerImage();
+      for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
+      browser = await browserVersion(ctx.runnerImage);
+      slots = await freeSlots();
+      return { target: loaded, cards: dealt };
+    }).catch((error: unknown) => {
+      if (!(error instanceof TimeUp)) throw error;
+      return error;
+    });
+    if (prepared instanceof TimeUp) {
+      state.interns = Array.from({ length: opts.interns }, (_, index) => ({ ...internState(`i${index + 1}`, "intern", "", null), status: "skipped" as const, detail: prepared.message, endedAt: now() }));
+      await phase("reporting");
+      return;
+    }
+    const { target, cards } = prepared;
     egress = target.settings.egress;
-    const cards = deck(target.settings.focus, opts.focus);
-    ctx.runnerImage = await opts.runnerImage();
-    for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
-    browser = await browserVersion(ctx.runnerImage);
-    const slots = await freeSlots();
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
     const width = Math.min(scheduler.capacity(), slots);
     state.options.concurrency = Math.min(opts.interns, width);
@@ -988,19 +1083,28 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await save();
 
     await phase("building");
-    const built = await buildImages(runId, target, source, join(runDir, "build.log"));
+    let built: Awaited<ReturnType<typeof buildImages>>;
+    try {
+      built = await byDeadline(testingEnd - startMinMs, runTime, "its images built", () => buildImages(runId, target, source, join(runDir, "build.log")));
+    } catch (error) {
+      if (!(error instanceof TimeUp)) throw error;
+      for (const intern of state.interns) await ctx.update(intern.id, { status: "skipped", detail: error.message, endedAt: now() });
+      await phase("reporting");
+      return;
+    }
     releaseImages = built.release;
     ctx.images = built.images;
 
     if (groups === null) {
       await phase("testing");
+      timeBox(ctx, testingEnd);
       const testing = limit(state.options.concurrency);
       explored = state.interns.map((intern) => ({ intern, environment: null }));
       const ended: Awaited<ReturnType<typeof explore>>[] = [];
       const results = await settle(
         explored.map((entry, index) =>
           testing(async (free) => {
-            const result = await explore(ctx, entry, target, opts.minutes, free);
+            const result = await explore(ctx, entry, target, free);
             ended[index] = result;
             if (!ctx.stopping) {
               findings = ended.flatMap((one) => one.findings);
@@ -1013,7 +1117,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
       checkStopping(ctx);
       findings = results.flatMap((result) => result.findings);
       rejected = results.flatMap((result) => result.rejected);
-      if (results.every((result) => result.outcome.status !== "done")) {
+      if (results.every((result) => result.outcome.status !== "done") && results.some((result) => result.outcome.status !== "skipped")) {
         throw new Error(`No testing intern completed: ${state.interns.map((intern) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
       }
 
@@ -1023,7 +1127,12 @@ export async function runQa(opts: RunOptions): Promise<string> {
         state.interns.push(internState("judge", "judge", "Group duplicate findings", null));
         await save();
         const ids = findings.map((finding) => finding.id);
-        members = await askWith(ctx, "judge", judgePrompt(findings), "groups.json", (raw) => parseGroups(raw, ids));
+        timeBox(ctx, Date.now() + (finishBy - Date.now()) / 3);
+        try {
+          members = await askWith(ctx, "judge", judgePrompt(findings), "groups.json", (raw) => parseGroups(raw, ids));
+        } catch (error) {
+          if (!(error instanceof TimeUp)) throw error;
+        }
       }
       const byId = new Map(findings.map((finding) => [finding.id, finding]));
       groups = members.map((list, index) => ({
@@ -1039,13 +1148,14 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     state.options.confirmConcurrency = Math.min(groups.length, width);
     await phase("confirming");
-    if (opts.confirmBudget !== undefined) ctx.until = Date.now() + opts.confirmBudget * minute;
+    const budgetEnd = opts.confirmBudget === undefined ? Infinity : Date.now() + opts.confirmBudget * minute;
+    timeBox(ctx, Math.min(finishBy, budgetEnd), budgetEnd < finishBy ? "the confirmation budget" : runTime);
     reproduced = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id), ran: false }));
     state.interns.push(...reproduced.map((entry) => entry.intern));
     await save();
     const confirming = limit(state.options.confirmConcurrency);
     await settle(reproduced.map((entry) => confirming((free) => reproduce(ctx, entry, target, opts.confirmMinutes, free))));
-    if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null)) {
+    if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null) && reproduced.some(({ intern }) => intern.status !== "skipped")) {
       throw new Error(`No confirming intern recorded a result: ${reproduced.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
     }
 
@@ -1055,7 +1165,19 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const ended = once(async (phase: RunPhase): Promise<string | null> => {
     if (opts.onEnd === undefined) return null;
     const env = { ...process.env, QA_INTERNS_RUN_DIR: runDir, QA_INTERNS_PHASE: phase };
-    const code = await trackGroup(Bun.spawn(["sh", "-c", opts.onEnd], { env, stdin: "ignore", stdout: "inherit", stderr: "inherit", detached: true })).exited;
+    const hook = trackGroup(Bun.spawn(["sh", "-c", opts.onEnd], { env, stdin: "ignore", stdout: "inherit", stderr: "inherit", detached: true }));
+    let cut = false;
+    const timer = Number.isFinite(ctx.end)
+      ? setTimeout(() => {
+          cut = true;
+          signalGroup(hook, "SIGKILL");
+        }, Math.max(0, ctx.end - Date.now()))
+      : undefined;
+    const code = await hook.exited.finally(() => clearTimeout(timer));
+    if (cut) {
+      process.stderr.write("The --on-end command was stopped at the run's deadline.\n");
+      return null;
+    }
     return code === 0 ? null : `The --on-end command exited with ${code}`;
   });
 

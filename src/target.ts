@@ -1,4 +1,5 @@
 import type { BunFile, Subprocess } from "bun";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync, lstatSync } from "node:fs";
 import { appendFile, mkdir, mkdtempDisposable, readdir, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import { isIP } from "node:net";
@@ -39,10 +40,32 @@ type CommandOptions = { env?: Record<string, string | undefined>; log?: string; 
 const running = new Set<Subprocess>();
 const groups = new Set<Subprocess>();
 export const runLocks = new Set<number>();
+const scope = new AsyncLocalStorage<AbortSignal>();
+export const killAfterMs = 10_000;
+
+export function abortable<T>(signal: AbortSignal, task: () => Promise<T>): Promise<T> {
+  return scope.run(signal, task);
+}
+
+export function scopeSignal(): AbortSignal | undefined {
+  return scope.getStore();
+}
+
+export function unscoped<T>(task: () => Promise<T>): Promise<T> {
+  return scope.exit(task);
+}
+
+export function signalGroup(proc: Subprocess, name: NodeJS.Signals): void {
+  try {
+    process.kill(-proc.pid, name);
+  } catch (error) {
+    if (errorCode(error) !== "ESRCH") throw error;
+  }
+}
 
 export function killCommands(): void {
   for (const proc of running) proc.kill();
-  for (const proc of groups) process.kill(-proc.pid, "SIGTERM");
+  for (const proc of groups) signalGroup(proc, "SIGTERM");
 }
 
 export function track<T extends Subprocess>(proc: T): T {
@@ -60,8 +83,21 @@ export function trackGroup<T extends Subprocess>(proc: T): T {
 export async function capture(cmd: string[], options: CommandOptions = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   const argv = options.timeout === undefined ? cmd : ["timeout", "--kill-after=10s", `${options.timeout / 1000}s`, ...cmd];
   const started = performance.now();
-  const proc = track(Bun.spawn(argv, { env: options.env, stdio: [options.stdin ?? "ignore", "pipe", "pipe", ...runLocks] }));
-  const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  const signal = scope.getStore();
+  signal?.throwIfAborted();
+  const spawned = Bun.spawn(argv, { env: options.env, stdio: [options.stdin ?? "ignore", "pipe", "pipe", ...runLocks], detached: signal !== undefined });
+  const proc = signal === undefined ? track(spawned) : trackGroup(spawned);
+  let forced: ReturnType<typeof setTimeout> | undefined;
+  const kill = () => {
+    signalGroup(proc, "SIGTERM");
+    forced = setTimeout(() => signalGroup(proc, "SIGKILL"), killAfterMs);
+  };
+  signal?.addEventListener("abort", kill);
+  const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]).finally(() => {
+    signal?.removeEventListener("abort", kill);
+    clearTimeout(forced);
+  });
+  signal?.throwIfAborted();
   if (options.log !== undefined) await appendFile(options.log, stderr);
   if (options.timeout !== undefined && (code === 124 || code === 137) && performance.now() - started >= options.timeout) {
     throw new CommandTimeout(cmd, options.timeout / 1000, stdout, stderr);
@@ -339,14 +375,22 @@ export async function exportTree(ref: TargetRef, dest: string): Promise<void> {
     ? ["tar", "-c", "-C", dir, "--no-recursion", "--null", "--verbatim-files-from", "-T", "-"]
     : ["git", "-C", ref.repo, "archive", "--format=tar", `${ref.commit}:${ref.path}`];
   const extractCmd = ["tar", "-x", "-C", dest];
+  const signal = scope.getStore();
+  signal?.throwIfAborted();
   const archive = track(Bun.spawn(archiveCmd, { stdin: ref.dirty ? await workingTreeFiles(dir) : "ignore", stdout: "pipe", stderr: "pipe" }));
   const extract = track(Bun.spawn(extractCmd, { stdin: archive.stdout, stdout: "ignore", stderr: "pipe" }));
+  const kill = () => {
+    archive.kill("SIGKILL");
+    extract.kill("SIGKILL");
+  };
+  signal?.addEventListener("abort", kill);
   const [archiveCode, archiveErr, extractCode, extractErr] = await Promise.all([
     archive.exited,
     new Response(archive.stderr).text(),
     extract.exited,
     new Response(extract.stderr).text(),
-  ]);
+  ]).finally(() => signal?.removeEventListener("abort", kill));
+  signal?.throwIfAborted();
   if (archiveCode !== 0) throw failure(archiveCmd, archiveCode, archiveErr);
   if (extractCode !== 0) throw failure(extractCmd, extractCode, extractErr);
 }

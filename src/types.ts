@@ -9,7 +9,7 @@ export type Login = z.infer<typeof loginSchema>;
 
 export type RunnerFile = { source: string; target: string };
 
-export const internStatuses = ["queued", "starting", "testing", "done", "failed", "limited"] as const;
+export const internStatuses = ["queued", "starting", "testing", "done", "failed", "limited", "skipped"] as const;
 
 export const roles = ["intern", "judge", "confirm"] as const;
 
