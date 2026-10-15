@@ -31,7 +31,7 @@ import {
 import { Invalid, message, oneLine, outDir, parseGroups, readAgentFile, readConfirmation, readFindings, stripControl } from "./findings.ts";
 import { admit, loadLogin, Scheduler, watchReleases, type Lease } from "./logins.ts";
 import { credentialRule, keyProblem, pi, readKey } from "./pi.ts";
-import { confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
+import { confirmContinuePrompt, confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, timeUpPrompt, type PromptEnvironment } from "./prompt.ts";
 import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
@@ -654,7 +654,7 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
     let corrected = false;
     const end = await converse(ctx, note, session, confirmPrompt(finding, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
       await copyOut(ctx, env);
-      if (!(await Bun.file(file).exists())) return idle ? null : continuePrompt(minutesLeft(deadline), [], out);
+      if (!(await Bun.file(file).exists())) return idle ? null : confirmContinuePrompt(minutesLeft(deadline));
       answer = await check(ctx, intern.id);
       if (answer.error === null || corrected) return null;
       corrected = true;

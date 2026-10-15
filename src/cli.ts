@@ -34,7 +34,7 @@ Commands:
   run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--confirm-budget <n>] [--focus <n>]... [--logins <file>] [--on-end <command>]
       Run interns against the target at the commit, or with --dirty against a
       copy of its working tree: the tracked files as they are and the untracked
-      files that Git does not ignore. Defaults: HEAD, 4 interns, 30 minutes,
+      files that Git does not ignore. Defaults: HEAD, 4 interns, 10 minutes,
       10 minutes per confirmation. --minutes limits the whole run, from its
       start to its report: the testing interns run at once until 60 percent of
       it, then the judge groups their findings and one confirming intern per
@@ -156,7 +156,7 @@ async function main(args: string[]): Promise<number> {
           commit: { type: "string" },
           dirty: { type: "boolean", default: false },
           interns: { type: "string", default: "4" },
-          minutes: { type: "string", default: "30" },
+          minutes: { type: "string", default: "10" },
           "confirm-minutes": { type: "string", default: "10" },
           "confirm-budget": { type: "string" },
           focus: { type: "string", multiple: true, default: [] },
