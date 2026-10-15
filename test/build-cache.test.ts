@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 let root = "";
 const environment = join(import.meta.dir, "..", "src", "environment.ts");
-const config = { services: { web: { build: { context: ".." } }, api: { build: { context: ".." }, platform: "linux/arm64/v8" } } };
+const long = `web${"a".repeat(117)}`;
+const config = { services: { web: { build: { context: ".." } }, api: { build: { context: ".." }, platform: "linux/arm64/v8" }, [long]: { build: { context: ".." } } } };
 
 const recordingDocker = (dir: string) => `#!/bin/sh
 echo "$* BUILDX_BUILDER=\${BUILDX_BUILDER-}" >> ${dir}/calls
@@ -46,7 +47,7 @@ async function build(name: string, cache: string | null): Promise<{ calls: strin
     dirty: false,
     settings: { hostEnv: [], secrets: { hostEnv: [], seed: [] } },
     composeFiles: ["compose.yml"],
-    services: { web: service, api: service },
+    services: { web: service, api: service, [long]: service },
   };
   const body = `
     const { buildImages } = await import(${JSON.stringify(environment)});
@@ -60,7 +61,7 @@ async function build(name: string, cache: string | null): Promise<{ calls: strin
 test("build with no registry cache, on the default builder, when no cache repository is given", async () => {
   const { calls, tags } = await build("nocache", null);
   expect(calls.filter((call) => call.startsWith("buildx") || call.startsWith("version"))).toEqual([]);
-  expect(calls.at(-1)).toEndWith(" build web api BUILDX_BUILDER=");
+  expect(calls.at(-1)).toEndWith(` build web api ${long} BUILDX_BUILDER=`);
   expect(tags).not.toContain("cache_");
 });
 
@@ -70,9 +71,13 @@ test("read and write each service's registry cache under a tag for its platform,
     "buildx inspect qa-interns-cache BUILDX_BUILDER=",
     "buildx create --name qa-interns-cache --driver docker-container BUILDX_BUILDER=",
   ]);
-  expect(calls.at(-1)).toEndWith(" build web api BUILDX_BUILDER=qa-interns-cache");
+  expect(calls.at(-1)).toEndWith(` build web api ${long} BUILDX_BUILDER=qa-interns-cache`);
   expect(tags).toContain('      cache_from: ["type=registry,ref=ghcr.io/owner/app-qa-cache:qa-web-linux-amd64"]\n');
   expect(tags).toContain('      cache_to: ["type=registry,ref=ghcr.io/owner/app-qa-cache:qa-web-linux-amd64,mode=max,ignore-error=true"]\n');
   expect(tags).toContain('      cache_from: ["type=registry,ref=ghcr.io/owner/app-qa-cache:qa-api-linux-arm64-v8"]\n');
   expect(tags).toContain('      cache_to: ["type=registry,ref=ghcr.io/owner/app-qa-cache:qa-api-linux-arm64-v8,mode=max,ignore-error=true"]\n');
+  const full = `qa-${long}-linux-amd64`;
+  const bounded = `${full.slice(0, 115)}-${new Bun.CryptoHasher("sha256").update(full).digest("hex").slice(0, 12)}`;
+  expect(bounded).toHaveLength(128);
+  expect(tags).toContain(`      cache_from: ["type=registry,ref=ghcr.io/owner/app-qa-cache:${bounded}"]\n`);
 });

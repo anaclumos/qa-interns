@@ -49,6 +49,7 @@ const buildProject = "qa-build";
 const imagePrefix = `${buildProject}-`;
 const keyLength = 12;
 const cacheBuilder = "qa-interns-cache";
+const maxTag = 128;
 const keepImages = 30 * minute;
 
 const defaultSubnet = "10.213.0.0/16";
@@ -405,7 +406,8 @@ async function cacheLines(cache: string, builds: { name: string; platform: strin
   const server = builds.every(({ platform }) => platform !== null) ? "" : (await execute(["docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"], { env })).trim();
   return new Map(
     builds.map(({ name, platform }) => {
-      const ref = `${cache}:${`qa-${name}-${platform ?? server}`.replaceAll(/[^\w.-]/g, "-")}`;
+      const tag = `qa-${name}-${platform ?? server}`.replaceAll(/[^\w.-]/g, "-");
+      const ref = `${cache}:${tag.length <= maxTag ? tag : `${tag.slice(0, maxTag - 13)}-${new Bun.CryptoHasher("sha256").update(tag).digest("hex").slice(0, 12)}`}`;
       return [name, [`      cache_from: ${JSON.stringify([`type=registry,ref=${ref}`])}`, `      cache_to: ${JSON.stringify([`type=registry,ref=${ref},mode=max,ignore-error=true`])}`]];
     }),
   );
