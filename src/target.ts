@@ -64,20 +64,39 @@ export function signalGroup(proc: Subprocess, name: NodeJS.Signals): void {
   }
 }
 
+// Linux allocates no process ID that is still the ID of a process group, so once the leader has exited, a live process
+// with its ID means the group it led is gone and the ID belongs to someone else.
+function holdsGroup(proc: Subprocess): boolean {
+  if (proc.exitCode === null && proc.signalCode === null) return true;
+  if (existsSync(`/proc/${proc.pid}`)) return false;
+  try {
+    process.kill(-proc.pid, 0);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === "ESRCH" || errorCode(error) === "EPERM") return false;
+    throw error;
+  }
+}
+
+function liveGroups(): Subprocess[] {
+  for (const proc of groups) if (!holdsGroup(proc)) groups.delete(proc);
+  return [...groups];
+}
+
 export function killCommands(): void {
   const singles = [...running];
-  const leaders = [...groups];
+  const leaders = liveGroups();
   for (const proc of singles) proc.kill();
   for (const proc of leaders) signalGroup(proc, "SIGTERM");
   setTimeout(() => {
     for (const proc of singles) if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
-    for (const proc of leaders) if (groups.has(proc)) signalGroup(proc, "SIGKILL");
+    for (const proc of leaders) if (holdsGroup(proc)) signalGroup(proc, "SIGKILL");
   }, killAfterMs).unref();
 }
 
 export function killLeftCommands(): void {
   for (const proc of running) proc.kill("SIGKILL");
-  for (const proc of groups) signalGroup(proc, "SIGKILL");
+  for (const proc of liveGroups()) signalGroup(proc, "SIGKILL");
 }
 
 export function track<T extends Subprocess>(proc: T): T {
@@ -88,7 +107,9 @@ export function track<T extends Subprocess>(proc: T): T {
 
 export function trackGroup<T extends Subprocess>(proc: T): T {
   groups.add(proc);
-  proc.exited.then(() => groups.delete(proc));
+  proc.exited.then(() => {
+    if (!holdsGroup(proc)) groups.delete(proc);
+  });
   return proc;
 }
 

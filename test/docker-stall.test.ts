@@ -102,3 +102,18 @@ test(
   },
   60_000,
 );
+
+test(
+  "an interrupt kills a command's child that ignores SIGTERM after the command itself exits",
+  async () => {
+    const result = await stalled(`
+      setTimeout(killCommands, 300);
+      await abortable(new AbortController().signal, () => capture(["sh", "-c", "(trap '' TERM; exec sleep 600) & wait"]));
+      report(null);
+    `);
+    expect(result.error).toBeNull();
+    expect(result.seconds).toBeGreaterThan(9);
+    expect(result.seconds).toBeLessThan(20);
+  },
+  60_000,
+);

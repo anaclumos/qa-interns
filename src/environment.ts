@@ -921,7 +921,9 @@ export async function removeCopies(runDir: string, runId: string, image: string)
       errors.push(String(error));
     }
   }
-  const orphans = (await outVolumes(join(runDir, "interns"))).filter((name) => !disks.some((disk) => disk.name === name));
+  const named = new RegExp(`^${projectName(runId, "")}[^_]+-out$`);
+  const unlabelled = (await execute(["docker", "volume", "ls", "-q", "--filter", `name=${projectName(runId, "")}`])).split("\n").filter((name) => named.test(name));
+  const orphans = [...new Set([...(await outVolumes(join(runDir, "interns"))), ...unlabelled])].filter((name) => !disks.some((disk) => disk.name === name));
   if (orphans.length > 0) await execute(["docker", "volume", "rm", ...orphans]).catch((error: unknown) => errors.push(String(error)));
   if (errors.length > 0) throw new Error(`Saving the output disks of ${runDir} failed:\n${errors.join("\n")}`);
 }
@@ -953,7 +955,7 @@ export async function hostObjects(docker: boolean): Promise<string[]> {
     execute(["docker", "image", "ls", "--format", "{{.Repository}}"]),
     execute(["docker", "ps", "-a", "--filter", `label=${diskLabel}`, "--format", `{{.Label "${diskLabel}"}}`]),
     execute(["docker", "ps", "-a", "--filter", `label=${outLabel}`, "--format", "{{.Names}}"]),
-    execute(["docker", "volume", "ls", "--filter", `label=${outLabel}`, "--format", "{{.Name}}"]),
+    execute(["docker", "volume", "ls", "-q", "--filter", "name=qa-"]),
   ]);
   return [...projects, ...images.split("\n"), ...helpers.split("\n"), ...outs.split("\n"), ...volumes.split("\n")];
 }
