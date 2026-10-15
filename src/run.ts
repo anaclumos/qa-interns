@@ -185,22 +185,29 @@ function checkBudget(ctx: Context, margin = 0): void {
   if (Date.now() + margin >= ctx.until) throw new TimeUp(`${ctx.limit} ended before its session began`);
 }
 
-async function byDeadline<T>(until: number, limit: string, what: string, task: () => Promise<T>): Promise<T> {
+function abortAt(until: number): { signal: AbortSignal; clear: () => void } {
   const controller = new AbortController();
   const cutoff = until - killAfterMs - Date.now();
   if (cutoff <= 0) controller.abort();
   const timer = Number.isFinite(until) && cutoff > 0 ? setTimeout(() => controller.abort(), cutoff) : undefined;
+  return { signal: controller.signal, clear: () => clearTimeout(timer) };
+}
+
+async function byDeadline<T>(ctx: Context, until: number, limit: string, what: string, task: () => Promise<T>): Promise<T> {
+  const phase = abortAt(until);
+  const run = abortAt(ctx.end);
   try {
-    return await abortable(controller.signal, task);
+    return await abortable(phase.signal, task, run.signal);
   } catch (error) {
-    throw controller.signal.aborted ? new TimeUp(`${limit} ended while ${what}`) : error;
+    throw phase.signal.aborted ? new TimeUp(`${limit} ended while ${what}`) : error;
   } finally {
-    clearTimeout(timer);
+    phase.clear();
+    run.clear();
   }
 }
 
 function copyOut(ctx: Context, env: Environment): Promise<void> {
-  return byDeadline(ctx.end, runTime, "it copied its output", () => pullDisk(env.out));
+  return byDeadline(ctx, ctx.end, runTime, "it copied its output", () => pullDisk(env.out));
 }
 
 function timeBox(ctx: Context, until: number, limit = runTime): void {
@@ -314,7 +321,8 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
       model: pi.model,
       transcript: join(ctx.runDir, "interns", id, "transcript.jsonl"),
       adapterLog: join(ctx.runDir, "interns", id, "adapter.log"),
-      startupMs: Math.max(1000, ctx.until - Date.now()),
+      startupMs: Math.max(1000, Math.min(ctx.until, ctx.end - killAfterMs) - Date.now()),
+      closeBy: ctx.end - killAfterMs,
     });
     ctx.sessions.add(session);
     checkStopping(ctx);
@@ -323,11 +331,11 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     const live: Note = async (text) => {
       if (!stopped) await note(text);
     };
-    const result = await Promise.race([work(session, env, live).then((value) => ({ value })), watchOut(env.out, done.signal)]);
+    const result = await Promise.race([work(session, env, live).then((value) => ({ value })), abortable(done.signal, () => watchOut(env.out, done.signal))]);
     if (typeof result !== "string") return result.value;
     stopped = true;
     runnerStopped = true;
-    await execute(["docker", "kill", env.runner]);
+    await byDeadline(ctx, ctx.end, runTime, "it stopped its runner", () => execute(["docker", "kill", env.runner]));
     throw new Error(`${result}, so its runner was stopped`);
   } catch (error) {
     if (session === undefined && Date.now() >= ctx.until) throw new TimeUp(`${ctx.limit} ended while its session started: ${message(error)}`);
@@ -338,9 +346,9 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     done.abort();
     if (session !== undefined) {
       ctx.sessions.delete(session);
-      await session.close(Math.max(0, Math.min(killAfterMs, ctx.end - killAfterMs - Date.now())));
+      await session.close();
       try {
-        await byDeadline(ctx.end, runTime, "it stopped its agent and copied its output", async () => {
+        await byDeadline(ctx, ctx.end, runTime, "it stopped its agent and copied its output", async () => {
           if (!runnerStopped) await stopAgent(env.runner);
           await pullDisk(env.out);
         });
@@ -368,7 +376,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
   const teardown = async (handOff: () => void) => {
     const environment = unread;
     unread = null;
-    await byDeadline(ctx.end, runTime, "its environment was torn down", async () => {
+    await byDeadline(ctx, ctx.end, runTime, "its environment was torn down", async () => {
       try {
         if (environment !== null) environment.containers = await containerStats(project);
       } finally {
@@ -388,7 +396,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     for (;;) {
       checkStopping(ctx);
       checkBudget(ctx, ctx.margin);
-      const held = await byDeadline(ctx.until, ctx.limit, "it waited for a network slot", freeSlot);
+      const held = await byDeadline(ctx, ctx.until, ctx.limit, "it waited for a network slot", freeSlot);
       slot = held;
       const spec = environmentSpec(ctx, id, held.slot, target, lease);
       const environment: EnvironmentStats = { intern: id, startedAt: now(), readyAt: null, containers: null };
@@ -396,7 +404,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
       started = true;
       removed = false;
       unread = environment;
-      const env = await byDeadline(ctx.until, ctx.limit, "its environment started", () =>
+      const env = await byDeadline(ctx, ctx.until, ctx.limit, "its environment started", () =>
         startEnvironment(spec, () => {
           environment.readyAt = now();
         }),
@@ -999,7 +1007,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const teardowns: string[] = [];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
-        await byDeadline(ctx.end, runTime, "it tore down the run", step);
+        await byDeadline(ctx, ctx.end, runTime, "it tore down the run", step);
       } catch (reason) {
         if (reason instanceof TimeUp) ctx.deferred.push(reason.message);
         else teardowns.push(message(reason));
@@ -1036,7 +1044,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     ctx.tearingDown = false;
     try {
       await releaseImages();
-      if (!ctx.stopping) await byDeadline(ctx.end, runTime, "it swept unused images", sweepImages);
+      if (!ctx.stopping) await byDeadline(ctx, ctx.end, runTime, "it swept unused images", sweepImages);
     } catch (reason) {
       if (reason instanceof TimeUp) ctx.deferred.push(reason.message);
       else opts.print(redact(message(reason)));
@@ -1059,7 +1067,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const phases = async () => {
     const source = join(runDir, "source");
     let slots = 0;
-    const prepared = await byDeadline(testingEnd - startMinMs, runTime, "it prepared the run", async () => {
+    const prepared = await byDeadline(ctx, testingEnd - startMinMs, runTime, "it prepared the run", async () => {
       await exportTree(ref, source);
       const loaded = await loadTarget(ref, source);
       const dealt = deck(loaded.settings.focus, opts.focus);
@@ -1093,7 +1101,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await phase("building");
     let built: Awaited<ReturnType<typeof buildImages>>;
     try {
-      built = await byDeadline(testingEnd - startMinMs, runTime, "its images built", () => buildImages(runId, target, source, join(runDir, "build.log")));
+      built = await byDeadline(ctx, testingEnd - startMinMs, runTime, "its images built", () => buildImages(runId, target, source, join(runDir, "build.log")));
     } catch (error) {
       if (!(error instanceof TimeUp)) throw error;
       for (const intern of state.interns) await ctx.update(intern.id, { status: "skipped", detail: error.message, endedAt: now() });

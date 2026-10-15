@@ -958,6 +958,34 @@ describe.skipIf(!dockerAvailable)("environment helpers", () => {
   );
 
   test(
+    "a save of an output disk removes its volume when its container is already gone",
+    async () => {
+      const root = await scratch();
+      const image = await ensureRunnerImage();
+      const out = join(root, "interns", "i1", "out");
+      await mkdir(out, { recursive: true });
+      await createDisk(out, image, "qair-t-orphan");
+      await execute(["docker", "rm", "-f", "qair-t-orphan-out"]);
+      expect((await execute(["docker", "volume", "ls", "-q", "--filter", "name=qair-t-orphan-out"])).trim()).toBe("qair-t-orphan-out");
+      await saveDisk(join(root, "interns"));
+      expect((await execute(["docker", "volume", "ls", "-q", "--filter", "name=qair-t-orphan-out"])).trim()).toBe("");
+    },
+    20 * 60_000,
+  );
+
+  test(
+    "removing a run's copies removes an output volume without a label or a container, which an older version left",
+    async () => {
+      const runDir = await scratch();
+      const runId = "0rph4n01";
+      await execute(["docker", "volume", "create", `qa-${runId}-i1-out`]);
+      await removeCopies(runDir, runId, await ensureRunnerImage());
+      expect((await execute(["docker", "volume", "ls", "-q", "--filter", `name=qa-${runId}-`])).trim()).toBe("");
+    },
+    20 * 60_000,
+  );
+
+  test(
     "a save of an output disk into a folder that cannot be written fails and keeps the disk's files readable, and a later save copies them into the folder",
     async () => {
       const root = await scratch();
