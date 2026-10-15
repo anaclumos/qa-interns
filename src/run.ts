@@ -1011,7 +1011,8 @@ export async function runQa(opts: RunOptions): Promise<string> {
       await releaseImages();
       if (!ctx.stopping) await byDeadline(ctx.end, runTime, "it swept unused images", sweepImages);
     } catch (reason) {
-      opts.print(redact(message(reason)));
+      if (reason instanceof TimeUp) ctx.deferred.push(reason.message);
+      else opts.print(redact(message(reason)));
     }
     if (ctx.deferred.length > 0) state.warnings = [`teardown stopped at the run's deadline and is left to qa-interns down: ${ctx.deferred.join("; ")}`];
     const problem = [error,...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`)].filter((entry) => entry !== null).join("; ");
