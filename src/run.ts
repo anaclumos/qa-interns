@@ -665,8 +665,12 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
       await turnUntil(ctx, note, session, timeUpPrompt(), closes);
       await copyOut(ctx, env);
     }
-    if (answer.result === null && (await Bun.file(file).exists())) answer = await check(ctx, intern.id);
-    else if (answer.result === null && end !== "done") answer = { result: null, error: `${closes === ctx.until ? ctx.limit : "its time box"} ended before it wrote /qa/out/confirmation.json`, outOfTime: true };
+    const written = await Bun.file(file).exists();
+    if (answer.result === null && written) answer = await check(ctx, intern.id);
+    if (answer.result === null && end !== "done") {
+      const limit = closes === ctx.until ? ctx.limit : "its time box";
+      answer = { result: null, error: written ? `${limit} ended before it wrote a valid /qa/out/confirmation.json: ${answer.error}` : `${limit} ended before it wrote /qa/out/confirmation.json`, outOfTime: true };
+    }
     await note(answer.result === null ? `${answer.outOfTime ? "not confirmed in time" : "confirmation failed"}: ${answer.error}` : confirms(answer.result) ? "reproduced" : "did not reproduce");
     return answer;
   });
@@ -674,6 +678,7 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
     outcome.status === "done" ? outcome.value : { result: null, error: outcome.status === "limited" ? noLogin : message(outcome.error), outOfTime: outcome.status === "skipped" };
   const confirmation = await recover(ctx, reproduced, answer);
   if (answer.error === null && confirmation.result === null) await ctx.update(intern.id, { detail: stripControl(`${intern.detail}; confirmation failed after teardown: ${confirmation.error}`) });
+  if (answer.result === null && confirmation.result !== null) await ctx.update(intern.id, { detail: stripControl(`${intern.detail}; read its confirmation.json after teardown: ${confirms(confirmation.result) ? "reproduced" : "did not reproduce"}`) });
   if (confirmation.result === null && confirmation.outOfTime && intern.status === "done") await ctx.update(intern.id, { status: "unfinished" });
   if (!ctx.stopping) group.confirmation = confirmation;
 }

@@ -256,7 +256,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(report.run).toMatchObject({ confirmedGroups: 1, notConfirmedGroups: 1, outOfTimeGroups: 1 });
       const markdown = await Bun.file(join(runDir, "report.md")).text();
       expect(markdown).toContain("- Groups not confirmed in time: 1 (g2)\n");
-      expect(markdown).toContain("Confirmation: not confirmed in time, so neither confirmed nor refuted (c2: the confirmation budget ended before its session began).");
+      expect(markdown).toContain("Confirmation: c2 ran out of time before it confirmed or refuted the finding: the confirmation budget ended before its session began.");
       expect(await leftovers(state.runId)).toEqual([]);
     },
     timeout,

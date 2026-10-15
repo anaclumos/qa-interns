@@ -409,8 +409,8 @@ describe("ticket drafts", () => {
     const { markdown: text, json: data, tickets } = renderReport(runPath, state, browser, [cut, queued], [], none, []);
     expect(text).toContain("- Confirmed groups: 0\n- Groups not confirmed: 2\n- Groups not confirmed in time: 2 (g2, g3)\n");
     const notConfirmed = text.slice(text.indexOf("## Not confirmed"), text.indexOf("## Rejected finding files"));
-    expect(notConfirmed).toContain("Confirmation: not confirmed in time, so neither confirmed nor refuted (c3: the confirmation budget ended before its session began).");
-    expect(notConfirmed).toContain("Confirmation: not confirmed in time, so neither confirmed nor refuted (c2: its time box ended before it wrote /qa/out/confirmation.json).");
+    expect(notConfirmed).toContain("Confirmation: c3 ran out of time before it confirmed or refuted the finding: the confirmation budget ended before its session began.");
+    expect(notConfirmed).toContain("Confirmation: c2 ran out of time before it confirmed or refuted the finding: its time box ended before it wrote /qa/out/confirmation.json.");
     expect(text).not.toContain("failed:");
     const report = data as { run: { confirmedGroups: number; notConfirmedGroups: number; outOfTimeGroups: number }; groups: { id: string; confirmed: boolean; confirmation: { outOfTime: boolean } }[] };
     expect(report.run).toMatchObject({ confirmedGroups: 0, notConfirmedGroups: 2, outOfTimeGroups: 2 });
@@ -624,7 +624,7 @@ describe("renderReplay", () => {
     const cut: Group = { ...overlap, confirmation: { intern: "c1", result: null, error: "the confirmation budget ended before it wrote /qa/out/confirmation.json", outOfTime: true } };
     const { markdown: text, json: data } = renderReplay(replayPath, replayState, browser, { ...replay, groups: [cut] }, none, []);
     expect(text).toContain("- Groups not checked: 1\n- Groups not checked in time: 1 (g1)\n");
-    expect(between(text, "## Not checked", "## Interns")).toContain("Confirmation: not confirmed in time, so neither confirmed nor refuted (c1: the confirmation budget ended before it wrote /qa/out/confirmation.json).");
+    expect(between(text, "## Not checked", "## Interns")).toContain("Confirmation: c1 ran out of time before it confirmed or refuted the finding: the confirmation budget ended before it wrote /qa/out/confirmation.json.");
     expect((data as { run: unknown }).run).toMatchObject({ reproducedGroups: 0, notReproducedGroups: 0, uncheckedGroups: 1, outOfTimeGroups: 1 });
   });
 

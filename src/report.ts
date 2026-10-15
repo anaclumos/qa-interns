@@ -124,7 +124,7 @@ function verdict(result: Confirmation) {
 function confirmation(group: Group, root: string) {
   const outcome = group.confirmation;
   if (outcome === null) return ["Confirmation: not attempted."];
-  if (outcome.result === null && outcome.outOfTime) return [`Confirmation: not confirmed in time, so neither confirmed nor refuted (${outcome.intern}: ${inline(outcome.error)}).`];
+  if (outcome.result === null && outcome.outOfTime) return [`Confirmation: ${outcome.intern} ran out of time before it confirmed or refuted the finding: ${inline(outcome.error)}.`];
   if (outcome.result === null) return [`Confirmation: ${outcome.intern} failed: ${inline(outcome.error)}`];
   return [
     `Confirmation: ${outcome.intern} ${verdict(outcome.result)}.`,
