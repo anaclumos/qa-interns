@@ -176,13 +176,14 @@ const limited = { error: { code: -32603, message: "Internal error", data: { erro
 
 const rateLimited = { error: { code: -32603, message: "Internal error", data: { errorKind: "rate_limit", message: "provider rate limit" } } };
 let rateLimits = 0;
+let busyTurns = 0;
 
 const prompt = async (params) => {
   const text = params.prompt
     .filter((block) => block.type === "text")
     .map((block) => block.text)
     .join("\n");
-  const { limit, idle, hang, late, printKey, rateLimit } = login();
+  const { limit, idle, hang, late, printKey, rateLimit, busy } = login();
   if (rateLimit !== undefined && rateLimits < rateLimit) {
     rateLimits += 1;
     return rateLimited;
@@ -208,6 +209,12 @@ const prompt = async (params) => {
     return limit === "charter" ? limited : result;
   }
   if (text.includes("SLOW")) return slowTurn();
+  if (busy === true && text.startsWith("Minutes left:")) {
+    busyTurns += 1;
+    update({ sessionUpdate: "tool_call", toolCallId: `busy-${busyTurns}`, title: "List the findings", kind: "read", status: "completed" });
+    say("Still testing.");
+    return endTurn;
+  }
   say("Nothing more to test.");
   return endTurn;
 };

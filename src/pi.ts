@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { minLength } from "./secrets.ts";
 import type { RunnerFile } from "./types.ts";
@@ -6,6 +7,8 @@ import type { RunnerFile } from "./types.ts";
 const agentDir = "/home/qa/.pi";
 
 export const credentialName = "auth.json";
+
+export const settingsFile = join(import.meta.dir, "pi-settings.json");
 
 export const credentialRule = `must hold one OpenRouter API key of at least ${minLength} characters and nothing else`;
 
@@ -54,7 +57,10 @@ export const pi = {
   env: { PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1" },
   egress: ["openrouter.ai"],
   tmpfs: [agentDir],
-  files: (credential: string): RunnerFile[] => [{ source: credential, target: `${agentDir}/${credentialName}` }],
+  files: (credential: string): RunnerFile[] => [
+    { source: credential, target: `${agentDir}/${credentialName}` },
+    { source: settingsFile, target: `${agentDir}/settings.json` },
+  ],
 };
 
 const completionsUrl = "https://openrouter.ai/api/v1/chat/completions";
