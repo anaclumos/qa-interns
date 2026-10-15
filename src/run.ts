@@ -565,6 +565,7 @@ async function explore(ctx: Context, explored: Explored, target: Target, free: (
     explored.environment = found;
     const start = Date.now();
     const deadline = ctx.until;
+    const granted = deadline - start;
     let continued = 0;
     await converse(ctx, note, session, internPrompt(intern.charter, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
       const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
@@ -582,7 +583,10 @@ async function explore(ctx: Context, explored: Explored, target: Target, free: (
       continued += 1;
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id));
     });
-    if (session.toolCalls() === 0) throw new Error("made no tool call before its time ended");
+    if (session.toolCalls() === 0) {
+      const reason = "made no tool call before its time ended";
+      throw granted < startMinMs && Date.now() >= deadline ? new TimeUp(`${reason}, which left it under a minute`) : new Error(reason);
+    }
   });
   const collected = await collect(ctx, explored);
   if (collected.failures.length > 0) throw collected.failures[0];
@@ -1010,29 +1014,27 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
   const phases = async () => {
     const source = join(runDir, "source");
-    await exportTree(ref, source);
-    const target = await loadTarget(ref, source);
-    egress = target.settings.egress;
-    const cards = deck(target.settings.focus, opts.focus);
     let slots = 0;
-    let prepared: TimeUp | null = null;
-    try {
-      await byDeadline(testingEnd - startMinMs, runTime, "it prepared the run", async () => {
-        ctx.runnerImage = await opts.runnerImage();
-        for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
-        browser = await browserVersion(ctx.runnerImage);
-        slots = await freeSlots();
-      });
-    } catch (error) {
+    const prepared = await byDeadline(testingEnd - startMinMs, runTime, "it prepared the run", async () => {
+      await exportTree(ref, source);
+      const loaded = await loadTarget(ref, source);
+      ctx.runnerImage = await opts.runnerImage();
+      for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
+      browser = await browserVersion(ctx.runnerImage);
+      slots = await freeSlots();
+      return loaded;
+    }).catch((error: unknown) => {
       if (!(error instanceof TimeUp)) throw error;
-      prepared = error;
-    }
-    if (prepared !== null) {
-      const detail = prepared.message;
-      state.interns = Array.from({ length: opts.interns }, (_, index) => ({ ...internState(`i${index + 1}`, "intern", cards[index % cards.length] ?? "", null), status: "skipped" as const, detail, endedAt: now() }));
+      return error;
+    });
+    if (prepared instanceof TimeUp) {
+      state.interns = Array.from({ length: opts.interns }, (_, index) => ({ ...internState(`i${index + 1}`, "intern", "", null), status: "skipped" as const, detail: prepared.message, endedAt: now() }));
       await phase("reporting");
       return;
     }
+    const target = prepared;
+    egress = target.settings.egress;
+    const cards = deck(target.settings.focus, opts.focus);
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
     const width = Math.min(scheduler.capacity(), slots);
     state.options.concurrency = Math.min(opts.interns, width);
