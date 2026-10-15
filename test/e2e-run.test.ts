@@ -23,7 +23,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 2,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("pair", {}, 2),
         replay: null,
@@ -134,7 +134,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("wide", { second: true }, 2),
         replay: null,
@@ -165,7 +165,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 5,
+        minutes: 8,
         confirmMinutes: 0.5,
         loginsFile: await logins("busy", { busy: true }),
         replay: null,
@@ -190,14 +190,14 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   );
 
   test(
-    "the confirmation budget stops the confirmation that is running at its end and starts no later one, which the report lists as not confirmed",
+    "the confirmation budget stops the confirmation that is running at its end and skips any later one, which the report lists as not confirmed",
     async () => {
       const runDir = await runQa({
         dir: target,
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 5,
         confirmBudget: 2,
         loginsFile: await logins("budget", { second: true, late: true }),
@@ -212,7 +212,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const [first, second] = ["c1", "c2"].map((internId) => intern(state, internId));
       expect([first?.status, first?.detail]).toEqual(["done", "reproduced"]);
       expect(Date.parse(first?.endedAt ?? "") - Date.parse(first?.startedAt ?? "")).toBeLessThan(4.5 * 60_000);
-      expect([second?.status, second?.detail]).toEqual(["failed", "the confirmation budget ended before its confirmation began"]);
+      expect([second?.status, second?.detail]).toEqual(["skipped", "the run's time ended before its session began"]);
       expect(second?.model).toBeNull();
       expect(await firstPrompt(runDir, "c1")).toMatch(/Time box: [12] minutes\./);
 
@@ -221,8 +221,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         ["g1", true],
         ["g2", false],
       ]);
-      expect(report.groups[1].confirmation).toEqual({ intern: "c2", result: null, error: "the confirmation budget ended before its confirmation began" });
-      expect(await Bun.file(join(runDir, "report.md")).text()).toContain("Confirmation: c2 failed: the confirmation budget ended before its confirmation began");
+      expect(report.groups[1].confirmation).toEqual({ intern: "c2", result: null, error: "the run's time ended before its session began" });
+      expect(await Bun.file(join(runDir, "report.md")).text()).toContain("Confirmation: c2 failed: the run's time ended before its session began");
       expect(await leftovers(state.runId)).toEqual([]);
     },
     timeout,
@@ -236,7 +236,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("handoff", { second: true }),
         replay: null,
@@ -289,7 +289,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         await deadHolder.exited;
         process.env.QA_INTERNS_SUBNET = `10.214.${third}.0/23`;
         const loginsFile = await logins("swept");
-        const run = runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
+        const run = runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 6, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
         await expect(run).rejects.toThrow("No free network slot");
         expect(await leftovers(dead)).toEqual([]);
         expect(existsSync(deadDir)).toBe(false);

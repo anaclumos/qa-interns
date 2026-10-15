@@ -34,14 +34,18 @@ Commands:
   run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--confirm-budget <n>] [--focus <n>]... [--logins <file>] [--on-end <command>]
       Run interns against the target at the commit, or with --dirty against a
       copy of its working tree: the tracked files as they are and the untracked
-      files that Git does not ignore. Defaults: HEAD, 4 interns, 30 minutes
-      each, 10 minutes per confirmation. The testing interns run at once, then
-      one confirming intern per group of findings, all at once, as far as login
-      capacity, free network slots, free memory, and CPU pressure allow. Prints
-      the run directory first.
-      With --confirm-budget, the confirming phase ends after that many minutes
-      in all (default: --interns times --minutes). A group that has not begun by
-      then is reported as not confirmed, and a running confirmation stops at it.
+      files that Git does not ignore. Defaults: HEAD, 4 interns, 30 minutes,
+      10 minutes per confirmation. --minutes limits the whole run, from its
+      start to its report: the testing interns run at once until 60 percent of
+      it, then the judge groups their findings and one confirming intern per
+      group, all at once, confirms them until the last minute, which is left
+      for teardown and the report, as far as login capacity, free network
+      slots, free memory, and CPU pressure allow. An intern that the time leaves
+      less than a minute to begin is skipped, and a group whose confirmation
+      did not end is reported as not confirmed. Prints the run directory first.
+      With --confirm-budget, the confirming phase also ends after that many
+      minutes in all. A group that has not begun by then is reported as not
+      confirmed, and a running confirmation stops at it.
       With --focus, deal only the entries of the target's focus list at the
       given 1-based positions, in the order given, then the built-in charters.
       With --on-end, run the shell command when the run ends, done, failed, or
@@ -172,7 +176,7 @@ async function main(args: string[]): Promise<number> {
         interns,
         minutes,
         confirmMinutes: numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes"),
-        confirmBudget: values["confirm-budget"] === undefined ? interns * minutes : numberOption(minutesSchema, values["confirm-budget"], "confirm-budget"),
+        confirmBudget: values["confirm-budget"] === undefined ? undefined : numberOption(minutesSchema, values["confirm-budget"], "confirm-budget"),
         focus: values.focus.map((value) => numberOption(countSchema, value, "focus")),
         loginsFile: values.logins,
         onEnd: values["on-end"],

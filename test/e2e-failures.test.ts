@@ -23,7 +23,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("limit", { limit: "charter" }),
         replay: null,
@@ -59,7 +59,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 2,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("rate-limit", { rateLimit: 2 }, 2),
         replay: null,
@@ -97,7 +97,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("rate-limit-forever", { rateLimit: 1000 }),
         replay: null,
@@ -114,7 +114,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const detail = intern(state, "i1").detail ?? "";
       expect(intern(state, "i1").status).toBe("failed");
       expect(detail).toContain("provider rate limit still in effect when the time ended");
-      expect(detail).toEndWith("made no tool call in its 0.5 minutes");
+      expect(detail).toEndWith("made no tool call before its time ended");
       expect(detail).not.toContain("-32603");
 
       expect(await leftovers(state.runId)).toEqual([]);
@@ -134,7 +134,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("idle", { idle: true }),
         replay: null,
@@ -161,13 +161,13 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     "an intern whose turn makes no tool call before its time box ends fails, and so does a run with no other intern",
     async () => {
       const lines: string[] = [];
-      const detail = "made no tool call in its 0.5 minutes";
+      const detail = "made no tool call before its time ended";
       const run = runQa({
         dir: target,
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("hang", { hang: true }),
         replay: null,
@@ -201,7 +201,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("teardown", { limit: true }),
         replay: null,
@@ -261,7 +261,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
             rev: "HEAD",
             dirty: false,
             interns: 1,
-            minutes: 0.5,
+            minutes: 6,
             confirmMinutes: 0.5,
             loginsFile,
             replay: null,
@@ -300,7 +300,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         loginsFile: await logins("unremoved"),
         replay: null,
@@ -344,7 +344,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
         rev: "HEAD",
         dirty: false,
         interns: 1,
-        minutes: 0.5,
+        minutes: 6,
         confirmMinutes: 0.5,
         focus: [2, 3],
         loginsFile: await logins("focus"),

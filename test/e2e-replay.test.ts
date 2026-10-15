@@ -19,7 +19,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
 
   beforeAll(async () => {
     loginsFile = await logins("replay");
-    sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 0.5, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
+    sourceDir = await runQa({ dir: target, rev: "HEAD", dirty: false, interns: 1, minutes: 6, confirmMinutes: 0.5, loginsFile, replay: null, runnerImage: async () => fakeImage, admit: () => () => {}, print: () => {} });
     source = await readState(sourceDir);
     const git = ["git", "-C", join(root, "repo"), "-c", "user.name=QA Interns", "-c", "user.email=qa@example.test", "-c", "commit.gpgsign=false"];
     next = (await execute([...git, "commit-tree", "-p", source.target.commit, "-m", "Next", `${source.target.commit}^{tree}`])).trim();

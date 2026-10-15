@@ -80,12 +80,14 @@ type Turn = Awaited<ReturnType<Session["prompt"]>>;
 type Limit = <T>(task: (free: () => void) => Promise<T>) => Promise<T>;
 type Note = (text: string) => Promise<void>;
 type Work<T> = (session: Session, env: Environment, note: Note) => Promise<T>;
-type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "failed"; error: unknown };
+type Outcome<T> = { status: "done"; value: T } | { status: "limited" } | { status: "skipped"; error: TimeUp } | { status: "failed"; error: unknown };
 type Explored = { intern: InternState; environment: FindingEnvironment | null };
 type Collected = { findings: Finding[]; rejected: Rejected[]; failures: unknown[] };
 type Reproduced = { intern: InternState; group: Group; ran: boolean };
 
 class Unanswered extends Error {}
+
+class TimeUp extends Error {}
 
 type Context = {
   runId: string;
@@ -112,12 +114,15 @@ const askMinutes = 10;
 const continueLimit = 5;
 const settleMs = 60_000;
 const writeUpMs = 4 * minute;
+const startMinMs = minute;
+const tailMs = minute;
+const testingShare = 0.6;
 const stopWaitMs = 30_000;
 const waitMs = 30_000;
 const rateLimitBaseMs = 5_000;
 const rateLimitCapMs = 60_000;
 const noLogin = "no login has spare capacity";
-const budgetSpent = "the confirmation budget ended before its confirmation began";
+const timeUp = "the run's time ended before its session began";
 const copyName = "up";
 
 function now(): string {
@@ -171,8 +176,8 @@ function checkStopping(ctx: Context): void {
   if (ctx.stopping) throw new Error("interrupted");
 }
 
-function checkBudget(ctx: Context): void {
-  if (Date.now() >= ctx.until) throw new Error(budgetSpent);
+function checkBudget(ctx: Context, margin = 0): void {
+  if (Date.now() + margin >= ctx.until) throw new TimeUp(timeUp);
 }
 
 function context(runId: string, runDir: string, runnerImage: string, scheduler: Scheduler | null, admit: Admit, update: Context["update"]): Context {
@@ -198,7 +203,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
 async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null> {
   for (;;) {
     checkStopping(ctx);
-    checkBudget(ctx);
+    checkBudget(ctx, startMinMs);
     const released = Promise.withResolvers<void>();
     const wake = () => released.resolve();
     const unwatch = watchReleases(wake);
@@ -225,7 +230,7 @@ async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null
 async function admitted(ctx: Context, memory: number): Promise<() => void> {
   for (;;) {
     checkStopping(ctx);
-    checkBudget(ctx);
+    checkBudget(ctx, startMinMs);
     const released = Promise.withResolvers<void>();
     const wake = () => released.resolve();
     const unwatch = watchReleases(wake);
@@ -334,6 +339,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     await ctx.update(id, { status: "starting", login: lease.login.id, project, startedAt: now() });
     for (;;) {
       checkStopping(ctx);
+      checkBudget(ctx, startMinMs);
       slot = await freeSlot();
       const environment: EnvironmentStats = { intern: id, startedAt: now(), readyAt: null, containers: null };
       ctx.environments.push(environment);
@@ -392,7 +398,7 @@ async function agentTask<T>(ctx: Context, id: string, target: Target | null, fre
     outcome = result === null ? { status: "limited" } : { status: "done", value: result.value };
     if (result === null) notes.push(noLogin);
   } catch (error) {
-    outcome = { status: "failed", error };
+    outcome = error instanceof TimeUp ? { status: "skipped", error } : { status: "failed", error };
   }
   await ctx.update(id, { status: outcome.status, detail: detail(), endedAt: now() });
   return outcome;
@@ -467,13 +473,16 @@ function promptEnvironment(target: Target, env: Environment, minutes: number): P
 }
 
 async function askWith<T>(ctx: Context, id: string, prompt: string, file: string, parse: (raw: string) => T): Promise<T> {
+  let minutes = askMinutes;
   let unanswered = false;
   const outcome = await agentTask(ctx, id, null, () => {}, async (session, env, note) => {
     const path = join(ctx.runDir, outDir(id), file);
     await rm(path, { force: true });
     let parsed = null as { value: T } | null;
     let corrected = false;
-    await converse(ctx, note, session, prompt, Date.now() + askMinutes * minute, async () => {
+    const deadline = Math.min(Date.now() + askMinutes * minute, ctx.until);
+    minutes = Math.round(((deadline - Date.now()) / minute) * 10) / 10;
+    await converse(ctx, note, session, prompt, deadline, async () => {
       await pullDisk(env.out);
       try {
         parsed = { value: parse(await readAgentFile(path)) };
@@ -489,18 +498,18 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
       try {
         parsed = { value: parse(await readAgentFile(path)) };
       } catch (error) {
-        throw new Error(`${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes: ${message(error)}`);
+        throw new Error(`${id} wrote no valid /qa/out/${file} within ${minutes} minutes: ${message(error)}`);
       }
     }
     if (parsed === null) {
-      const reason = `${id} wrote no valid /qa/out/${file} within ${askMinutes} minutes`;
+      const reason = `${id} wrote no valid /qa/out/${file} within ${minutes} minutes`;
       if (unanswered) throw new Error(reason);
       unanswered = true;
       throw new Unanswered(`${reason}; starting it again in a fresh environment`);
     }
     return parsed.value;
   });
-  if (outcome.status === "failed") throw outcome.error;
+  if (outcome.status === "failed" || outcome.status === "skipped") throw outcome.error;
   if (outcome.status === "limited") throw new Error(`No login has spare capacity for ${id}`);
   return outcome.value;
 }
@@ -520,15 +529,15 @@ async function count(ctx: Context, { intern }: Explored, collected: Collected): 
   return collected;
 }
 
-async function explore(ctx: Context, explored: Explored, target: Target, minutes: number, free: () => void): Promise<{ outcome: Outcome<void> } & Collected> {
+async function explore(ctx: Context, explored: Explored, target: Target, free: () => void): Promise<{ outcome: Outcome<void> } & Collected> {
   const { intern } = explored;
   const outcome = await agentTask(ctx, intern.id, target, free, async (session, env, note) => {
     const found = { commit: target.commit, dirty: target.dirty, environment: env.project, model: session.model };
     explored.environment = found;
     const start = Date.now();
-    const deadline = start + minutes * minute;
+    const deadline = ctx.until;
     let continued = 0;
-    await converse(ctx, note, session, internPrompt(intern.charter, promptEnvironment(target, env, minutes), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
+    await converse(ctx, note, session, internPrompt(intern.charter, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.knownGaps, target.settings.intendedBehaviors), deadline, async (turn, idle) => {
       const stopped = `stopped at minute ${Math.floor((Date.now() - start) / minute)}`;
       if (idle) {
         if (session.toolCalls() === 0) throw new Error(`${stopped} without a tool call: "${turn.lastMessage}"`);
@@ -544,7 +553,7 @@ async function explore(ctx: Context, explored: Explored, target: Target, minutes
       continued += 1;
       return continuePrompt(minutesLeft(deadline), rejected, outDir(intern.id));
     });
-    if (session.toolCalls() === 0) throw new Error(`made no tool call in its ${minutes} minutes`);
+    if (session.toolCalls() === 0) throw new Error("made no tool call before its time ended");
   });
   const collected = await collect(ctx, explored);
   if (collected.failures.length > 0) throw collected.failures[0];
@@ -574,7 +583,8 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
     reproduced.ran = true;
     const out = outDir(intern.id);
     const file = join(ctx.runDir, out, "confirmation.json");
-    const deadline = Math.min(Date.now() + minutes * minute, ctx.until);
+    const closes = Math.min(Date.now() + minutes * minute, ctx.until);
+    const deadline = closes - Math.min(writeUpMs, (closes - Date.now()) / 4);
     let answer: Answer = { result: null, error: "no confirmation.json written" };
     let corrected = false;
     const end = await converse(ctx, note, session, confirmPrompt(finding, promptEnvironment(target, env, minutesLeft(deadline)), target.settings.intendedBehaviors), deadline, async (_turn, idle) => {
@@ -587,7 +597,7 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
     });
     await pullDisk(env.out);
     if (end === "ended" && !(await Bun.file(file).exists())) {
-      await turnUntil(ctx, note, session, timeUpPrompt(), Date.now() + writeUpMs);
+      await turnUntil(ctx, note, session, timeUpPrompt(), closes);
       await pullDisk(env.out);
     }
     if (answer.result === null && (await Bun.file(file).exists())) answer = await check(ctx, intern.id);
@@ -848,6 +858,9 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
 }
 
 export async function runQa(opts: RunOptions): Promise<string> {
+  const started = Date.now();
+  const finishBy = opts.minutes > 0 ? started + opts.minutes * minute - Math.min(tailMs, opts.minutes * minute * 0.1) : Infinity;
+  const testingEnd = started + (finishBy - started) * testingShare;
   const scheduler = new Scheduler(await loadLogin(opts.loginsFile));
   const ref = await resolveTarget(opts.dir, opts.rev, opts.dirty);
   const options = { interns: opts.interns, minutes: opts.minutes, confirmMinutes: opts.confirmMinutes, concurrency: 0, confirmConcurrency: 0 };
@@ -994,13 +1007,14 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     if (groups === null) {
       await phase("testing");
+      ctx.until = testingEnd;
       const testing = limit(state.options.concurrency);
       explored = state.interns.map((intern) => ({ intern, environment: null }));
       const ended: Awaited<ReturnType<typeof explore>>[] = [];
       const results = await settle(
         explored.map((entry, index) =>
           testing(async (free) => {
-            const result = await explore(ctx, entry, target, opts.minutes, free);
+            const result = await explore(ctx, entry, target, free);
             ended[index] = result;
             if (!ctx.stopping) {
               findings = ended.flatMap((one) => one.findings);
@@ -1023,7 +1037,12 @@ export async function runQa(opts: RunOptions): Promise<string> {
         state.interns.push(internState("judge", "judge", "Group duplicate findings", null));
         await save();
         const ids = findings.map((finding) => finding.id);
-        members = await askWith(ctx, "judge", judgePrompt(findings), "groups.json", (raw) => parseGroups(raw, ids));
+        ctx.until = Date.now() + (finishBy - Date.now()) / 3;
+        try {
+          members = await askWith(ctx, "judge", judgePrompt(findings), "groups.json", (raw) => parseGroups(raw, ids));
+        } catch (error) {
+          if (!(error instanceof TimeUp)) throw error;
+        }
       }
       const byId = new Map(findings.map((finding) => [finding.id, finding]));
       groups = members.map((list, index) => ({
@@ -1039,7 +1058,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     state.options.confirmConcurrency = Math.min(groups.length, width);
     await phase("confirming");
-    if (opts.confirmBudget !== undefined) ctx.until = Date.now() + opts.confirmBudget * minute;
+    ctx.until = Math.min(finishBy, opts.confirmBudget === undefined ? Infinity : Date.now() + opts.confirmBudget * minute);
     reproduced = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id), ran: false }));
     state.interns.push(...reproduced.map((entry) => entry.intern));
     await save();

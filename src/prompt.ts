@@ -225,9 +225,9 @@ ${environment(env)}
 ${howToWork}
 
 Confirmation:
-- Your environment is freshly seeded. Follow the steps exactly, under the stated conditions. Try twice.
+- Your environment is freshly seeded. Follow the steps exactly, under the stated conditions. Try up to twice: stop after the first attempt that shows the failure.
 - Your environment is seeded apart from the reporting intern's, so an id or another value that the application generates, such as a record's id in a URL or a field, can differ. Where a step or a condition names such a value, find the record the finding describes in your environment, such as by its name or title, and use its value from your environment in each attempt. An attempt in which the page answers that no such record exists, because the value came from the other environment, does not show the failure. When your environment has no such record, no attempt shows the failure.
-- Then do the same task again through the controls the page offers for it, under the same conditions. Where a step names a control, such as a button, a link, a field, or a square, use the one the page shows for that purpose. Keep every action, value, and condition that the finding names as part of the failure, such as a repeated click, a value typed into a field, Back, a second tab, or the keyboard. Try twice. When the steps are the only way to do the task, for example a request sent directly or another account's ID in a URL, the steps are the task.
+- Then do the same task again through the controls the page offers for it, under the same conditions. Where a step names a control, such as a button, a link, a field, or a square, use the one the page shows for that purpose. Keep every action, value, and condition that the finding names as part of the failure, such as a repeated click, a value typed into a field, Back, a second tab, or the keyboard. Try up to twice: stop after the first attempt that shows the failure. When the steps are the only way to do the task, for example a request sent directly or another account's ID in a URL, the steps are the task.
 - Collect evidence under \`/qa/out/evidence/\`.
 - Then write \`/qa/out/confirmation.json\` with these fields and no others:
 
