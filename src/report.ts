@@ -325,6 +325,7 @@ export function renderReport(
     `- Rejected finding files: ${summary.rejectedFiles}`,
   ];
   if (state.error !== null) lines.push(`- Error: ${inline(state.error)}`);
+  for (const warning of state.warnings ?? []) lines.push(`- Warning: ${inline(warning)}`);
   lines.push("", "## Confirmed", "");
   if (confirmed.length === 0) lines.push("No finding was confirmed.", "");
   for (const row of confirmed) lines.push(...section(row.group, row.interns, browser, root));
@@ -393,6 +394,7 @@ export function renderReplay(runDir: string, state: RunState, browser: string | 
     `- Groups not checked: ${summary.uncheckedGroups}`,
   ];
   if (state.error !== null) lines.push(`- Error: ${inline(state.error)}`);
+  for (const warning of state.warnings ?? []) lines.push(`- Warning: ${inline(warning)}`);
   lines.push("");
   const sections = [
     ["Reproduced", "No group was reproduced.", reproduced],

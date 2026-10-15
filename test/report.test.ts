@@ -190,6 +190,14 @@ describe("renderReport", () => {
     expect(dirty.split("\n")).toContain(`- Commit: \`${state.target.commit}\`, with the uncommitted changes and untracked files of the working tree`);
   });
 
+  test("the header lists each warning of the run, such as teardown that the deadline left to qa-interns down, and the error stays empty", () => {
+    const warning = "teardown stopped at the run's deadline and is left to qa-interns down: the run's time ended while it tore down the run";
+    const lines = renderReport(runPath, { ...state, warnings: [warning] }, browser, [], [], none, []).markdown.split("\n");
+    expect(lines).toContain(`- Warning: ${warning}`);
+    expect(lines.some((line) => line.startsWith("- Error:"))).toBe(false);
+    expect(markdown).not.toContain("- Warning:");
+  });
+
   test("the header, the JSON summary, and the conditions of each finding name the browser version, and a run that read none says so", () => {
     expect(markdown.split("\n")).toContain(`- Browser: ${browser}`);
     expect((json as { run: unknown }).run).toMatchObject({ browser });

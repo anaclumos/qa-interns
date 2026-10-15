@@ -55,7 +55,7 @@ export function unscoped<T>(task: () => Promise<T>): Promise<T> {
   return scope.exit(task);
 }
 
-function signalGroup(proc: Subprocess, name: NodeJS.Signals): void {
+export function signalGroup(proc: Subprocess, name: NodeJS.Signals): void {
   try {
     process.kill(-proc.pid, name);
   } catch (error) {

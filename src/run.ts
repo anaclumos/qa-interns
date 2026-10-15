@@ -35,7 +35,7 @@ import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeAtomic, writeState } from "./state.ts";
-import { abortable, execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
+import { abortable, execute, exportTree, killCommands, loadTarget, resolveTarget, signalGroup, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Answer, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
@@ -102,6 +102,8 @@ type Context = {
   environments: EnvironmentStats[];
   waiting: Set<() => void>;
   until: number;
+  end: number;
+  deferred: string[];
   margin: number;
   limit: string;
   stopping: boolean;
@@ -214,6 +216,8 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     environments: [],
     waiting: new Set(),
     until: Infinity,
+    end: Infinity,
+    deferred: [],
     margin: startMinMs,
     limit: runTime,
     stopping: false,
@@ -349,10 +353,12 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     try {
       if (environment !== null) environment.containers = await containerStats(project);
     } finally {
-      await stopEnvironment(ctx.runDir, id, project, () => {
-        removed = true;
-        handOff();
-      });
+      await byDeadline(ctx.end, runTime, "its environment was torn down", () =>
+        stopEnvironment(ctx.runDir, id, project, () => {
+          removed = true;
+          handOff();
+        }),
+      );
     }
   };
   try {
@@ -397,9 +403,14 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     try {
       if (started) await teardown(handOff);
     } catch (error) {
-      if (!removed) ctx.unremoved.add(id);
-      ctx.teardowns.push(`${id}: ${message(error)}`);
-      await note(`teardown failed: ${message(error)}`);
+      if (error instanceof TimeUp) {
+        ctx.deferred.push(`${id}: ${error.message}`);
+        await note(`teardown deferred to qa-interns down: ${error.message}`);
+      } else {
+        if (!removed) ctx.unremoved.add(id);
+        ctx.teardowns.push(`${id}: ${message(error)}`);
+        await note(`teardown failed: ${message(error)}`);
+      }
     } finally {
       handOff();
     }
@@ -907,6 +918,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     if (changed) opts.print(progress(intern));
     await save();
   });
+  ctx.end = opts.minutes > 0 ? started + opts.minutes * minute : Infinity;
   const phase = async (next: RunPhase) => {
     checkStopping(ctx);
     state.phase = next;
@@ -958,9 +970,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const teardowns: string[] = [];
     for (const step of [() => stopRun(runDir, runId), () => removeCopies(runDir, runId, ctx.runnerImage)]) {
       try {
-        await step();
+        await byDeadline(ctx.end, runTime, "it tore down the run", step);
       } catch (reason) {
-        teardowns.push(message(reason));
+        if (reason instanceof TimeUp) ctx.deferred.push(reason.message);
+        else teardowns.push(message(reason));
       }
     }
     let failures: unknown[] = [];
@@ -994,10 +1007,11 @@ export async function runQa(opts: RunOptions): Promise<string> {
     ctx.tearingDown = false;
     try {
       await releaseImages();
-      if (!ctx.stopping) await sweepImages();
+      if (!ctx.stopping) await byDeadline(ctx.end, runTime, "it swept unused images", sweepImages);
     } catch (reason) {
       opts.print(redact(message(reason)));
     }
+    if (ctx.deferred.length > 0) state.warnings = [`teardown stopped at the run's deadline and is left to qa-interns down: ${ctx.deferred.join("; ")}`];
     const problem = [error,...failures.map((failure) => `reading the interns' output failed: ${message(failure)}`)].filter((entry) => entry !== null).join("; ");
     try {
       record(problem === "" ? null : problem, teardowns);
@@ -1129,7 +1143,19 @@ export async function runQa(opts: RunOptions): Promise<string> {
   const ended = once(async (phase: RunPhase): Promise<string | null> => {
     if (opts.onEnd === undefined) return null;
     const env = { ...process.env, QA_INTERNS_RUN_DIR: runDir, QA_INTERNS_PHASE: phase };
-    const code = await trackGroup(Bun.spawn(["sh", "-c", opts.onEnd], { env, stdin: "ignore", stdout: "inherit", stderr: "inherit", detached: true })).exited;
+    const hook = trackGroup(Bun.spawn(["sh", "-c", opts.onEnd], { env, stdin: "ignore", stdout: "inherit", stderr: "inherit", detached: true }));
+    let cut = false;
+    const timer = Number.isFinite(ctx.end)
+      ? setTimeout(() => {
+          cut = true;
+          signalGroup(hook, "SIGKILL");
+        }, Math.max(0, ctx.end - Date.now()))
+      : undefined;
+    const code = await hook.exited.finally(() => clearTimeout(timer));
+    if (cut) {
+      process.stderr.write("The --on-end command was stopped at the run's deadline.\n");
+      return null;
+    }
     return code === 0 ? null : `The --on-end command exited with ${code}`;
   });
 

@@ -15,6 +15,7 @@ export const stateSchema = z.object({
   options: z.object({ interns: z.number(), minutes: z.number(), confirmMinutes: z.number(), concurrency: z.number(), confirmConcurrency: z.number() }),
   phase: z.enum(runPhases),
   error: z.string().nullable(),
+  warnings: z.array(z.string()).optional(),
   startedAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
   endedAt: z.iso.datetime().nullable(),
