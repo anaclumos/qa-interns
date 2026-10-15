@@ -1,5 +1,5 @@
 import { closeSync, existsSync, fstatSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeSync } from "node:fs";
-import { chmod, lstat, mkdir, mkdtempDisposable, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, mkdtempDisposable, readdir, readFile, readlink, realpath, rename, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -48,6 +48,7 @@ const rollbackTimeout = 5_000;
 const buildProject = "qa-build";
 const imagePrefix = `${buildProject}-`;
 const keyLength = 12;
+const maxTag = 128;
 const keepImages = 30 * minute;
 
 const defaultSubnet = "10.213.0.0/16";
@@ -353,7 +354,7 @@ export function imageBuilders(target: Target): Record<string, string> {
   return sources;
 }
 
-export type BuiltImages = { images: Record<string, string>; release: () => Promise<void> };
+export type BuiltImages = { images: Record<string, string>; release: () => Promise<void>; push: () => Promise<void> };
 
 const buildConfigSchema = z.object({
   services: z.record(z.string(), z.object({ build: z.looseObject({ pull: z.boolean().optional(), no_cache: z.boolean().optional() }).optional(), platform: z.string().optional() })),
@@ -391,11 +392,48 @@ async function tagShared(pairs: [string, string][]): Promise<boolean> {
   return true;
 }
 
-export async function buildImages(runId: string, target: Target, sourceDir: string, log: string): Promise<BuiltImages> {
+async function cacheRefs(cache: string, builds: { name: string; platform: string | null }[], env: Record<string, string | undefined>): Promise<Map<string, string>> {
+  const server = builds.every(({ platform }) => platform !== null) ? "" : (await execute(["docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"], { env })).trim();
+  return new Map(
+    builds.map(({ name, platform }) => {
+      const tag = `qa-${name}-${platform ?? server}`.replaceAll(/[^\w.-]/g, "-");
+      return [name, `${cache}:${tag.length <= maxTag ? tag : `${tag.slice(0, maxTag - 13)}-${new Bun.CryptoHasher("sha256").update(tag).digest("hex").slice(0, 12)}`}`];
+    }),
+  );
+}
+
+async function pushCache(image: string, ref: string, env: Record<string, string | undefined>): Promise<string[]> {
+  const lock = join(runtimeDir("cache", "a lock for each build cache push"), `${new Bun.CryptoHasher("sha256").update(imageReference(ref)).digest("hex")}.lock`);
+  const fd = flock(lock, "exclusive", "nonblock");
+  if (fd === null) return [`another run is pushing ${ref}`];
+  const problems: string[] = [];
+  try {
+    const tagged = await capture(["docker", "tag", image, ref], { env });
+    if (tagged.code !== 0) problems.push(`docker tag ${image} ${ref} exited with ${tagged.code}: ${tagged.stderr.trim()}`);
+    else {
+      const pushed = await capture(["docker", "push", "--quiet", ref], { env, timeout: 10 * minute });
+      if (pushed.code !== 0) problems.push(`docker push ${ref} exited with ${pushed.code}: ${pushed.stderr.trim()}`);
+    }
+  } catch (error) {
+    problems.push(`pushing ${ref} stopped: ${message(error)}`);
+  } finally {
+    try {
+      const removed = await cleanupScope(() => capture(["docker", "image", "rm", ref], { env, timeout: rollbackTimeout }));
+      if (removed.code !== 0 && !/no such image/i.test(removed.stderr)) problems.push(`docker image rm ${ref} exited with ${removed.code}: ${removed.stderr.trim()}`);
+    } catch (error) {
+      problems.push(`removing the tag ${ref} failed: ${message(error)}`);
+    } finally {
+      closeSync(fd);
+    }
+  }
+  return problems;
+}
+
+export async function buildImages(runId: string, target: Target, sourceDir: string, log: string, cache: string | null = null): Promise<BuiltImages> {
   const own = (builder: string) => `qa-${runId}-${builder.toLowerCase()}:latest`;
   const images = Object.fromEntries(Object.entries(imageBuilders(target)).map(([name, builder]) => [name, own(builder)]));
   const services = Object.entries(target.services).filter(([, service]) => service.build && service.active).map(([name]) => name);
-  if (services.length === 0) return { images, release: async () => {} };
+  if (services.length === 0) return { images, release: async () => {}, push: async () => {} };
   await using dir = await mkdtempDisposable(join(tmpdir(), "qa-interns-tags-"));
   const env = await targetEnv(target.settings.hostEnv, dir.path);
   const compose = ["docker", "compose", "-p", buildProject, ...sourceComposeArgs(target, sourceDir)];
@@ -418,9 +456,19 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   };
   await release();
   const fresh = builds.some(({ build }) => build.pull === true || build.no_cache === true);
-  if (!fresh && (await tagShared(services.map((name) => [shared(name), own(name)])))) return { images, release };
+  if (!fresh && (await tagShared(services.map((name) => [shared(name), own(name)])))) return { images, release, push: async () => {} };
   const tags = join(dir.path, "tags.yml");
-  const lines = services.flatMap((name) => [`  ${JSON.stringify(name)}:`, `    image: ${JSON.stringify(own(name))}`, "    build:", `      tags: !override ${JSON.stringify([shared(name)])}`]);
+  const refs = cache === null ? new Map<string, string>() : await cacheRefs(cache, builds, env);
+  const lines = services.flatMap((name) => {
+    const ref = refs.get(name);
+    return [
+      `  ${JSON.stringify(name)}:`,
+      `    image: ${JSON.stringify(own(name))}`,
+      "    build:",
+      `      tags: !override ${JSON.stringify([shared(name)])}`,
+      ...(ref === undefined ? [] : [`      cache_from: ${JSON.stringify([ref])}`, `      cache_to: ${JSON.stringify(["type=inline"])}`]),
+    ];
+  });
   await Bun.write(tags, `services:\n${lines.join("\n")}\n`);
   const cmd = [...compose, "-f", tags, "build", ...services];
   const result = await capture(cmd, { env, timeout: 30 * minute }).catch(async (error: unknown) => {
@@ -431,7 +479,17 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
   const output = `${result.stdout}\n${result.stderr}`;
   await Bun.write(log, redact(output));
   if (result.code !== 0) throw new Error(`${failure(cmd, result.code, output).message} (log: ${log})`);
-  return { images, release };
+  const push = async () => {
+    if (refs.size === 0) return;
+    await using pushDir = await mkdtempDisposable(join(tmpdir(), "qa-interns-push-"));
+    const pushEnv = await targetEnv(target.settings.hostEnv, pushDir.path);
+    for (const [name, ref] of refs) {
+      for (const problem of await pushCache(shared(name), ref, pushEnv)) {
+        await appendFile(log, redact(`\nThe build cache was not written, so the next build does not read this one: ${problem}\n`));
+      }
+    }
+  };
+  return { images, release, push };
 }
 
 export async function sweepImages(): Promise<void> {

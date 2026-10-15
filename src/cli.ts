@@ -31,7 +31,7 @@ Commands:
       HEAD), or with --dirty in a copy of its working tree, as run does before it
       builds images, with no logins and no values for hostEnv variables that no
       checked setting depends on.
-  run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--confirm-budget <n>] [--focus <n>]... [--logins <file>] [--on-end <command>]
+  run <target-dir> [--commit <rev> | --dirty] [--interns <n>] [--minutes <n>] [--confirm-minutes <n>] [--confirm-budget <n>] [--focus <n>]... [--build-cache <repository>] [--logins <file>] [--on-end <command>]
       Run interns against the target at the commit, or with --dirty against a
       copy of its working tree: the tracked files as they are and the untracked
       files that Git does not ignore. Defaults: HEAD, 4 interns, 10 minutes,
@@ -52,16 +52,29 @@ Commands:
       given 1-based positions, in the order given, then the built-in charters.
       With --on-end, run the shell command when the run ends, done, failed, or
       interrupted, with QA_INTERNS_RUN_DIR and QA_INTERNS_PHASE set.
-  replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--confirm-budget <n>] [--logins <file>]
+      With --build-cache, each image build reads a BuildKit cache from the
+      repository, such as ghcr.io/<owner>/<name>-qa-cache, under the tag
+      qa-<service>-<os>-<arch>. Once the images are built, the run goes on
+      while it pushes each image there with its inline cache, until the end
+      of --minutes at most, and its teardown waits for the push. A step of the image's final stage, or of a stage it
+      starts FROM, whose inputs are unchanged, such as a dependency install
+      on an unchanged lockfile, then pulls its layer instead of running.
+      Steps of a stage that the final stage only copies from are not cached.
+      Log in to the registry first. A push that fails, as for a pull request
+      from a fork, or that runs out of time is only written to the build log. The pushed
+      image holds every layer of the build, so keep the repository private
+      when a build copies a secret into a layer.
+  replay <run> [--commit <rev>] [--group <id>]... [--confirm-minutes <n>] [--confirm-budget <n>] [--build-cache <repository>] [--logins <file>]
       Hand each confirmed group of the earlier run, or each group --group names,
       to a confirming intern against the run's target at the commit. Defaults:
       HEAD, 10 minutes per confirmation, no total budget. With --confirm-budget,
-      the replay ends after that many minutes in all, as run does. Prints the
-      run directory first.
-  up <target-dir> [--commit <rev>]
+      the replay ends after that many minutes in all, as run does.
+      --build-cache works as for run. Prints the run directory first.
+  up <target-dir> [--commit <rev>] [--build-cache <repository>]
       Start one environment of the target at the commit (default HEAD) with no
-      interns, run its ready check and seed, and leave it running. Prints the run
-      directory first. down removes the environment.
+      interns, run its ready check and seed, and leave it running.
+      --build-cache works as for run. Prints the run directory first. down
+      removes the environment.
   status [<run>]
       Print the phase and every intern's status.
   report [<run>]
@@ -110,6 +123,17 @@ function print(line: string): void {
 
 const countSchema = z.coerce.number({ error: "must be a whole number of at least 1" }).int().min(1);
 const minutesSchema = z.coerce.number({ error: "must be a number of minutes above 0" }).positive();
+const component = "[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*";
+const repositorySchema = z
+  .string()
+  .regex(new RegExp(`^(?:[a-zA-Z0-9-]+(?:\\.[a-zA-Z0-9-]+)*(?::[0-9]+)?/)?${component}(?:/${component})*$`), "must be an image repository with no tag or digest, such as ghcr.io/<owner>/<name>");
+
+function cacheOption(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const parsed = repositorySchema.safeParse(value);
+  if (!parsed.success) throw new Error(`--build-cache ${parsed.error.issues[0]?.message}, got ${value}`);
+  return parsed.data;
+}
 
 function numberOption(schema: z.ZodType<number>, value: string, option: string): number {
   const parsed = schema.safeParse(value);
@@ -162,6 +186,7 @@ async function main(args: string[]): Promise<number> {
           "confirm-minutes": { type: "string", default: "10" },
           "confirm-budget": { type: "string" },
           focus: { type: "string", multiple: true, default: [] },
+          "build-cache": { type: "string" },
           logins: { type: "string", default: defaultLoginsPath },
           "on-end": { type: "string" },
         },
@@ -180,6 +205,7 @@ async function main(args: string[]): Promise<number> {
         confirmMinutes: numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes"),
         confirmBudget: values["confirm-budget"] === undefined ? undefined : numberOption(minutesSchema, values["confirm-budget"], "confirm-budget"),
         focus: values.focus.map((value) => numberOption(countSchema, value, "focus")),
+        buildCache: cacheOption(values["build-cache"]),
         loginsFile: values.logins,
         onEnd: values["on-end"],
       };
@@ -195,12 +221,14 @@ async function main(args: string[]): Promise<number> {
           group: { type: "string", multiple: true, default: [] },
           "confirm-minutes": { type: "string", default: "10" },
           "confirm-budget": { type: "string" },
+          "build-cache": { type: "string" },
           logins: { type: "string", default: defaultLoginsPath },
         },
       });
       const [run, ...extra] = positionals;
       if (run === undefined || extra.length > 0) throw new Error("replay takes exactly one run id or run directory. Run qa-interns help for usage.");
       const confirmMinutes = numberOption(minutesSchema, values["confirm-minutes"], "confirm-minutes");
+      const buildCache = cacheOption(values["build-cache"]);
       const runDir = await resolveRunDir(run);
       const lock = flock(replayLock(runDir), "shared", "block");
       try {
@@ -213,6 +241,7 @@ async function main(args: string[]): Promise<number> {
           minutes: 0,
           confirmMinutes,
           confirmBudget: values["confirm-budget"] === undefined ? undefined : numberOption(minutesSchema, values["confirm-budget"], "confirm-budget"),
+          buildCache,
           loginsFile: values.logins,
           replay,
           runnerImage: ensureRunnerImage,
@@ -225,10 +254,10 @@ async function main(args: string[]): Promise<number> {
       return 0;
     }
     case "up": {
-      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { commit: { type: "string", default: "HEAD" } } });
+      const { values, positionals } = parseArgs({ args: rest, allowPositionals: true, options: { commit: { type: "string", default: "HEAD" }, "build-cache": { type: "string" } } });
       const [dir, ...extra] = positionals;
       if (dir === undefined || extra.length > 0) throw new Error("up takes exactly one target directory. Run qa-interns help for usage.");
-      await startCopy({ dir, rev: values.commit, runnerImage: ensureRunnerImage, print });
+      await startCopy({ dir, rev: values.commit, buildCache: cacheOption(values["build-cache"]), runnerImage: ensureRunnerImage, print });
       return 0;
     }
     case "status": {

@@ -48,6 +48,7 @@ export type RunOptions = {
   confirmMinutes: number;
   confirmBudget?: number;
   focus?: number[];
+  buildCache?: string;
   loginsFile: string;
   replay: Replay | null;
   onEnd?: string;
@@ -59,6 +60,7 @@ export type RunOptions = {
 export type CopyOptions = {
   dir: string;
   rev: string;
+  buildCache?: string;
   runnerImage(): Promise<string>;
   print(line: string): void;
 };
@@ -109,6 +111,7 @@ type Context = {
   limit: string;
   stopping: boolean;
   tearingDown: boolean;
+  halt: AbortController;
   update(id: string, patch: Partial<InternState>): Promise<void>;
 };
 
@@ -236,6 +239,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     limit: runTime,
     stopping: false,
     tearingDown: false,
+    halt: new AbortController(),
     update,
   };
 }
@@ -733,6 +737,7 @@ function finisher<A extends unknown[], R>(ctx: Context, fn: (...args: A) => Prom
 
 async function stop(ctx: Context, running: Promise<unknown> | undefined): Promise<void> {
   ctx.stopping = true;
+  ctx.halt.abort();
   for (const wake of ctx.waiting) wake();
   if (!ctx.tearingDown) killCommands();
   const closed = await Promise.allSettled(
@@ -896,6 +901,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
     ctx,
     async () => {
       let slot: HeldSlot | undefined;
+      let pushing = Promise.resolve();
       try {
         ctx.runnerImage = await opts.runnerImage();
         for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
@@ -904,7 +910,8 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         const target = await loadTarget(ref, source);
         await writeChromePolicy(runDir, target.settings.urls);
         await phase("building");
-        const { images } = await buildImages(runId, target, source, join(runDir, "build.log"));
+        const { images, push } = await buildImages(runId, target, source, join(runDir, "build.log"), opts.buildCache ?? null);
+        pushing = abortable(ctx.halt.signal, push, null).catch((reason: unknown) => opts.print(redact(message(reason))));
         await phase("starting");
         slot = await freeSlot();
         const env = await startEnvironment({
@@ -931,6 +938,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         throw new Error(redact(message(error)));
       } finally {
         slot?.release();
+        await pushing;
       }
       return runDir;
     },
@@ -971,6 +979,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
   let egress: string[] = [];
   let browser: string | null = null;
   let releaseImages = async () => {};
+  let pushing = Promise.resolve();
 
   let recorded: { error: string | null; teardowns: string[]; stopping: boolean } | undefined;
 
@@ -1043,6 +1052,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     }
     ctx.tearingDown = false;
     try {
+      await pushing;
       await releaseImages();
       if (!ctx.stopping) await byDeadline(ctx, ctx.end, runTime, "it swept unused images", sweepImages);
     } catch (reason) {
@@ -1101,7 +1111,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await phase("building");
     let built: Awaited<ReturnType<typeof buildImages>>;
     try {
-      built = await byDeadline(ctx, testingEnd - startMinMs, runTime, "its images built", () => buildImages(runId, target, source, join(runDir, "build.log")));
+      built = await byDeadline(ctx, testingEnd - startMinMs, runTime, "its images built", () => buildImages(runId, target, source, join(runDir, "build.log"), opts.buildCache ?? null));
     } catch (error) {
       if (!(error instanceof TimeUp)) throw error;
       for (const intern of state.interns) await ctx.update(intern.id, { status: "skipped", detail: error.message, endedAt: now() });
@@ -1109,6 +1119,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
       return;
     }
     releaseImages = built.release;
+    const ended = abortAt(ctx.end);
+    pushing = abortable(AbortSignal.any([ended.signal, ctx.halt.signal]), built.push, null)
+      .catch((reason: unknown) => opts.print(redact(message(reason))))
+      .finally(ended.clear);
     ctx.images = built.images;
 
     if (groups === null) {
