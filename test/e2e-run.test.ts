@@ -190,6 +190,37 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   );
 
   test(
+    "a run whose minutes end before any intern can begin skips its interns and ends done with an empty report",
+    async () => {
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 2,
+        minutes: 0.05,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("deadline", {}, 2),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        admit: () => () => {},
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null });
+      expect(state.interns.map((entry) => [entry.id, entry.status, entry.detail, entry.model])).toEqual([
+        ["i1", "skipped", "the run's time ended before its session began", null],
+        ["i2", "skipped", "the run's time ended before its session began", null],
+      ]);
+      const report = await Bun.file(join(runDir, "findings.json")).json();
+      expect(report.groups).toEqual([]);
+      expect(report.run).toMatchObject({ confirmedGroups: 0, notConfirmedGroups: 0 });
+      expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
     "the confirmation budget stops the confirmation that is running at its end and skips any later one, which the report lists as not confirmed",
     async () => {
       const runDir = await runQa({

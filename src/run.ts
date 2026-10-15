@@ -102,6 +102,7 @@ type Context = {
   environments: EnvironmentStats[];
   waiting: Set<() => void>;
   until: number;
+  margin: number;
   stopping: boolean;
   tearingDown: boolean;
   update(id: string, patch: Partial<InternState>): Promise<void>;
@@ -112,7 +113,7 @@ let guarded = 0;
 const minute = 60_000;
 const askMinutes = 10;
 const continueLimit = 5;
-const settleMs = 60_000;
+const settleMs = 15_000;
 const writeUpMs = 4 * minute;
 const startMinMs = minute;
 const tailMs = minute;
@@ -180,6 +181,11 @@ function checkBudget(ctx: Context, margin = 0): void {
   if (Date.now() + margin >= ctx.until) throw new TimeUp(timeUp);
 }
 
+function timeBox(ctx: Context, until: number): void {
+  ctx.until = until;
+  ctx.margin = Math.min(startMinMs, (until - Date.now()) / 2);
+}
+
 function context(runId: string, runDir: string, runnerImage: string, scheduler: Scheduler | null, admit: Admit, update: Context["update"]): Context {
   return {
     runId,
@@ -194,6 +200,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     environments: [],
     waiting: new Set(),
     until: Infinity,
+    margin: startMinMs,
     stopping: false,
     tearingDown: false,
     update,
@@ -203,7 +210,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
 async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null> {
   for (;;) {
     checkStopping(ctx);
-    checkBudget(ctx, startMinMs);
+    checkBudget(ctx, ctx.margin);
     const released = Promise.withResolvers<void>();
     const wake = () => released.resolve();
     const unwatch = watchReleases(wake);
@@ -230,7 +237,7 @@ async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null
 async function admitted(ctx: Context, memory: number): Promise<() => void> {
   for (;;) {
     checkStopping(ctx);
-    checkBudget(ctx, startMinMs);
+    checkBudget(ctx, ctx.margin);
     const released = Promise.withResolvers<void>();
     const wake = () => released.resolve();
     const unwatch = watchReleases(wake);
@@ -339,7 +346,7 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     await ctx.update(id, { status: "starting", login: lease.login.id, project, startedAt: now() });
     for (;;) {
       checkStopping(ctx);
-      checkBudget(ctx, startMinMs);
+      checkBudget(ctx, ctx.margin);
       slot = await freeSlot();
       const environment: EnvironmentStats = { intern: id, startedAt: now(), readyAt: null, containers: null };
       ctx.environments.push(environment);
@@ -498,11 +505,13 @@ async function askWith<T>(ctx: Context, id: string, prompt: string, file: string
       try {
         parsed = { value: parse(await readAgentFile(path)) };
       } catch (error) {
-        throw new Error(`${id} wrote no valid /qa/out/${file} within ${minutes} minutes: ${message(error)}`);
+        const reason = `${id} wrote no valid /qa/out/${file} within ${minutes} minutes: ${message(error)}`;
+        throw Date.now() >= ctx.until ? new TimeUp(reason) : new Error(reason);
       }
     }
     if (parsed === null) {
       const reason = `${id} wrote no valid /qa/out/${file} within ${minutes} minutes`;
+      if (Date.now() >= ctx.until) throw new TimeUp(reason);
       if (unanswered) throw new Error(reason);
       unanswered = true;
       throw new Unanswered(`${reason}; starting it again in a fresh environment`);
@@ -1007,7 +1016,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     if (groups === null) {
       await phase("testing");
-      ctx.until = testingEnd;
+      timeBox(ctx, testingEnd);
       const testing = limit(state.options.concurrency);
       explored = state.interns.map((intern) => ({ intern, environment: null }));
       const ended: Awaited<ReturnType<typeof explore>>[] = [];
@@ -1027,7 +1036,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
       checkStopping(ctx);
       findings = results.flatMap((result) => result.findings);
       rejected = results.flatMap((result) => result.rejected);
-      if (results.every((result) => result.outcome.status !== "done")) {
+      if (results.every((result) => result.outcome.status !== "done") && results.some((result) => result.outcome.status !== "skipped")) {
         throw new Error(`No testing intern completed: ${state.interns.map((intern) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
       }
 
@@ -1037,7 +1046,7 @@ export async function runQa(opts: RunOptions): Promise<string> {
         state.interns.push(internState("judge", "judge", "Group duplicate findings", null));
         await save();
         const ids = findings.map((finding) => finding.id);
-        ctx.until = Date.now() + (finishBy - Date.now()) / 3;
+        timeBox(ctx, Date.now() + (finishBy - Date.now()) / 3);
         try {
           members = await askWith(ctx, "judge", judgePrompt(findings), "groups.json", (raw) => parseGroups(raw, ids));
         } catch (error) {
@@ -1058,13 +1067,13 @@ export async function runQa(opts: RunOptions): Promise<string> {
 
     state.options.confirmConcurrency = Math.min(groups.length, width);
     await phase("confirming");
-    ctx.until = Math.min(finishBy, opts.confirmBudget === undefined ? Infinity : Date.now() + opts.confirmBudget * minute);
+    timeBox(ctx, Math.min(finishBy, opts.confirmBudget === undefined ? Infinity : Date.now() + opts.confirmBudget * minute));
     reproduced = groups.map((group, index) => ({ group, intern: internState(`c${index + 1}`, "confirm", lead(group).title, group.id), ran: false }));
     state.interns.push(...reproduced.map((entry) => entry.intern));
     await save();
     const confirming = limit(state.options.confirmConcurrency);
     await settle(reproduced.map((entry) => confirming((free) => reproduce(ctx, entry, target, opts.confirmMinutes, free))));
-    if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null)) {
+    if (opts.replay !== null && groups.every((group) => (group.confirmation?.result ?? null) === null) && reproduced.some(({ intern }) => intern.status !== "skipped")) {
       throw new Error(`No confirming intern recorded a result: ${reproduced.map(({ intern }) => `${intern.id} ${intern.status}: ${intern.detail}`).join("; ")}`);
     }
 
