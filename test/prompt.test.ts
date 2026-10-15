@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { charters, confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "../src/prompt.ts";
+import { charters, confirmContinuePrompt, confirmPrompt, continuePrompt, correctionPrompt, deck, internPrompt, judgePrompt, type PromptEnvironment } from "../src/prompt.ts";
 import type { Finding } from "../src/types.ts";
 import type { IntendedBehavior } from "../src/target.ts";
 
@@ -82,6 +82,7 @@ describe("internPrompt", () => {
 
   test("carries the charter as its own Charter line", () => {
     expect(prompt.split("\n")).toContain(`Charter: ${charter}`);
+    expect(prompt).toContain("Charter rules:\n- Test only the area your charter names.");
   });
 
   test("lists every known gap in the findings section", () => {
@@ -143,11 +144,21 @@ describe("continuePrompt", () => {
     for (const prompt of [
       continuePrompt(5, [], "interns/i2/out"),
       continuePrompt(1, [{ intern: "i2", file: "interns/i2/out/findings/x.json", reason: "not valid JSON: Unexpected EOF" }], "interns/i2/out"),
+      confirmContinuePrompt(3),
     ]) {
       expect(prompt).not.toContain("Charter:");
       expect(prompt).not.toContain("/qa/out/groups.json");
       expect(prompt).not.toContain("/qa/out/confirmation.json");
     }
+  });
+});
+
+describe("confirmContinuePrompt", () => {
+  test("keeps a confirming intern on its finding without naming a charter", () => {
+    const prompt = confirmContinuePrompt(3);
+    expect(prompt).toContain("Minutes left: 3.");
+    expect(prompt).toContain("Keep reproducing the finding");
+    expect(prompt).not.toContain("charter");
   });
 });
 
@@ -180,6 +191,7 @@ describe("confirmPrompt", () => {
   test("names the confirmation file and no other file an agent keys on", () => {
     expect(prompt).toContain("/qa/out/confirmation.json");
     expect(prompt).not.toContain("Charter:");
+    expect(prompt).not.toContain("Charter rules:");
     expect(prompt).not.toContain("/qa/out/groups.json");
   });
 
