@@ -47,6 +47,10 @@ export function abortable<T>(signal: AbortSignal, task: () => Promise<T>): Promi
   return scope.run(signal, task);
 }
 
+export function scopeSignal(): AbortSignal | undefined {
+  return scope.getStore();
+}
+
 export function unscoped<T>(task: () => Promise<T>): Promise<T> {
   return scope.exit(task);
 }

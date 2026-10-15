@@ -1014,15 +1014,25 @@ export async function runQa(opts: RunOptions): Promise<string> {
     const target = await loadTarget(ref, source);
     egress = target.settings.egress;
     const cards = deck(target.settings.focus, opts.focus);
-    ctx.runnerImage = await opts.runnerImage();
+    let slots = 0;
+    let prepared: TimeUp | null = null;
     try {
-      for (const error of await byDeadline(testingEnd - startMinMs, runTime, "it removed the leftovers of earlier runs", () => sweepRuns(ctx.runnerImage))) process.stderr.write(`${redact(error)}\n`);
+      await byDeadline(testingEnd - startMinMs, runTime, "it prepared the run", async () => {
+        ctx.runnerImage = await opts.runnerImage();
+        for (const error of await sweepRuns(ctx.runnerImage)) process.stderr.write(`${redact(error)}\n`);
+        browser = await browserVersion(ctx.runnerImage);
+        slots = await freeSlots();
+      });
     } catch (error) {
       if (!(error instanceof TimeUp)) throw error;
-      process.stderr.write(`${error.message}\n`);
+      prepared = error;
     }
-    browser = await browserVersion(ctx.runnerImage);
-    const slots = await freeSlots();
+    if (prepared !== null) {
+      const detail = prepared.message;
+      state.interns = Array.from({ length: opts.interns }, (_, index) => ({ ...internState(`i${index + 1}`, "intern", cards[index % cards.length] ?? "", null), status: "skipped" as const, detail, endedAt: now() }));
+      await phase("reporting");
+      return;
+    }
     if (slots === 0) throw new Error(`No free network slot: every /23 block of QA_INTERNS_SUBNET ${networkRange().subnet} overlaps a Docker network or a host route`);
     const width = Math.min(scheduler.capacity(), slots);
     state.options.concurrency = Math.min(opts.interns, width);
