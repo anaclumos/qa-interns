@@ -35,7 +35,7 @@ import { browserVersion } from "./runner.ts";
 import { confirms, lead, renderReplay, renderReport, writeTickets } from "./report.ts";
 import { forgetSecrets, hasSecrets, keepLoginKey, redact, redactFiles, redactJson } from "./secrets.ts";
 import { newRunId, processStart, runDirFor, runsDir, writeAtomic, writeState } from "./state.ts";
-import { execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
+import { abortable, execute, exportTree, killCommands, loadTarget, resolveTarget, trackGroup, type Target, type TargetRef } from "./target.ts";
 import type { Answer, EnvironmentStats, Finding, FindingEnvironment, Group, InternState, Rejected, Replay, RunPhase, RunState } from "./types.ts";
 
 export type RunOptions = {
@@ -181,6 +181,18 @@ function checkBudget(ctx: Context, margin = 0): void {
   if (Date.now() + margin >= ctx.until) throw new TimeUp(timeUp);
 }
 
+async function byDeadline<T>(until: number, what: string, task: () => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const timer = Number.isFinite(until) ? setTimeout(() => controller.abort(), Math.max(0, until - Date.now())) : undefined;
+  try {
+    return await abortable(controller.signal, task);
+  } catch (error) {
+    throw controller.signal.aborted ? new TimeUp(`the run's time ended while ${what}`) : error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function timeBox(ctx: Context, until: number): void {
   ctx.until = until;
   ctx.margin = Math.min(startMinMs, (until - Date.now()) / 2);
@@ -224,7 +236,7 @@ async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null
         if (!leased) return null;
         continue;
       }
-      timer = setTimeout(wake, waitMs);
+      timer = setTimeout(wake, Math.min(waitMs, Math.max(0, ctx.until - ctx.margin - Date.now())));
       await released.promise;
     } finally {
       clearTimeout(timer);
@@ -242,7 +254,7 @@ async function admitted(ctx: Context, memory: number): Promise<() => void> {
     const wake = () => released.resolve();
     const unwatch = watchReleases(wake);
     ctx.waiting.add(wake);
-    const timer = setTimeout(wake, waitMs);
+    const timer = setTimeout(wake, Math.min(waitMs, Math.max(0, ctx.until - ctx.margin - Date.now())));
     try {
       const started = ctx.admit(memory);
       if (started !== null) return started;
@@ -353,9 +365,11 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
       started = true;
       removed = false;
       unread = environment;
-      const env = await startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease), () => {
-        environment.readyAt = now();
-      }).finally(starting);
+      const env = await byDeadline(ctx.until, "its environment started", () =>
+        startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease), () => {
+          environment.readyAt = now();
+        }),
+      ).finally(starting);
       try {
         return { value: await withSession(ctx, id, env, lease, work, note) };
       } catch (error) {
@@ -541,6 +555,7 @@ async function count(ctx: Context, { intern }: Explored, collected: Collected): 
 async function explore(ctx: Context, explored: Explored, target: Target, free: () => void): Promise<{ outcome: Outcome<void> } & Collected> {
   const { intern } = explored;
   const outcome = await agentTask(ctx, intern.id, target, free, async (session, env, note) => {
+    checkBudget(ctx, ctx.margin / 2);
     const found = { commit: target.commit, dirty: target.dirty, environment: env.project, model: session.model };
     explored.environment = found;
     const start = Date.now();
@@ -588,7 +603,7 @@ async function reproduce(ctx: Context, reproduced: Reproduced, target: Target, m
   const { intern, group } = reproduced;
   const finding = lead(group);
   const outcome = await agentTask(ctx, intern.id, target, free, async (session, env, note) => {
-    checkBudget(ctx);
+    checkBudget(ctx, ctx.margin / 2);
     reproduced.ran = true;
     const out = outDir(intern.id);
     const file = join(ctx.runDir, out, "confirmation.json");
@@ -1010,7 +1025,15 @@ export async function runQa(opts: RunOptions): Promise<string> {
     await save();
 
     await phase("building");
-    const built = await buildImages(runId, target, source, join(runDir, "build.log"));
+    let built: Awaited<ReturnType<typeof buildImages>>;
+    try {
+      built = await byDeadline(testingEnd - startMinMs, "its images built", () => buildImages(runId, target, source, join(runDir, "build.log")));
+    } catch (error) {
+      if (!(error instanceof TimeUp)) throw error;
+      for (const intern of state.interns) await ctx.update(intern.id, { status: "skipped", detail: error.message, endedAt: now() });
+      await phase("reporting");
+      return;
+    }
     releaseImages = built.release;
     ctx.images = built.images;
 

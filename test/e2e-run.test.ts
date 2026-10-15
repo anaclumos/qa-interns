@@ -190,7 +190,7 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
   );
 
   test(
-    "a run whose minutes end before any intern can begin skips its interns and ends done with an empty report",
+    "a run whose minutes end while its images build stops the build, skips its interns, and ends done with an empty report",
     async () => {
       const runDir = await runQa({
         dir: target,
@@ -209,8 +209,8 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       const state = await readState(runDir);
       expect(state).toMatchObject({ phase: "done", error: null });
       expect(state.interns.map((entry) => [entry.id, entry.status, entry.detail, entry.model])).toEqual([
-        ["i1", "skipped", "the run's time ended before its session began", null],
-        ["i2", "skipped", "the run's time ended before its session began", null],
+        ["i1", "skipped", "the run's time ended while its images built", null],
+        ["i2", "skipped", "the run's time ended while its images built", null],
       ]);
       const report = await Bun.file(join(runDir, "findings.json")).json();
       expect(report.groups).toEqual([]);
