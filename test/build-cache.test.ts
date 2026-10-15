@@ -85,7 +85,11 @@ test("read each service's cache from its image tag for its platform, push the bu
   expect(built).toBeGreaterThan(-1);
   expect(calls.slice(built + 1)).toEqual([
     "built",
-    ...Object.entries(refs).flatMap(([service, ref]) => [`tag qa-cache-${service.toLowerCase()}:latest ${ref}`, `push --quiet ${ref}`, `image rm ${ref}`]),
+    ...Object.entries(refs).flatMap(([service, ref]) => [
+      expect.stringMatching(new RegExp(`^tag qa-build-[0-9a-f]{12}-${service.toLowerCase()}:latest ${ref.replaceAll(".", "\\.")}$`)),
+      `push --quiet ${ref}`,
+      `image rm ${ref}`,
+    ]),
   ]);
   expect(log).toContain(`The build cache was not written, so the next build does not read this one: docker push ${refs.api} exited with 1: denied: permission_denied: write_package`);
   expect(log).not.toContain(refs.web);

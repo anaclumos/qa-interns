@@ -402,24 +402,30 @@ async function cacheRefs(cache: string, builds: { name: string; platform: string
   );
 }
 
-async function pushCache(image: string, ref: string, env: Record<string, string | undefined>): Promise<string | null> {
+async function pushCache(image: string, ref: string, env: Record<string, string | undefined>): Promise<string[]> {
   const lock = join(runtimeDir("cache", "a lock for each build cache push"), `${new Bun.CryptoHasher("sha256").update(imageReference(ref)).digest("hex")}.lock`);
   const fd = flock(lock, "exclusive", "nonblock");
-  if (fd === null) return `another run is pushing ${ref}`;
+  if (fd === null) return [`another run is pushing ${ref}`];
+  const problems: string[] = [];
   try {
     const tagged = await capture(["docker", "tag", image, ref], { env });
-    if (tagged.code !== 0) return `docker tag ${image} ${ref} exited with ${tagged.code}: ${tagged.stderr.trim()}`;
-    const pushed = await capture(["docker", "push", "--quiet", ref], { env, timeout: 10 * minute });
-    return pushed.code === 0 ? null : `docker push ${ref} exited with ${pushed.code}: ${pushed.stderr.trim()}`;
+    if (tagged.code !== 0) problems.push(`docker tag ${image} ${ref} exited with ${tagged.code}: ${tagged.stderr.trim()}`);
+    else {
+      const pushed = await capture(["docker", "push", "--quiet", ref], { env, timeout: 10 * minute });
+      if (pushed.code !== 0) problems.push(`docker push ${ref} exited with ${pushed.code}: ${pushed.stderr.trim()}`);
+    }
   } catch (error) {
-    return `pushing ${ref} stopped: ${message(error)}`;
+    problems.push(`pushing ${ref} stopped: ${message(error)}`);
   } finally {
     try {
-      await cleanupScope(() => capture(["docker", "image", "rm", ref], { env }));
+      await cleanupScope(() => capture(["docker", "image", "rm", ref], { env, timeout: rollbackTimeout }));
+    } catch (error) {
+      problems.push(`removing the tag ${ref} failed: ${message(error)}`);
     } finally {
       closeSync(fd);
     }
   }
+  return problems;
 }
 
 export async function buildImages(runId: string, target: Target, sourceDir: string, log: string, cache: string | null = null): Promise<BuiltImages> {
@@ -477,8 +483,9 @@ export async function buildImages(runId: string, target: Target, sourceDir: stri
     await using pushDir = await mkdtempDisposable(join(tmpdir(), "qa-interns-push-"));
     const pushEnv = await targetEnv(target.settings.hostEnv, pushDir.path);
     for (const [name, ref] of refs) {
-      const problem = await pushCache(own(name), ref, pushEnv);
-      if (problem !== null) await appendFile(log, redact(`\nThe build cache was not written, so the next build does not read this one: ${problem}\n`));
+      for (const problem of await pushCache(shared(name), ref, pushEnv)) {
+        await appendFile(log, redact(`\nThe build cache was not written, so the next build does not read this one: ${problem}\n`));
+      }
     }
   };
   return { images, release, push };

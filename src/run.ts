@@ -111,6 +111,7 @@ type Context = {
   limit: string;
   stopping: boolean;
   tearingDown: boolean;
+  halt: AbortController;
   update(id: string, patch: Partial<InternState>): Promise<void>;
 };
 
@@ -238,6 +239,7 @@ function context(runId: string, runDir: string, runnerImage: string, scheduler: 
     limit: runTime,
     stopping: false,
     tearingDown: false,
+    halt: new AbortController(),
     update,
   };
 }
@@ -735,6 +737,7 @@ function finisher<A extends unknown[], R>(ctx: Context, fn: (...args: A) => Prom
 
 async function stop(ctx: Context, running: Promise<unknown> | undefined): Promise<void> {
   ctx.stopping = true;
+  ctx.halt.abort();
   for (const wake of ctx.waiting) wake();
   if (!ctx.tearingDown) killCommands();
   const closed = await Promise.allSettled(
@@ -908,7 +911,7 @@ export async function startCopy(opts: CopyOptions): Promise<string> {
         await writeChromePolicy(runDir, target.settings.urls);
         await phase("building");
         const { images, push } = await buildImages(runId, target, source, join(runDir, "build.log"), opts.buildCache ?? null);
-        pushing = push().catch((reason: unknown) => opts.print(redact(message(reason))));
+        pushing = abortable(ctx.halt.signal, push, null).catch((reason: unknown) => opts.print(redact(message(reason))));
         await phase("starting");
         slot = await freeSlot();
         const env = await startEnvironment({
@@ -1116,7 +1119,10 @@ export async function runQa(opts: RunOptions): Promise<string> {
       return;
     }
     releaseImages = built.release;
-    pushing = byDeadline(ctx, ctx.end, runTime, "it pushed the build cache", built.push).catch((reason: unknown) => opts.print(redact(message(reason))));
+    const ended = abortAt(ctx.end);
+    pushing = abortable(AbortSignal.any([ended.signal, ctx.halt.signal]), built.push, null)
+      .catch((reason: unknown) => opts.print(redact(message(reason))))
+      .finally(ended.clear);
     ctx.images = built.images;
 
     if (groups === null) {
