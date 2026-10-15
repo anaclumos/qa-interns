@@ -41,9 +41,14 @@ const running = new Set<Subprocess>();
 const groups = new Set<Subprocess>();
 export const runLocks = new Set<number>();
 const scope = new AsyncLocalStorage<AbortSignal>();
+const killAfterMs = 10_000;
 
 export function abortable<T>(signal: AbortSignal, task: () => Promise<T>): Promise<T> {
   return scope.run(signal, task);
+}
+
+export function unscoped<T>(task: () => Promise<T>): Promise<T> {
+  return scope.exit(task);
 }
 
 export function killCommands(): void {
@@ -68,10 +73,25 @@ export async function capture(cmd: string[], options: CommandOptions = {}): Prom
   const started = performance.now();
   const signal = scope.getStore();
   signal?.throwIfAborted();
-  const proc = track(Bun.spawn(argv, { env: options.env, stdio: [options.stdin ?? "ignore", "pipe", "pipe", ...runLocks] }));
-  const kill = () => proc.kill();
+  const spawned = Bun.spawn(argv, { env: options.env, stdio: [options.stdin ?? "ignore", "pipe", "pipe", ...runLocks], detached: signal !== undefined });
+  const proc = signal === undefined ? track(spawned) : trackGroup(spawned);
+  let forced: ReturnType<typeof setTimeout> | undefined;
+  const group = (name: NodeJS.Signals) => {
+    try {
+      process.kill(-proc.pid, name);
+    } catch (error) {
+      if (errorCode(error) !== "ESRCH") throw error;
+    }
+  };
+  const kill = () => {
+    group("SIGTERM");
+    forced = setTimeout(() => group("SIGKILL"), killAfterMs);
+  };
   signal?.addEventListener("abort", kill);
-  const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]).finally(() => signal?.removeEventListener("abort", kill));
+  const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]).finally(() => {
+    signal?.removeEventListener("abort", kill);
+    clearTimeout(forced);
+  });
   signal?.throwIfAborted();
   if (options.log !== undefined) await appendFile(options.log, stderr);
   if (options.timeout !== undefined && (code === 124 || code === 137) && performance.now() - started >= options.timeout) {

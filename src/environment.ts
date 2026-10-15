@@ -9,7 +9,7 @@ import { flock } from "./logins.ts";
 import { qaUser } from "./runner.ts";
 import { keepSeedSecrets, redact } from "./secrets.ts";
 import { writeAtomic } from "./state.ts";
-import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, targetEnv, type Target } from "./target.ts";
+import { capture, CommandTimeout, devContainerViolations, dockerConfig, execute, failure, isHttpUrl, outVolumeKey, reservedServices, runLocks, targetEnv, unscoped, type Target } from "./target.ts";
 import { relayOutcomes, type ContainerStats, type RelayRecord, type RunnerFile } from "./types.ts";
 
 export type RunnerSpec = { image: string; out: string; env: Record<string, string>; files: RunnerFile[]; tmpfs: string[] };
@@ -605,8 +605,10 @@ export async function createDisk(out: string, image: string, owner: string): Pro
       ...["--read-only", "--cap-drop", "ALL", "--cap-add", "DAC_READ_SEARCH", "--security-opt", "no-new-privileges:true", "-v", `${name}:/out`, image, "sleep", "infinity"],
     ]);
   } catch (error) {
-    await capture(["docker", "rm", "-f", name]);
-    await execute(["docker", "volume", "rm", name]);
+    await unscoped(async () => {
+      await capture(["docker", "rm", "-f", name]);
+      await execute(["docker", "volume", "rm", name]);
+    });
     throw error;
   }
 }

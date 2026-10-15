@@ -302,6 +302,7 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
       model: pi.model,
       transcript: join(ctx.runDir, "interns", id, "transcript.jsonl"),
       adapterLog: join(ctx.runDir, "interns", id, "adapter.log"),
+      startupMs: Math.max(1000, ctx.until - Date.now()),
     });
     ctx.sessions.add(session);
     checkStopping(ctx);
@@ -316,6 +317,7 @@ async function withSession<T>(ctx: Context, id: string, env: Environment, lease:
     await execute(["docker", "kill", env.runner]);
     throw new Error(`${result}, so its runner was stopped`);
   } catch (error) {
+    if (session === undefined && Date.now() >= ctx.until) throw new TimeUp(`${ctx.limit} ended while its session started: ${message(error)}`);
     const key = errorKind(error) === "auth_error" ? readKey(lease.credential) : null;
     const problem = key === null ? null : await keyProblem(key).catch(message);
     throw problem === null ? error : new Error(`${message(error)}; ${problem}`);
