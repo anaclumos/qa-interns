@@ -388,14 +388,16 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     for (;;) {
       checkStopping(ctx);
       checkBudget(ctx, ctx.margin);
-      slot = await byDeadline(ctx.until, ctx.limit, "it waited for a network slot", freeSlot);
+      const held = await byDeadline(ctx.until, ctx.limit, "it waited for a network slot", freeSlot);
+      slot = held;
+      const spec = environmentSpec(ctx, id, held.slot, target, lease);
       const environment: EnvironmentStats = { intern: id, startedAt: now(), readyAt: null, containers: null };
       ctx.environments.push(environment);
       started = true;
       removed = false;
       unread = environment;
       const env = await byDeadline(ctx.until, ctx.limit, "its environment started", () =>
-        startEnvironment(environmentSpec(ctx, id, slot.slot, target, lease), () => {
+        startEnvironment(spec, () => {
           environment.readyAt = now();
         }),
       ).finally(starting);
