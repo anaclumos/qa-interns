@@ -41,11 +41,13 @@ Commands:
       group, all at once, confirms them until the last minute, which is left
       for teardown and the report, as far as login capacity, free network
       slots, free memory, and CPU pressure allow. An intern waits for the host's
-      CPU pressure to fall for at most half of the time it has left, then starts
-      under it; free memory is never waived. An intern that the time leaves
-      less than a minute to begin is skipped, and a confirming intern that the
-      time stops before it writes a result is unfinished. Either way its group
-      is reported as not confirmed in time, neither confirmed nor refuted.
+      CPU pressure to fall for at most half of the time it has left to begin,
+      then starts with that gate waived; free memory is never waived, and a run
+      without a deadline waits for the pressure as long as it takes. An intern
+      that the time leaves less than a minute to begin is skipped, and a
+      confirming intern that the time stops before it writes a result is
+      unfinished. Either way its group is reported as not confirmed in time,
+      neither confirmed nor refuted.
       Prints the run directory first.
       With --confirm-budget, the confirming phase also ends after that many
       minutes in all. A group that has not begun by then is skipped, and a
