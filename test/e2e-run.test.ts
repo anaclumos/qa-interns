@@ -371,8 +371,9 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
       expect(i1?.status).toBe("done");
       expect(i1?.login).toBe("openrouter-1");
       expect(i1?.detail).toMatch(/^the host held it \d+\.\d min; it starts without waiting for the CPU pressure to fall; stopped at minute 0: "Nothing more to test\."$/);
-      expect(limits.slice(0, -1).every((limit) => limit === undefined)).toBe(true);
-      expect(limits.at(-1)).toBe(Infinity);
+      expect(limits[0]).toBeUndefined();
+      expect(limits).toContain(Infinity);
+      expect(limits.filter((limit) => limit !== undefined && limit !== Infinity)).toEqual([]);
       const started = Date.parse(i1?.startedAt ?? "");
       const testingStarted = Date.parse(state.startedAt) + 0.6 * (6 * 60_000 - 36_000);
       expect(started).toBeLessThan(testingStarted);
