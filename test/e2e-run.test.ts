@@ -343,4 +343,70 @@ describe.skipIf(!dockerAvailable)("end to end with the fake agent", () => {
     },
     timeout,
   );
+
+  test(
+    "an intern held by CPU pressure for half of its time starts under the pressure and says so",
+    async () => {
+      const limits: Array<number | undefined> = [];
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 6,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("pressure", {}),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        admit: (_memory, pressureLimit) => {
+          limits.push(pressureLimit);
+          return pressureLimit === Infinity ? () => {} : null;
+        },
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null });
+      const i1 = intern(state, "i1");
+      expect(i1?.status).toBe("done");
+      expect(i1?.login).toBe("openrouter-1");
+      expect(i1?.detail).toMatch(/^the host held it \d+\.\d min; it started with the CPU pressure gate waived; stopped at minute 0: "Nothing more to test\."$/);
+      expect(intern(state, "c1")?.status).toBe("done");
+      expect(limits[0]).toBeUndefined();
+      expect(limits).toContain(Infinity);
+      expect(limits.filter((limit) => limit !== undefined && limit !== Infinity)).toEqual([]);
+      const started = Date.parse(i1?.startedAt ?? "");
+      const testingStarted = Date.parse(state.startedAt) + 0.6 * (6 * 60_000 - 36_000);
+      expect(started).toBeLessThan(testingStarted);
+      expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
+
+  test(
+    "an intern the host cannot fit in memory is skipped when the testing time ends",
+    async () => {
+      const runDir = await runQa({
+        dir: target,
+        rev: "HEAD",
+        dirty: false,
+        interns: 1,
+        minutes: 6,
+        confirmMinutes: 0.5,
+        loginsFile: await logins("unfit", {}),
+        replay: null,
+        runnerImage: async () => fakeImage,
+        admit: () => null,
+        print: () => {},
+      });
+
+      const state = await readState(runDir);
+      expect(state).toMatchObject({ phase: "done", error: null });
+      expect(state.interns.map((entry) => [entry.id, entry.status, entry.detail, entry.login, entry.startedAt])).toEqual([
+        ["i1", "skipped", "the run's time ended before its session began", null, null],
+      ]);
+      expect(await leftovers(state.runId)).toEqual([]);
+    },
+    timeout,
+  );
 });

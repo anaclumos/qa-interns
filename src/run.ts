@@ -77,7 +77,7 @@ export type AskOptions<T = unknown> = {
   parse(raw: string): T;
 };
 
-type Admit = (memory: number) => (() => void) | null;
+type Admit = (memory: number, pressureLimit?: number) => (() => void) | null;
 
 type Turn = Awaited<ReturnType<Session["prompt"]>>;
 type Limit = <T>(task: (free: () => void) => Promise<T>) => Promise<T>;
@@ -125,6 +125,7 @@ const writeUpMs = 4 * minute;
 const startMinMs = minute;
 const tailMs = minute;
 const testingShare = 0.6;
+const pressureShare = 0.5;
 const stopWaitMs = 30_000;
 const waitMs = 30_000;
 const rateLimitBaseMs = 5_000;
@@ -271,7 +272,12 @@ async function acquire(ctx: Context, scheduler: Scheduler): Promise<Lease | null
   }
 }
 
-async function admitted(ctx: Context, memory: number): Promise<() => void> {
+type Admission = { start: () => void; held: number | null };
+
+async function admitted(ctx: Context, memory: number): Promise<Admission> {
+  const entered = Date.now();
+  const pressureUntil = entered + (ctx.until - ctx.margin - entered) * pressureShare;
+  let refused = false;
   for (;;) {
     checkStopping(ctx);
     checkBudget(ctx, ctx.margin);
@@ -279,10 +285,14 @@ async function admitted(ctx: Context, memory: number): Promise<() => void> {
     const wake = () => released.resolve();
     const unwatch = watchReleases(wake);
     ctx.waiting.add(wake);
-    const timer = setTimeout(wake, Math.min(waitMs, Math.max(0, ctx.until - ctx.margin - Date.now())));
+    const at = Date.now();
+    const waits = [waitMs, Math.max(0, ctx.until - ctx.margin - at)];
+    if (at < pressureUntil) waits.push(pressureUntil - at);
+    const timer = setTimeout(wake, Math.min(...waits));
     try {
-      const started = ctx.admit(memory);
-      if (started !== null) return started;
+      const started = at < pressureUntil ? ctx.admit(memory) : ctx.admit(memory, Infinity);
+      if (started !== null) return { start: started, held: refused && at >= pressureUntil ? (at - entered) / minute : null };
+      refused = true;
       await released.promise;
     } finally {
       clearTimeout(timer);
@@ -395,7 +405,9 @@ async function leased<T>(ctx: Context, id: string, target: Target | null, free: 
     if (ctx.scheduler === null) throw new Error(`Run ${ctx.runId} has no login`);
     lease = await acquire(ctx, ctx.scheduler);
     if (lease === null) return null;
-    starting = await admitted(ctx, environmentMemory(target));
+    const admission = await admitted(ctx, environmentMemory(target));
+    starting = admission.start;
+    if (admission.held !== null) await note(`the host held it ${admission.held.toFixed(1)} min; it started with the CPU pressure gate waived`);
     await ctx.update(id, { status: "starting", login: lease.login.id, project, startedAt: now() });
     for (;;) {
       checkStopping(ctx);
